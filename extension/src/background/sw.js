@@ -150,6 +150,58 @@ function deepFindM3u8(obj, depth) {
 }
 
 /**
+ * 讀取 f1tv/formula1 網域的 cookie 找授權權杖。
+ *
+ * 為什麼需要 cookies 權限：F1TV 把登入資訊放在 cookie，而其中最關鍵的那些
+ * 通常是 HttpOnly——網頁的 document.cookie 讀不到，只有擴充功能的
+ * chrome.cookies API 拿得到。
+ *
+ * ⚠️ 只回傳權杖字串本身供 API 呼叫使用，以及**鍵名**供診斷。
+ *    值永遠不會出現在診斷報告裡。
+ */
+function pickTokens(text, out) {
+  if (typeof text !== 'string') return;
+  const push = (s) => {
+    if (typeof s !== 'string' || /\s/.test(s)) return;
+    if (/^ey[A-Za-z0-9_-]+\./.test(s) || s.length >= 40) out.push(s);
+  };
+  push(text);
+  try {
+    const obj = JSON.parse(decodeURIComponent(text));
+    const walk = (o, d) => {
+      if (d > 6 || o == null) return;
+      if (typeof o === 'string') { push(o); return; }
+      if (typeof o !== 'object') return;
+      for (const [k, v] of Object.entries(o)) {
+        if (typeof v === 'string' && /subscriptionToken|ascendon|entitlement|accessToken|access_token|\btoken\b/i.test(k)) {
+          if (!/\s/.test(v) && v.length >= 20) out.unshift(v);
+          continue;
+        }
+        walk(v, d + 1);
+      }
+    };
+    walk(obj, 0);
+  } catch (e) { /* 不是 JSON 就算了 */ }
+}
+
+async function getCookieTokens() {
+  if (!chrome.cookies || !chrome.cookies.getAll) return { tokens: [], names: [] };
+  const out = [];
+  const names = [];
+  for (const domain of ['f1tv.formula1.com', 'formula1.com', '.formula1.com']) {
+    let cookies = [];
+    try { cookies = await chrome.cookies.getAll({ domain }); } catch (e) { continue; }
+    for (const c of cookies) {
+      if (!c.value || /^(_ga|_gid|OptanonC|__utm|NRBA_)/i.test(c.name)) continue;
+      const before = out.length;
+      pickTokens(c.value, out);
+      if (out.length > before) names.push(`${c.name}(${c.value.length})`);
+    }
+  }
+  return { tokens: Array.from(new Set(out)).slice(0, 10), names: Array.from(new Set(names)) };
+}
+
+/**
  * PLAY API 需要的授權 header 名稱未知，所以逐一嘗試。
  * F1TV 回的錯誤訊息點名了三種：Ascendon Token / Entitlement Token / Access Token。
  * 成功之後把組合記進 storage，之後直接用，不必每次重試。
@@ -234,6 +286,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
+          break;
+        case 'getCookieTokens':
+          sendResponse(Object.assign({ ok: true }, await getCookieTokens()));
           break;
         case 'resolvePlayback':
           sendResponse({ ok: true, playback: await resolvePlayback(msg.cid, msg.tokens) });

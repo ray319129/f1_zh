@@ -408,45 +408,94 @@
   // ⚠️ 權杖值**絕對不可以**寫進診斷報告——那份報告是要貼給別人看的。
   //    只記錄鍵名與長度。
   // -------------------------------------------------------------------------
-  const TOKEN_KEY_HINT = /token|session|auth|login|ascendon|entitlement/i;
-  const TOKEN_FIELD_HINT = /token|jwt|access|subscription|ascendon|entitlement/i;
+  // 欄位名優先序：越前面越像我們要的那個
+  const TOKEN_FIELD_HINT = /subscriptionToken|ascendon|entitlement|accessToken|access_token|idToken|\btoken\b|jwt/i;
+  const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_)/i;
   let authTokenCache = null;
-  let authKeyNames = [];
+  let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
+
+  /** JWT 或夠長的無空白字串才可能是權杖 */
+  function looksLikeToken(s) {
+    if (typeof s !== 'string') return false;
+    if (/\s/.test(s)) return false;
+    if (/^ey[A-Za-z0-9_-]+\./.test(s)) return true;    // JWT
+    return s.length >= 40;
+  }
 
   function harvestStrings(obj, out, depth) {
     depth = depth || 0;
-    if (depth > 5 || obj == null || out.length > 40) return;
+    if (depth > 6 || obj == null || out.length > 60) return;
     if (typeof obj === 'string') {
-      // 權杖通常是長字串；太短的一定不是
-      if (obj.length >= 40 && !/\s/.test(obj)) out.push(obj);
+      if (looksLikeToken(obj)) out.push(obj);
+      // 值本身可能又是一層 JSON 或 URL-encoded JSON
+      if (obj.length > 20 && /[{%]/.test(obj)) {
+        try { harvestStrings(JSON.parse(decodeURIComponent(obj)), out, depth + 1); } catch (e) { /* noop */ }
+      }
       return;
     }
     if (typeof obj !== 'object') return;
     for (const [k, v] of Object.entries(obj)) {
-      if (typeof v === 'string' && v.length >= 40 && TOKEN_FIELD_HINT.test(k)) { out.unshift(v); continue; }
+      // 欄位名命中提示詞的優先排到最前面
+      if (typeof v === 'string' && looksLikeToken(v) && TOKEN_FIELD_HINT.test(k)) { out.unshift(v); continue; }
       harvestStrings(v, out, depth + 1);
     }
   }
 
-  function findAuthTokens() {
-    if (authTokenCache) return authTokenCache;
-    const candidates = [];
-    authKeyNames = [];
-    for (const store of [localStorage, sessionStorage]) {
-      let keys = [];
-      try { keys = Object.keys(store); } catch (e) { continue; }
-      for (const key of keys) {
-        if (!TOKEN_KEY_HINT.test(key)) continue;
-        let raw = '';
-        try { raw = store.getItem(key) || ''; } catch (e) { continue; }
-        if (!raw) continue;
-        authKeyNames.push(`${key}(${raw.length})`);
-        try { harvestStrings(JSON.parse(raw), candidates); }
-        catch (e) { if (raw.length >= 40 && !/\s/.test(raw)) candidates.push(raw); }
-      }
+  function scanStore(store, label, out) {
+    let keys = [];
+    try { keys = Object.keys(store); } catch (e) { return; }
+    for (const key of keys) {
+      if (NOISE_KEY.test(key)) continue;
+      let raw = '';
+      try { raw = store.getItem(key) || ''; } catch (e) { continue; }
+      if (!raw) continue;
+      authSources.push(`${label}:${key}(${raw.length})`);
+      try { harvestStrings(JSON.parse(raw), out); }
+      catch (e) { harvestStrings(raw, out); }
     }
-    authTokenCache = Array.from(new Set(candidates)).slice(0, 6);
-    evInfo(`授權權杖探索：找到 ${authKeyNames.length} 個相關鍵、${authTokenCache.length} 個候選值`);
+  }
+
+  /**
+   * 從三個來源找授權權杖。
+   *
+   * 上一輪只掃「鍵名含 token/session」的 localStorage，結果一無所獲——
+   * F1TV 把登入資訊放在 **cookie**（慣例是 login-session，內含
+   * URL-encoded JSON 的 subscriptionToken），播放器讀出來再放進 header。
+   * `credentials:'include'` 雖然會送 cookie，但伺服器要的是 header，所以照樣 400。
+   *
+   * 這次不做鍵名過濾，改成掃全部再用「值長得像不像權杖」判斷。
+   * HttpOnly 的 cookie 讀不到，由 SW 用 chrome.cookies 補。
+   */
+  async function findAuthTokens() {
+    if (authTokenCache) return authTokenCache;
+    const out = [];
+    authSources = [];
+
+    scanStore(localStorage, 'LS', out);
+    scanStore(sessionStorage, 'SS', out);
+
+    // document.cookie 讀得到的部分（非 HttpOnly）
+    try {
+      for (const part of document.cookie.split(';')) {
+        const i = part.indexOf('=');
+        if (i < 0) continue;
+        const name = part.slice(0, i).trim();
+        const val = part.slice(i + 1).trim();
+        if (!name || !val || NOISE_KEY.test(name)) continue;
+        authSources.push(`CK:${name}(${val.length})`);
+        harvestStrings(decodeURIComponent(val), out);
+      }
+    } catch (e) { /* noop */ }
+
+    // HttpOnly 的 cookie 只有 SW 拿得到
+    const ck = await send({ type: 'getCookieTokens' });
+    if (ck.ok && ck.tokens) {
+      out.push(...ck.tokens);
+      authSources.push(...(ck.names || []).map((n) => `CK*:${n}`));
+    }
+
+    authTokenCache = Array.from(new Set(out)).slice(0, 10);
+    evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個候選值`);
     return authTokenCache;
   }
 
@@ -562,7 +611,7 @@
     const myGen = harvestGen;
     setPhase('取得串流位址');
     try {
-      const tokens = findAuthTokens();
+      const tokens = await findAuthTokens();
       const pb = (await send({ type: 'resolvePlayback', cid, tokens })).playback || {};
       if (!pb.ok || !pb.master) {
         evWarn(`取不到串流位址（HTTP ${pb.status || '?'}）` +
@@ -762,8 +811,9 @@
     L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}`);
     L.push('');
     L.push('──── 授權（PLAY API 需要）────');
-    L.push(`localStorage 相關鍵：${authKeyNames.length ? authKeyNames.join(', ') : '(尚未掃描或沒找到)'}`);
-    L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含權杖內容`);
+    L.push(`掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：`);
+    L.push(authSources.length ? '  ' + authSources.join('\n  ') : '  (尚未掃描)');
+    L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含任何權杖內容`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
