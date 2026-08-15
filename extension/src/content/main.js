@@ -114,6 +114,31 @@
     } catch (e) { /* 不影響主要功能 */ }
   }
 
+  /**
+   * 找出播放器自己發過的 PLAY 請求網址，原封不動沿用。
+   *
+   * 自己拼參數踩過兩個坑：
+   *   - 少了 channelId → 500 "Failed to evaluate stream rule"
+   *   - 而 F1TV 有 Imperva 機器人防護（reese84 cookie），
+   *     反覆試錯的請求會開始被擋（Failed to fetch）
+   *
+   * 播放器的網址一定是完整且合法的，重放它比猜參數可靠得多，
+   * 也把請求次數壓到最低。
+   */
+  function findPlayApiUrl(cid) {
+    try {
+      const entries = performance.getEntriesByType('resource');
+      let fallback = null;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const n = entries[i].name;
+        if (!/\/CONTENT\/PLAY\?/i.test(n)) continue;
+        if (cid && n.indexOf('contentId=' + cid) !== -1) return n;   // 正好是這支影片
+        if (!fallback) fallback = n;
+      }
+      return fallback;
+    } catch (e) { return null; }
+  }
+
   function currentContentId() {
     if (site && site.contentIdPattern) {
       try {
@@ -446,6 +471,7 @@
   let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
   let authBestHeader = null;       // 伺服器確實讀到的那個 header 名稱
   let authRejected = 0;            // 因為不能當 header 值而被剔除的候選數
+  let authPlayUrlFound = false;    // 是否找到播放器自己的 PLAY 網址可沿用
 
   /** JWT 或夠長的無空白字串才可能是權杖 */
   function looksLikeToken(s) {
@@ -661,7 +687,10 @@
     setPhase('取得串流位址');
     try {
       const tokens = await findAuthTokens();
-      const pb = (await send({ type: 'resolvePlayback', cid, tokens })).playback || {};
+      const playUrl = findPlayApiUrl(cid);
+      authPlayUrlFound = !!playUrl;
+      if (playUrl) evInfo(`沿用播放器自己的 PLAY 網址（參數完整，不用猜）`);
+      const pb = (await send({ type: 'resolvePlayback', cid, tokens, playUrl })).playback || {};
       if (!pb.ok || !pb.master) {
         const NL = String.fromCharCode(10);
         evWarn('取不到串流位址（HTTP ' + (pb.status || '?') + '）'
@@ -877,6 +906,7 @@
     L.push(`候選來源（依可信度排序）：${authTokenCache && authTokenCache.length
       ? authTokenCache.map((t) => t.src).join(' | ') : '(無)'}`);
     L.push(`格式不合被剔除：${authRejected} 個`);
+    L.push(`沿用播放器的 PLAY 網址：${authPlayUrlFound ? '是（參數完整）' : '否（自行拼接，可能缺 channelId）'}`);
     L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');

@@ -255,8 +255,9 @@ function buildAttempts(tokens) {
   for (const t of rest.slice(0, 3)) {
     A.push({ headers: { ascendontoken: t.v }, label: `ascendontoken←${t.src}` });
   }
-  A.push({ headers: {}, label: '不帶授權 header' });
-  return A.slice(0, 14);
+  // 不再試「不帶 header」——之前的回合已經確認那必定是 400，
+  // 白白多打一次受機器人防護的 API。
+  return A.slice(0, 4);
 }
 
 async function tryPlay(url, headers) {
@@ -268,9 +269,13 @@ async function tryPlay(url, headers) {
   return { status: res.status, ok: res.ok && !!master, master, text, data };
 }
 
-async function resolvePlayback(cid, tokens) {
-  const url = `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
-            + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
+async function resolvePlayback(cid, tokens, playUrl) {
+  // 優先沿用播放器自己發過的網址：參數（channelId 等）一定完整。
+  // 自己拼的話少一個 channelId 就會拿到 500 "Failed to evaluate stream rule"。
+  const url = (typeof playUrl === 'string' && /^https:\/\/f1tv\.formula1\.com\/.*\/CONTENT\/PLAY\?/i.test(playUrl))
+    ? playUrl
+    : `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
+      + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
 
   const list = (Array.isArray(tokens) ? tokens : []).filter((t) => t && t.v);
   const attempts = buildAttempts(list);
@@ -278,8 +283,12 @@ async function resolvePlayback(cid, tokens) {
   let last = null;
   let best = null;        // 「最接近成功」的一次
   const tried = [];       // 只記 label（出處名稱），不含權杖值
+  let n = 0;
 
   for (const a of attempts) {
+    // F1TV 掛了 Imperva 機器人防護（reese84 cookie）。連續快速的重試會開始
+    // 被擋掉（表現為 Failed to fetch），所以嘗試之間留間隔，也不試太多次。
+    if (n++) await new Promise((r) => setTimeout(r, 700));
     // 送出前再擋一次：Chrome 對含控制字元／非 ASCII 的 header 值會直接拒絕整個
     // 請求（Failed to fetch），那不是伺服器的回應，卻很容易被誤讀成認證失敗。
     const bad = Object.entries(a.headers).find(([, v]) => !/^[\x21-\x7E]+$/.test(String(v)));
@@ -346,7 +355,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse(Object.assign({ ok: true }, await getCookieTokens()));
           break;
         case 'resolvePlayback':
-          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid, msg.tokens) });
+          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid, msg.tokens, msg.playUrl) });
           break;
         case 'fetchText':
           try {
