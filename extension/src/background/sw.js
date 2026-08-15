@@ -280,11 +280,23 @@ async function resolvePlayback(cid, tokens) {
   const tried = [];       // 只記 label（出處名稱），不含權杖值
 
   for (const a of attempts) {
+    // 送出前再擋一次：Chrome 對含控制字元／非 ASCII 的 header 值會直接拒絕整個
+    // 請求（Failed to fetch），那不是伺服器的回應，卻很容易被誤讀成認證失敗。
+    const bad = Object.entries(a.headers).find(([, v]) => !/^[\x21-\x7E]+$/.test(String(v)));
+    if (bad) { tried.push(`${a.label} → 略過（${bad[0]} 的值不能當 header）`); continue; }
+
     let r;
     try { r = await tryPlay(url, a.headers); }
-    catch (e) { last = { status: 0, text: String(e.message || e) }; continue; }
+    catch (e) {
+      last = { status: 0, text: String(e.message || e) };
+      tried.push(`${a.label} → 網路層失敗（${last.text}）`);
+      continue;
+    }
     last = r;
-    tried.push(`${a.label} → ${r.status}`);
+    // 把伺服器訊息一起記下來：500 跟 401 要看內容才知道差在哪
+    const msg = (r.data && r.data.message) ? String(r.data.message).slice(0, 90)
+              : String(r.text || '').slice(0, 90);
+    tried.push(`${a.label} → ${r.status}${msg ? ' ' + msg : ''}`);
 
     // 錯誤訊息本身就是進度指示：
     //   400 Missing parameter…                    → header 名稱錯，伺服器沒讀到

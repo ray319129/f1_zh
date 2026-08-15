@@ -415,19 +415,37 @@
   // 裡面一堆長字串會被誤判成權杖，把真正的 cookie 權杖擠出候選清單。
   const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_|ABTasty|sp_|_sp_|ClearVR|reese84|consent|_rdt|_sfid|_evga|loglevel|isFirstRendering)/i;
 
+  /**
+   * 值必須能當成 HTTP header 送出去。
+   *
+   * 實測踩到兩次：把整包 JSON（`{"data":{…}}`）當 header 值送，
+   * Chrome 直接拒絕整個請求（Failed to fetch）；把還帶 %2F 的
+   * URL-encoded 字串送出去，伺服器解 JWT 失敗回 500。
+   * 兩者都不是認證問題，是格式問題。
+   */
+  function isHeaderSafe(v) {
+    if (typeof v !== 'string' || v.length < 20 || v.length > 8000) return false;
+    if (/^[[{]/.test(v.trim())) return false;              // JSON 物件／陣列
+    if (/%[0-9A-Fa-f]{2}/.test(v)) return false;           // 還沒解碼的 URL-encoding
+    return /^[\x21-\x7E]+$/.test(v);                       // 只允許可列印 ASCII、不含空白
+  }
+
   /** 來源可信度評分：越高越可能是真正的授權權杖 */
   function tokenScore(src) {
-    if (/subscriptionToken/i.test(src)) return 100;
-    if (/entitlement/i.test(src)) return 95;
-    if (/login-session/i.test(src)) return 90;
-    if (/ascendon/i.test(src)) return 85;
-    if (/^cookie:/i.test(src)) return 50;
-    if (/\/token$|\/jwt$/i.test(src)) return 30;
-    return 10;
+    let s = 10;
+    if (/subscriptionToken/i.test(src)) s = 100;
+    else if (/entitlement/i.test(src)) s = 95;
+    else if (/login-session/i.test(src)) s = 90;
+    else if (/ascendon/i.test(src)) s = 85;
+    else if (/^cookie:/i.test(src)) s = 50;
+    else if (/\/token$|\/jwt$/i.test(src)) s = 30;
+    if (/\(decoded\)/i.test(src)) s += 3;                  // 解碼後的版本才是能用的
+    return s;
   }
   let authTokenCache = null;
   let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
   let authBestHeader = null;       // 伺服器確實讀到的那個 header 名稱
+  let authRejected = 0;            // 因為不能當 header 值而被剔除的候選數
 
   /** JWT 或夠長的無空白字串才可能是權杖 */
   function looksLikeToken(s) {
@@ -519,11 +537,14 @@
     // （ABTastyData 一個就 18KB），後掃到的 cookie 權杖全被切掉——
     // 實測嘗試清單裡一個 cookie 來源都沒有。
     const seen = new Set();
-    authTokenCache = out
-      .filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false)
+    const all = out.filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false);
+    const usable = all.filter((t) => isHeaderSafe(t.v));
+    authTokenCache = usable
       .sort((a, b) => tokenScore(b.src || '') - tokenScore(a.src || ''))
       .slice(0, 12);
-    evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個候選值`);
+    authRejected = all.length - usable.length;
+    evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個可用候選` +
+      (authRejected ? `（另有 ${authRejected} 個因格式不合被剔除）` : ''));
     return authTokenCache;
   }
 
@@ -855,6 +876,7 @@
     L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含任何權杖內容`);
     L.push(`候選來源（依可信度排序）：${authTokenCache && authTokenCache.length
       ? authTokenCache.map((t) => t.src).join(' | ') : '(無)'}`);
+    L.push(`格式不合被剔除：${authRejected} 個`);
     L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');

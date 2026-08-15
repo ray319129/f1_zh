@@ -1,0 +1,77 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-15T21:19:40.106Z
+版本　　　：0.2.6
+目前階段　：逐句模式
+網址　　　：https://f1tv.formula1.com/detail/1000010238/2026-miami-gp-sprint?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010238（網址 1000010238 / 觀察 1000010238）
+video　　　：播放中 51.3s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：8 字
+目前抓到　：in 2026.
+曾看到字幕：是
+
+──── 授權（PLAY API 需要）────
+掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：
+  CK:_gcl_au(24)
+  CK:login-session(2033)
+  CK:entitlement_token(1707)
+  LS:TiledmediaPlayerDeviceAppID(36)
+  LS:subtitleStylingPreferences(93)
+  SS:customState(20)
+  SS:liveNowData(253)
+  SS:__imt_handshake_page_id(36)
+  SS:sessionId(36)
+  SS:locationData(205)
+  SS:__darkreader__wasEnabledForHost(5)
+候選權杖數　：3　※ 報告不含任何權杖內容
+候選來源（依可信度排序）：cookie:login-session/subscriptionToken | cookie:entitlement_token | cookie:login-session
+正確的 header：(尚未確認)
+
+──── 預抓（決定跟不跟得上語速）────
+型態　　　：重播
+字幕清單　：(尚未取得)
+分段　　　：清單 0 / 已抓 0（失敗 0）
+收割完成　：false　進行中：false　世代 2
+
+──── 翻譯 ────
+共用快取取得：0 句
+本機快取　：5 句
+命中 / 未命中：0 / 6
+即時翻譯　：5 句　錯誤 0
+待送出　　：0 句　飛行中 1 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":26,"bottomPct":8,"holdMs":3000,"hideNativeCC":true}
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 17 筆）────
+[21:18:32.156] INFO ▶ 等待播放
+[21:18:32.156] OK   PitLingo v0.2.6 已啟動　|　設定版本 1　|　翻譯：開啟
+[21:18:32.156] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[21:18:32.801] INFO 共用快取尚無此影片的譯文（cid 1000010234），將以逐句即時翻譯運作
+[21:18:32.801] INFO ▶ 取得串流位址
+[21:18:32.945] INFO 授權權杖探索：掃過 11 個來源，取得 3 個候選值
+[21:18:35.149] WARN 取不到串流位址（HTTP ?），已試 6 種組合（3 個候選權杖）
+    嘗試過的配對：
+      ascendon←cookie:login-session/subscriptionToken + entitlement←cookie:entitlement_token → 500
+      ascendon←cookie:login-session + entitlement←cookie:entitlement_token → 500
+      ascendontoken←cookie:login-session/subscriptionToken → 500
+    伺服器回應：Failed to fetch
+[21:18:35.149] WARN 退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。
+[21:18:35.149] INFO ▶ 逐句模式
+[21:18:48.657] INFO ▶ 切換影片
+[21:18:48.657] INFO 影片切換 1000010234 → 1000010238
+[21:18:48.963] INFO 共用快取尚無此影片的譯文（cid 1000010238），將以逐句即時翻譯運作
+[21:18:48.963] INFO ▶ 取得串流位址
+[21:18:49.506] WARN 取不到串流位址（HTTP ?），已試 6 種組合（3 個候選權杖）
+    嘗試過的配對：
+      ascendon←cookie:login-session/subscriptionToken + entitlement←cookie:entitlement_token → 500
+    伺服器回應：Failed to fetch
+[21:18:49.506] WARN 退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。
+[21:18:49.506] INFO ▶ 逐句模式
+[21:19:26.415] INFO 已偵測到第一句字幕，CC 運作正常
+
+════════ 報告結束 ════════
