@@ -166,6 +166,16 @@ function pickTokens(text, out) {
     if (/^ey[A-Za-z0-9_-]+\./.test(s) || s.length >= 40) out.push(s);
   };
   push(text);
+
+  // Cookie 值多半是 URL-encoded。之前只 push 了原始字串，
+  // 而解碼後的版本只在「能 JSON.parse」時才會被處理——
+  // 對 entitlement_token 這種「URL-encoded 的 JWT」來說，
+  // 真正該送出去的解碼後字串從來沒進過候選清單。
+  try {
+    const dec = decodeURIComponent(text);
+    if (dec !== text) push(dec);
+  } catch (e) { /* 不是合法的 encoding */ }
+
   try {
     const obj = JSON.parse(decodeURIComponent(text));
     const walk = (o, d) => {
@@ -209,11 +219,17 @@ async function getCookieTokens() {
 const AUTH_HEADER_VARIANTS = [
   (t) => ({ ascendontoken: t }),
   (t) => ({ entitlementtoken: t }),
+  (t) => ({ ascendontoken: t, entitlementtoken: t }),   // 可能要求同時帶
   (t) => ({ 'x-f1-ascendon-token': t }),
+  (t) => ({ accesstoken: t }),
+  (t) => ({ 'access-token': t }),
   (t) => ({ authorization: `Bearer ${t}` }),
   (t) => ({ authorization: t }),
-  (t) => ({ accesstoken: t }),
 ];
+
+// 全排列會產生幾十次失敗請求（實測 10 權杖 × 6 header = 60 次、耗時 74 秒）。
+// 那既慢又像在探測，所以設上限；候選清單本來就已依「欄位名像不像」排序。
+const MAX_AUTH_ATTEMPTS = 14;
 
 async function tryPlay(url, headers) {
   const res = await fetch(url, { credentials: 'include', headers: headers || {} });
@@ -236,10 +252,13 @@ async function resolvePlayback(cid, tokens) {
   if (authRecipe && typeof authRecipe.variant === 'number' && list[authRecipe.tokenIndex]) {
     attempts.push({ v: authRecipe.variant, ti: authRecipe.tokenIndex });
   }
-  for (let ti = 0; ti < list.length; ti++) {
-    for (let v = 0; v < AUTH_HEADER_VARIANTS.length; v++) attempts.push({ v, ti });
+  // 廣度優先：先讓每個權杖都試最可能的前兩種 header，再往後試冷門的。
+  // 比「一個權杖試完六種再換下一個」更快命中，也更早停損。
+  for (let v = 0; v < AUTH_HEADER_VARIANTS.length; v++) {
+    for (let ti = 0; ti < list.length; ti++) attempts.push({ v, ti });
   }
   attempts.push({ v: -1, ti: -1 });   // 最後試「完全不帶 header」
+  attempts.length = Math.min(attempts.length, MAX_AUTH_ATTEMPTS);
 
   let last = null;
   for (const a of attempts) {
@@ -263,6 +282,7 @@ async function resolvePlayback(cid, tokens) {
     status: last ? last.status : 0,
     tokensTried: list.length,
     variantsTried: AUTH_HEADER_VARIANTS.length,
+    attemptsMade: attempts.length,
     topKeys: last && last.data ? Object.keys(last.data).slice(0, 20) : [],
     hint: last ? String(last.text).slice(0, 260) : '無回應',
   };

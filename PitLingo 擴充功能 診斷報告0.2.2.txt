@@ -1,0 +1,81 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-15T20:55:28.973Z
+版本　　　：0.2.2
+目前階段　：逐句模式
+網址　　　：https://f1tv.formula1.com/detail/1000010192/2026-chinese-gp-sprint?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010192（網址 1000010192 / 觀察 1000010192）
+video　　　：暫停 68.0s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：19 字
+目前抓到　：See that push back?
+曾看到字幕：是
+
+──── 授權（PLAY API 需要）────
+掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：
+  LS:ClearVRCore-persistence.json(2635)
+  LS:_sp_non_keyed_local_state(51)
+  LS:reese84(721)
+  LS:TiledmediaPlayerDeviceAppID(36)
+  LS:ABTastyData(16509)
+  LS:_sp_user_consent_31416(39740)
+  LS:_sp_local_state(161)
+  LS:subtitleStylingPreferences(93)
+  LS:sp_newrelic(4)
+  LS:loglevel(6)
+  LS:sp_abtasty(4)
+  SS:customState(20)
+  SS:liveNowData(199)
+  SS:__imt_handshake_page_id(36)
+  SS:sessionId(36)
+  SS:locationData(205)
+  SS:__darkreader__wasEnabledForHost(5)
+  SS:ABTastyUA(86)
+  SS:ABTastyGeoloc(444)
+  CK:consentUUID(39)
+  CK:consentDate(24)
+  CK:_gcl_au(24)
+  CK:_rdt_uuid(50)
+  CK:_sfid_8374(42)
+  CK:_evga_95b0(35)
+  CK:login-session(2033)
+  CK:entitlement_token(1707)
+  CK:reese84(606)
+  CK:isFirstRendering(4)
+  CK:ABTastySession(103)
+  CK:ABTasty(99)
+候選權杖數　：10　※ 報告不含任何權杖內容
+
+──── 預抓（決定跟不跟得上語速）────
+型態　　　：重播
+字幕清單　：(尚未取得)
+分段　　　：清單 0 / 已抓 0（失敗 0）
+收割完成　：false　進行中：false　世代 1
+
+──── 翻譯 ────
+共用快取取得：0 句
+本機快取　：24 句
+命中 / 未命中：0 / 24
+即時翻譯　：24 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":26,"bottomPct":8,"holdMs":3000,"hideNativeCC":true}
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 10 筆）────
+[20:53:39.341] INFO ▶ 等待播放
+[20:53:39.341] OK   PitLingo v0.2.2 已啟動　|　設定版本 1　|　翻譯：開啟
+[20:53:39.341] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[20:53:39.794] INFO 共用快取尚無此影片的譯文（cid 1000010192），將以逐句即時翻譯運作
+[20:53:39.794] INFO ▶ 取得串流位址
+[20:53:40.003] INFO 授權權杖探索：掃過 31 個來源，取得 10 個候選值
+[20:54:04.347] INFO 已偵測到第一句字幕，CC 運作正常
+[20:54:53.950] WARN 取不到串流位址（HTTP 400），已試 10 個權杖 × 6 種 header，回應欄位：resultCode, message, errorDescription, resultObj, systemTime
+    伺服器回應：{"resultCode":"OK","message":"Missing parameter Ascendon Token or Entitlement Token or Access Token","errorDescription":"ACN_1001","resultObj":{},"systemTime":1786827295136}
+[20:54:53.950] WARN 退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。
+[20:54:53.950] INFO ▶ 逐句模式
+
+════════ 報告結束 ════════

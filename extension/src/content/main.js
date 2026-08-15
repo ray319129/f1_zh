@@ -615,7 +615,7 @@
       const pb = (await send({ type: 'resolvePlayback', cid, tokens })).playback || {};
       if (!pb.ok || !pb.master) {
         evWarn(`取不到串流位址（HTTP ${pb.status || '?'}）` +
-          `，已試 ${pb.tokensTried || 0} 個權杖 × ${pb.variantsTried || 0} 種 header` +
+          `，已試 ${pb.attemptsMade || 0} 種組合（${pb.tokensTried || 0} 權杖 / ${pb.variantsTried || 0} header）` +
           (pb.topKeys && pb.topKeys.length ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
           (pb.hint ? `
     伺服器回應：${pb.hint}` : ''));
