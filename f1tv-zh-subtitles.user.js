@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.6.0
+// @version      4.7.0
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_setClipboard
 // @grant        unsafeWindow
 // @connect      api.anthropic.com
 // @connect      formula1.com
@@ -653,6 +654,33 @@ sorry mate → 抱歉
 
   const log = (...a) => CFG.debug && console.log('%c[f1zh]', 'color:#e10600;font-weight:bold', ...a);
 
+  // ---- 事件時間軸 ----
+  // 所有重要狀態變化都經過這裡：印到 Console 讓人知道現在在做什麼，
+  // 同時存進環形緩衝區，「匯出完整診斷」時一併帶出，回報問題不用再翻 Console。
+  const VERSION = '4.7.0';
+  const eventLog = [];
+  function logEvent(level, msg) {
+    const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;
+    eventLog.push(line);
+    if (eventLog.length > 400) eventLog.shift();
+    const style = level === 'err' ? 'color:#e10600;font-weight:bold'
+                : level === 'ok' ? 'color:#0a0;font-weight:bold'
+                : level === 'warn' ? 'color:#c80;font-weight:bold'
+                : 'color:#57f';
+    console.log(`%c[PitLingo] ${msg}`, style);
+  }
+  const evOk = (m) => logEvent('ok', m);
+  const evInfo = (m) => logEvent('info', m);
+  const evWarn = (m) => logEvent('warn', m);
+  const evErr = (m) => logEvent('err', m);
+
+  let phase = '啟動中';
+  function setPhase(p, msg) {
+    if (phase === p) return;
+    phase = p;
+    evInfo(`▶ ${p}${msg ? ' — ' + msg : ''}`);
+  }
+
   // ==========================================================================
   // 4. 文字正規化與快取
   // ==========================================================================
@@ -853,8 +881,7 @@ sorry mate → 抱歉
       const w = usage.cache_creation_input_tokens || 0;
       const r = usage.cache_read_input_tokens || 0;
       if (w || r) {
-        console.log(`%c[f1zh] ✅ Prompt caching 生效（寫入 ${w} / 讀取 ${r} tokens）`,
-          'color:#0a0;font-weight:bold');
+        evOk(`✅ Prompt caching 生效（寫入 ${w} / 讀取 ${r} tokens）`);
       } else {
         console.warn('[f1zh] ⚠ Prompt caching 未生效 — system prompt 可能未達 4096 tokens。');
       }
@@ -1057,8 +1084,7 @@ sorry mate → 抱歉
       }
       stats.beDownloaded += n;
       if (n) {
-        console.log(`%c[f1zh] ☁ 從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`,
-          'color:#0a0;font-weight:bold');
+        evOk(`☁ 從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`);
       }
     } catch (e) {
       stats.beErrors++;
@@ -1106,8 +1132,8 @@ sorry mate → 抱歉
       const d = await backendRequest('POST', '/v1/subs', payload, { 'x-admin-token': admin });
       Object.keys(lines).forEach((k) => uploadedKeys.add(k));
       stats.beUploaded += (d.added || 0);
-      console.log(`%c[f1zh] ☁ 已上傳 ${d.added} 句到共用快取（該影片累計 ${d.total} 句` +
-        `${d.segCount ? `，已標記完整：${d.segCount} 段` : ''}）`, 'color:#0a0;font-weight:bold');
+      evOk(`☁ 已上傳 ${d.added} 句到共用快取（該影片累計 ${d.total} 句` +
+        `${d.segCount ? `，已標記完整：${d.segCount} 段` : ''}）`);
       return d.added || 0;
     } catch (e) {
       stats.beErrors++;
@@ -1220,17 +1246,45 @@ sorry mate → 抱歉
   let prefetchAttempts = 0;
   const PREFETCH_MAX_ATTEMPTS = 3;
 
+  /**
+   * 收割中止判斷。
+   * 光看 contentId 不夠：使用者點播放器左上角的返回時，網址可能完全沒變，
+   * 但播放器已經被拆掉、影片也停了。這時繼續抓完上千個分段是純浪費。
+   * 用「video 元素消失」當訊號，並給 5 秒緩衝避開播放器重建時的短暫消失。
+   */
+  let videoMissingSince = 0;
+  function harvestShouldStop(myGen) {
+    if (myGen !== harvestGen) return '影片切換';
+    if (!enabled) return '翻譯已關閉';
+    if (!CFG.fullPrefetch) return '預抓已關閉';
+    const v = document.querySelector('video');
+    if (v) { videoMissingSince = 0; return null; }
+    if (!videoMissingSince) { videoMissingSince = Date.now(); return null; }
+    if (Date.now() - videoMissingSince > 5000) return '播放器已關閉';
+    return null;
+  }
+
   async function fetchSegments(list, myGen) {
     let idx = 0;
+    let stopReason = null;
+    let lastPct = -1;
     const worker = async () => {
-      // myGen !== harvestGen 代表使用者已經換了影片或離開，這條收割立刻收手
-      while (idx < list.length && enabled && CFG.fullPrefetch && myGen === harvestGen) {
+      while (idx < list.length) {
+        const stop = harvestShouldStop(myGen);
+        if (stop) { stopReason = stop; return; }
         const s = list[idx++];
         try {
           const t = await httpGet(s.url);
           stats.segFetched++;
           onVttPayload(t, s.url);
         } catch (e) { stats.segFailed++; }
+
+        // 進度回報：每 10% 一次，讓人知道還要多久
+        const pct = Math.floor((stats.segFetched / list.length) * 10) * 10;
+        if (pct > lastPct && pct > 0 && pct < 100) {
+          lastPct = pct;
+          evInfo(`收割進度 ${pct}%（${stats.segFetched}/${list.length} 段，待翻 ${prefetchQueue.length} 句）`);
+        }
         if (CFG.fetchGapMs) await new Promise(r => setTimeout(r, CFG.fetchGapMs));
       }
     };
@@ -1240,14 +1294,18 @@ sorry mate → 抱歉
     } finally {
       harvesting = false;
     }
-    if (myGen !== harvestGen) {
-      console.log('[f1zh] 收割已中止（影片切換或離開頁面）');
+    if (stopReason) {
+      setPhase('收割已中止', stopReason);
+      evWarn(`收割中止（${stopReason}）：已抓 ${stats.segFetched}/${list.length} 段，` +
+        `已取得的 ${prefetchQueue.length} 句仍會翻譯並上傳`);
+      drainPrefetch();                 // 已經抓到的不浪費
+      waitForPrefetchIdleThenUpload();
       return;
     }
     // 只有「全部抓齊且零失敗」才算完整，這個旗標會決定上傳時要不要標記 segCount
     harvestComplete = stats.segFailed === 0 && stats.segFetched >= list.length;
-    console.log(`%c[f1zh] ✅ 整軌預抓完成：成功 ${stats.segFetched} 段、失敗 ${stats.segFailed} 段，` +
-      `待翻 ${prefetchQueue.length} 句`, 'color:#0a0;font-weight:bold');
+    setPhase('翻譯中');
+    evOk(`整軌預抓完成：${stats.segFetched} 段成功、${stats.segFailed} 段失敗，待翻 ${prefetchQueue.length} 句`);
     drainPrefetch();
     // 等佇列翻完再上傳一次，讓共用快取拿到完整的一支並標記 segCount
     waitForPrefetchIdleThenUpload();
@@ -1281,8 +1339,8 @@ sorry mate → 抱歉
     const myGen = harvestGen;
     stats.segFetched = 0; stats.segFailed = 0;   // 每次收割獨立計數，否則完整度判斷會失準
     try {
-      console.log(`%c[f1zh] 🎯 找到字幕播放清單（${sp.lang || '?'}，${sp.how}），開始整軌預抓`,
-        'color:#0a0;font-weight:bold');
+      setPhase('收割中');
+      evInfo(`🎯 找到字幕播放清單（${sp.lang || '?'}，${sp.how}）`);
       const body = sp.body || await httpGet(sp.url);   // 已經有內容就不用再抓一次
       const { segs, isVod } = parseMediaPlaylist(body, sp.url);
       stats.playlistSegs = segs.length;
@@ -1290,19 +1348,20 @@ sorry mate → 抱歉
       if (!isVod) {
         // 直播的播放清單是滑動視窗，未來的字幕根本還不存在。
         // 這種情況維持 worker 即時攔截就好。
-        console.log('[f1zh] 偵測到直播（無 EXT-X-ENDLIST），維持即時攔截模式');
+        setPhase('直播即時攔截');
+        evInfo('偵測到直播（無 EXT-X-ENDLIST），改用即時攔截');
         return;
       }
       // 共用快取已涵蓋整支影片就不用再抓一次。
       // 不跳過的話會白白對 F1 的 CDN 發 400+ 次請求，最後一句新的都找不到。
       if (bundleLineCount > 0 && bundleSegCount === segs.length) {
-        console.log(`%c[f1zh] ⏭ 共用快取已涵蓋整支影片（${bundleLineCount} 句 / ${segs.length} 段），` +
-          `跳過整軌預抓`, 'color:#0a0;font-weight:bold');
+        setPhase('就緒');
+        evOk(`⏭ 共用快取已涵蓋整支影片（${bundleLineCount} 句 / ${segs.length} 段），跳過整軌預抓`);
         stats.harvestSkipped++;
         return;
       }
-      console.log(`[f1zh] 字幕分段共 ${segs.length} 個，開始抓取` +
-        (bundleLineCount ? `（共用快取已有 ${bundleLineCount} 句，只會補缺漏）` : ''));
+      evInfo(`字幕分段共 ${segs.length} 個，開始抓取` +
+        (bundleLineCount ? `（共用快取已有 ${bundleLineCount} 句，只補缺漏）` : ''));
 
       // 從目前播放位置開始排序，讓馬上要用到的先翻，不要先去翻片尾
       const v = document.querySelector('video');
@@ -1450,8 +1509,7 @@ sorry mate → 抱歉
           const patched = new Blob([WORKER_HOOK, '\n', src], { type: obj.type || 'text/javascript' });
           const newUrl = orig(patched);
           stats.workerPatched++;
-          console.log(`%c[f1zh] ✅ 已注入 Worker hook（原始腳本 ${src.length} bytes）`,
-            'color:#0a0;font-weight:bold');
+          evOk(`✅ 已注入 Worker hook（原始腳本 ${src.length} bytes）`);
           return newUrl;
         } catch (e) {
           console.warn('[f1zh] Worker 注入失敗，改用原始腳本:', e.message);
@@ -1533,7 +1591,7 @@ sorry mate → 抱歉
 
     if (!vttAnnounced) {
       vttAnnounced = true;
-      console.log('%c[f1zh] ✅ 攔截到 VTT 字幕，已啟動前瞻批次預譯', 'color:#0a0;font-weight:bold');
+      evOk('✅ 攔截到 VTT 字幕，已啟動前瞻批次預譯');
     }
 
     let added = 0;
@@ -1652,14 +1710,30 @@ sorry mate → 抱歉
   async function drainPrefetch() {
     if (prefetchBusy || !prefetchQueue.length) return;
     prefetchBusy = true;
+    const total = prefetchQueue.length;
+    if (total > CFG.batchSize) {
+      setPhase('翻譯中');
+      evInfo(`開始翻譯 ${total} 句（約 ${Math.ceil(total / CFG.batchSize)} 次呼叫）`);
+    }
+    let done = 0, lastPct = -1;
     try {
       while (prefetchQueue.length && enabled) {
         const batch = prefetchQueue.splice(0, CFG.batchSize);
         await translateBatch(batch);
+        done += batch.length;
+        const pct = Math.floor((done / total) * 10) * 10;
+        if (total > CFG.batchSize && pct > lastPct && pct > 0 && pct < 100) {
+          lastPct = pct;
+          evInfo(`翻譯進度 ${pct}%（${done}/${total} 句，剩 ${prefetchQueue.length} 句）`);
+        }
+      }
+      if (total > CFG.batchSize) {
+        evOk(`翻譯完成：${done} 句`);
+        setPhase('就緒');
       }
     } catch (e) {
       stats.errors++;
-      console.warn('[f1zh] 批次預譯失敗:', e.message);
+      evErr(`批次預譯失敗：${e.message}`);
     } finally {
       prefetchBusy = false;
     }
@@ -1783,6 +1857,7 @@ sorry mate → 抱歉
   // 而輪詢不依賴任何註冊狀態，因此不可能失效。
   let lastSeenCaption = '';
   let lastNonEmptyAt = Date.now();
+  let everSawCaption = false;      // 本次影片是否曾經看到任何字幕（判斷 CC 是否正常的關鍵）
 
   function pollCaption() {
     if (!enabled) return;
@@ -1798,6 +1873,10 @@ sorry mate → 抱歉
       return;
     }
     lastNonEmptyAt = Date.now();
+    if (!everSawCaption) {
+      everSawCaption = true;
+      evOk('已偵測到第一句字幕，CC 運作正常');
+    }
     push(cur);
   }
 
@@ -1861,13 +1940,15 @@ sorry mate → 抱歉
     lastContentId = cid;
     if (prev === null) { backendPullBundle(cid); return; }   // 首次確定影片
 
-    console.log(`%c[f1zh] 偵測到影片切換 ${prev} → ${cid}，重置狀態`, 'color:#e10600');
+    setPhase('切換影片');
+    evInfo(`偵測到影片切換 ${prev} → ${cid}，重置狀態`);
     harvestGen++;                              // 讓還在跑的收割迴圈自行中止
     backendPushBundle(prev);                   // 先把舊影片的成果貢獻出去
     sessionKeys.clear();
     uploadedKeys.clear();
     playbackSecs = 0; prefetchWarned = false;  // 新影片重新計時
     bundleSegCount = 0; bundleLineCount = 0; harvestComplete = false;
+    everSawCaption = false; hintShownAt = 0; videoMissingSince = 0;
     stats.segFetched = 0; stats.segFailed = 0; stats.playlistSegs = 0;
     // memo 保留（key 是正規化後的原文，不同影片不會撞，重看還能受惠），其餘全清
     lastRaw = ''; lastSeenCaption = '';
@@ -1884,17 +1965,39 @@ sorry mate → 抱歉
 
   // ---- 健康檢查：播放中卻長時間沒有字幕 ----
   let hintShownAt = 0;
+
+  /**
+   * F1TV 有大量本來就沒有旁白的片段：開場動畫、車手宣傳片、純音樂剪輯、賽道空拍。
+   * 「播放中 45 秒沒字幕」完全無法分辨「壞了」和「這段本來就沒人說話」。
+   *
+   * 正確的判斷是「這次播放曾經看到過字幕嗎」：
+   *   看過至少一句 → CC 確定正常 → 之後再長的空白都只是內容，永遠不提示
+   *   從未看過     → 再看有沒有 VTT 資料來決定訊號強度
+   *
+   * 寧可漏報也不要誤報。誤報會讓人覺得工具不可靠。
+   */
   function checkCaptionHealth() {
     if (!enabled) return;
     const v = document.querySelector('video');
     if (!v || v.paused || !captionContainers().length) { lastNonEmptyAt = Date.now(); return; }
     if (Date.now() - lastNonEmptyAt < CFG.noCaptionWarnMs) return;
-    lastNonEmptyAt = Date.now();                       // 重置，避免連續觸發
-    if (Date.now() - hintShownAt < 120000) return;     // 兩分鐘內只提示一次
+    lastNonEmptyAt = Date.now();
+
+    // 看過字幕就代表 CC 正常運作，現在只是沒有旁白的片段
+    if (everSawCaption) return;
+
+    if (Date.now() - hintShownAt < 300000) return;     // 五分鐘內只提示一次
     hintShownAt = Date.now();
-    console.warn('[f1zh] ⚠ 播放中但長時間沒有字幕 — 切換視角後播放器可能把 CC 關掉了，' +
-      '請到播放器設定重新開啟英文字幕。');
-    if (CFG.showCaptionHint) show('⚠ 未偵測到字幕，請確認播放器的 CC 已開啟', '');
+
+    const haveSubtitleData = stats.vttParsed > 0 || stats.beDownloaded > 0 || memo.size > 0;
+    if (haveSubtitleData) {
+      // 高訊號：我們知道這支影片確實有字幕，但畫面從來沒顯示過 → 幾乎確定是 CC 沒開
+      evWarn('這支影片有字幕資料，但畫面上從未出現字幕 — 播放器的 CC 應該是關著的');
+      if (CFG.showCaptionHint) show('⚠ 請在播放器設定開啟英文字幕 (CC)', '');
+    } else {
+      // 低訊號：可能真的是無旁白片段。只記錄，不打擾使用者
+      evInfo('播放中但尚未取得任何字幕（可能是無旁白片段，或 CC 未開啟）');
+    }
   }
 
   function hookTracks(video) {
@@ -1979,8 +2082,10 @@ sorry mate → 抱歉
         '  執行 __f1zh.netlog() 可看攔到哪些網址。');
     }, 1500);
 
-    console.log(`%c[f1zh] F1TV 繁中字幕 v4.6.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
-      'color:#e10600;font-weight:bold');
+    setPhase('等待播放');
+    evOk(`PitLingo v${VERSION} 已載入　|　共用後端：${backendOn() ? '已啟用' : '未設定'}　|　` +
+      `翻譯：${enabled ? '開啟' : '關閉'}`);
+    evInfo('提示：油猴選單的「📋 匯出完整診斷」可一鍵複製所有狀態');
   }
 
   if (document.readyState === 'loading') {
@@ -2081,6 +2186,81 @@ sorry mate → 抱歉
   GM_registerMenuCommand('👁 顯示 / 隱藏原生英文字幕', () => {
     CFG.hideNativeCC = !CFG.hideNativeCC; applyHideNative();
     alert('原生英文字幕：' + (CFG.hideNativeCC ? '隱藏' : '顯示'));
+  });
+
+  // 把所有狀態組成一份可直接貼給開發者的純文字報告
+  function buildDiagnostics() {
+    const L = [];
+    const v = document.querySelector('video');
+    const rootEl = document.querySelector(CFG.captionRoot);
+    const totalCalls = stats.calls + stats.batchCalls;
+    const cost = (stats.inTok / 1e6) * 1 + (stats.cacheWrite / 1e6) * 1.25
+               + (stats.cacheRead / 1e6) * 0.10 + (stats.outTok / 1e6) * 5;
+
+    L.push('════════ PitLingo 診斷報告 ════════');
+    L.push(`產生時間　：${new Date().toISOString()}`);
+    L.push(`腳本版本　：v${VERSION}`);
+    L.push(`目前階段　：${phase}`);
+    L.push(`網址　　　：${location.href}`);
+    L.push(`UA　　　　：${navigator.userAgent}`);
+    L.push('');
+    L.push('──── 影片與字幕 ────');
+    L.push(`contentId　：${currentContentId() || '(無)'}（網址解析 ${(location.pathname.match(/\/detail\/(\d+)/) || [])[1] || '-'} / 觀察值 ${seenContentId || '-'}）`);
+    L.push(`video 元素 ：${v ? `有（${v.paused ? '暫停' : '播放中'} ${v.currentTime.toFixed(1)}s / ${v.duration}）` : '無'}`);
+    L.push(`字幕容器　：${captionContainers().length} 個（已掛載 ${hookedRoots}）`);
+    L.push(`容器原始文字長度：${rootEl ? (rootEl.textContent || '').trim().length : 0} 字`);
+    L.push(`目前抓到　：${collectCaption() || '(空)'}`);
+    L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}　距上次 ${Math.round((Date.now() - lastNonEmptyAt) / 1000)} 秒`);
+    L.push(`隱藏原生CC：${CFG.hideNativeCC ? '是' : '否'}　翻譯：${enabled ? '開啟' : '關閉'}`);
+    L.push('');
+    L.push('──── 共用譯文後端 ────');
+    L.push(`位址　　　：${backendOn() ? backendBase() : '(未設定，純本機模式)'}`);
+    L.push(`權限　　　：${GM_getValue('adminToken', '') ? '可上傳' : '唯讀'}`);
+    L.push(`下載/上傳 ：${stats.beDownloaded} / ${stats.beUploaded} 句　錯誤 ${stats.beErrors}`);
+    L.push(`待上傳　　：${pendingUpload().n} 句（已上傳過 ${uploadedKeys.size} 句）`);
+    L.push(`快取完整度：後端記錄 ${bundleSegCount} 段 / ${bundleLineCount} 句`);
+    L.push('');
+    L.push('──── 前瞻預譯 ────');
+    L.push(`收割狀態　：${harvestInFlight ? '進行中' : '閒置'}　世代 ${harvestGen}　已跳過 ${stats.harvestSkipped} 次`);
+    L.push(`清單/已抓 ：${stats.playlistSegs} / ${stats.segFetched} 段（失敗 ${stats.segFailed}）`);
+    L.push(`完整旗標　：${harvestComplete}`);
+    L.push(`Worker　　：注入 ${stats.workerPatched} / 偵測 ${stats.workers}　收到 VTT ${stats.workerVtt} 份`);
+    L.push(`主執行緒VTT：${stats.vttSeen} 次（解析 ${stats.vttParsed}）`);
+    L.push(`已預譯　　：${stats.prefetched} 句　待翻佇列 ${prefetchQueue.length} 句`);
+    L.push(`本機快取　：${memo.size} 句`);
+    L.push(`提前量中位：${medianLead() != null ? medianLead() + ' ms' : '樣本不足'}　採用等待 ${Math.round(effectiveFlushDelay())} ms`);
+    L.push('');
+    L.push('──── 用量與成本 ────');
+    L.push(`逐句 ${stats.calls} 次 / 批次 ${stats.batchCalls} 次（平均 ${stats.batchCalls ? (stats.prefetched / stats.batchCalls).toFixed(1) : 0} 句）`);
+    L.push(`命中 ${stats.hits} 次　錯誤 ${stats.errors} 次　平均耗時 ${totalCalls ? Math.round(stats.totalMs / totalCalls) : 0} ms`);
+    L.push(`tokens：未快取輸入 ${stats.inTok} / 快取寫 ${stats.cacheWrite} / 快取讀 ${stats.cacheRead} / 輸出 ${stats.outTok}`);
+    L.push(`本次花費：US$${cost.toFixed(4)}`);
+    L.push('');
+    L.push('──── 設定 ────');
+    ['model', 'batchSize', 'flushDelayMs', 'adaptiveFlush', 'fullPrefetch', 'prefetch',
+     'workerInject', 'fetchConcurrency', 'captionPollMs', 'captionRoot', 'captionLabel']
+      .forEach(k => L.push(`${k} = ${JSON.stringify(CFG[k])}`));
+    L.push('');
+    L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 120)} 筆）────`);
+    L.push(eventLog.slice(-120).join('\n'));
+    L.push('');
+    L.push(`──── 網路記錄（最近 ${Math.min(netlog.length, 40)} 筆）────`);
+    L.push(netlog.slice(-40).map(x => `${x.t} ${x.kind.padEnd(14)} ${x.url}`).join('\n'));
+    L.push('');
+    L.push('════════ 報告結束 ════════');
+    return L.join('\n');
+  }
+
+  GM_registerMenuCommand('📋 匯出完整診斷（複製到剪貼簿）', () => {
+    const report = buildDiagnostics();
+    try {
+      GM_setClipboard(report, 'text');
+      console.log(report);
+      alert(`診斷報告已複製到剪貼簿（${report.length} 字元），也印在 Console。\n\n直接貼給開發者即可。`);
+    } catch (e) {
+      console.log(report);
+      alert('無法寫入剪貼簿，報告已印在 Console，請從那裡複製。');
+    }
   });
 
   GM_registerMenuCommand('🩺 掛載狀態自我診斷', () => {
@@ -2195,6 +2375,8 @@ sorry mate → 抱歉
     netlog: () => { console.table(netlog); return netlog.length; },
     manifests: () => { manifests.forEach(m => { console.log('=== ' + m.url); console.log(m.body); }); return manifests.length; },
     lead: () => ({ median: medianLead(), samples: leadSamples.slice(), using: Math.round(effectiveFlushDelay()) }),
+    diag: () => { const r = buildDiagnostics(); console.log(r); return r; },
+    events: () => { console.log(eventLog.join('\n')); return eventLog.length; },
     subPlaylist: () => {
       const s = findSubtitlePlaylist();
       if (s) console.log('[f1zh] 字幕清單:', s.how, '\n', s.url, '\nbody 已在手上:', !!s.body);
