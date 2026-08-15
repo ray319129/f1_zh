@@ -330,8 +330,29 @@ export default {
         return json({ ok: true, ts: new Date().toISOString(), model: MODEL });
       }
 
-      if (path === '/v1/config') {
-        return json(REMOTE_CONFIG, 200, { 'cache-control': 'public, max-age=300' });
+      // 遠端設定優先讀 KV，讀不到才用內建預設。
+      // 這樣 F1TV 改版時只要 POST 一次就能救所有使用者，不必重新部署 Worker。
+      if (path === '/v1/config' && request.method === 'GET') {
+        const raw = await env.SUBS.get('config');
+        let cfg = REMOTE_CONFIG;
+        if (raw) { try { cfg = JSON.parse(raw); } catch (e) { /* 壞掉就用內建的 */ } }
+        return json(cfg, 200, { 'cache-control': 'public, max-age=60' });
+      }
+
+      // 熱修入口：改選擇器不用重新部署，也不用等商店審核
+      if (path === '/v1/config' && request.method === 'POST') {
+        if (request.headers.get('x-admin-token') !== env.ADMIN_TOKEN) return err('unauthorized', 401);
+        const body = await request.json().catch(() => null);
+        if (!body || !Array.isArray(body.sites)) return err('需要 { version, sites: [...] }');
+        await env.SUBS.put('config', JSON.stringify(body));
+        return json({ ok: true, version: body.version, sites: body.sites.length });
+      }
+
+      // 出事時的還原鍵：刪掉 KV 就回到內建預設
+      if (path === '/v1/config' && request.method === 'DELETE') {
+        if (request.headers.get('x-admin-token') !== env.ADMIN_TOKEN) return err('unauthorized', 401);
+        await env.SUBS.delete('config');
+        return json({ ok: true, reverted: true, version: REMOTE_CONFIG.version });
       }
 
       if (path === '/v1/subs' && request.method === 'GET') {

@@ -14,7 +14,10 @@
 importScripts('/src/shared/normalize.js', '/src/shared/defaults.js');
 
 const BACKEND = self.PL.BACKEND;
-const CONFIG_TTL_MS = 6 * 60 * 60 * 1000;   // 遠端設定快取 6 小時
+// 遠端設定是「F1TV 改版時能不能在幾分鐘內救回所有使用者」的唯一保障。
+// 原本設 6 小時，那等於比賽日出事就整場報銷——TTL 必須短於一次比賽的長度。
+// 這個請求很小，多打幾次不痛不癢。
+const CONFIG_TTL_MS = 10 * 60 * 1000;       // 10 分鐘
 
 // 生命週期內的記憶體快取。被殺掉就沒了，但 storage 裡有備份。
 const memCache = {
@@ -344,6 +347,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       switch (msg && msg.type) {
         case 'getConfig':
+          sendResponse({ ok: true, config: await getConfig() });
+          break;
+        case 'refreshConfig':
+          // 強制丟掉快取重抓 —— 驗證熱修流程與緊急狀況都要用到
+          memCache.config = null;
+          await chrome.storage.local.remove('configCache');
           sendResponse({ ok: true, config: await getConfig() });
           break;
         case 'getSettings':

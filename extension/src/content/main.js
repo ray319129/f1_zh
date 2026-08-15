@@ -641,6 +641,44 @@
    * inject.js 在 worker 內攔到之後用 BroadcastChannel 送到 MAIN world，
    * MAIN world 再用 window.postMessage 轉給這裡（只有這裡有 chrome.* API）。
    */
+  /**
+   * 重讀遠端設定並就地套用。
+   *
+   * 這是「F1TV 改版時能在幾分鐘內救回所有使用者」的最後一哩：
+   * 後端推了新選擇器之後，這裡會在下一次輪詢時換上去，
+   * 使用者不用重新整理，影片也不用中斷。
+   */
+  const CONFIG_RECHECK_MS = 60000;
+  let configVersion = -1;
+
+  async function applyRemoteConfig(force) {
+    const res = await send({ type: force ? 'refreshConfig' : 'getConfig' });
+    const config = (res.ok && res.config) || null;
+    if (!config) return false;
+    const next = siteConfigFor(config, location.hostname);
+    if (!next) return false;
+
+    const changed = config.version !== configVersion
+      || JSON.stringify(next) !== JSON.stringify(site);
+    if (!changed) return false;
+
+    const prevVersion = configVersion;
+    configVersion = config.version;
+    site = next;
+
+    // 選擇器換了就把觀察者整組重掛，並清掉「已隱藏」的樣式重新套用
+    observedNodes = new Set();
+    if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }
+    applyHideNative();
+    lastSeenCaption = ''; lastRaw = '';
+
+    if (prevVersion >= 0) {
+      evOk(`⚙ 遠端設定已更新 v${prevVersion} → v${configVersion}，選擇器已就地套用`
+        + `（root: ${(site.captionRoot || []).join(', ')}）`);
+    }
+    return true;
+  }
+
   const MARK = '__pitlingo_vtt__';
   function installInjectBridge() {
     window.addEventListener('message', (ev) => {
@@ -908,6 +946,7 @@
     const config = (cfgRes.ok && cfgRes.config) || self.PL.BUILT_IN_CONFIG;
     settings = Object.assign({}, DEFAULT_SETTINGS, (setRes.ok && setRes.settings) || {});
     site = siteConfigFor(config, location.hostname);
+    configVersion = config.version;
 
     if (!site) { evWarn('這個網域沒有對應的設定，不啟用'); return; }
     setPhase('等待播放');
@@ -932,6 +971,11 @@
       mount();
       reposition();
     }, STRUCT_MS);
+
+    // 定期重讀遠端設定並「就地套用」。
+    // 沒有這個的話，F1TV 改版時就算後端已經推了新選擇器，
+    // 使用者還是得自己重新整理頁面才會生效——比賽播到一半沒人會想這樣做。
+    setInterval(applyRemoteConfig, CONFIG_RECHECK_MS);
 
     ['fullscreenchange', 'webkitfullscreenchange', 'resize', 'scroll'].forEach((e) =>
       window.addEventListener(e, () => { mount(); reposition(); }, true));
@@ -1013,6 +1057,7 @@
     L.push('');
     L.push('──── 設定 ────');
     L.push(JSON.stringify(settings));
+    L.push(`遠端設定版本：v${configVersion}（每 ${CONFIG_RECHECK_MS / 1000} 秒重讀一次並就地套用）`);
     L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
     L.push('');
     L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 150)} 筆）────`);
@@ -1034,6 +1079,7 @@
   // 給偵錯用：在 Console 打 window.__pitlingo 可以看目前狀態
   window.__pitlingo = {
     diag: () => { const r = buildDiagnostics(); console.log(r); return r; },
+    reloadConfig: () => applyRemoteConfig(true),   // 立刻重讀遠端設定，不等 60 秒
     events: () => { console.log(eventLog.join('\n')); return eventLog.length; },
     prefetch: () => startPrefetch(contentId),
     get state() {
