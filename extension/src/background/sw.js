@@ -261,12 +261,24 @@ async function resolvePlayback(cid, tokens) {
   attempts.length = Math.min(attempts.length, MAX_AUTH_ATTEMPTS);
 
   let last = null;
+  let best = null;   // 「最接近成功」的一次
+
   for (const a of attempts) {
     const headers = a.v >= 0 ? AUTH_HEADER_VARIANTS[a.v](list[a.ti]) : {};
     let r;
     try { r = await tryPlay(url, headers); }
     catch (e) { last = { status: 0, text: String(e.message || e) }; continue; }
     last = r;
+
+    // 錯誤訊息本身就是進度指示：
+    //   400 Missing parameter…  → header 名稱錯，伺服器根本沒讀到
+    //   401 signature validation failed / expired → header 名稱**對了**，只是值不被接受
+    // 記下最接近的那次，失敗時回報出來，下一輪就知道該往哪個方向查。
+    const reached = /signature|expired|invalid|ACN_3005/i.test(r.text || '');
+    if (reached && !best) {
+      best = { headerNames: Object.keys(headers), status: r.status, msg: String(r.text).slice(0, 160) };
+    }
+
     if (r.ok) {
       if (a.v >= 0) await chrome.storage.local.set({ authRecipe: { variant: a.v, tokenIndex: a.ti } });
       return {
@@ -285,6 +297,7 @@ async function resolvePlayback(cid, tokens) {
     attemptsMade: attempts.length,
     topKeys: last && last.data ? Object.keys(last.data).slice(0, 20) : [],
     hint: last ? String(last.text).slice(0, 260) : '無回應',
+    best,   // header 名稱正確、只是權杖被拒的那一次
   };
 }
 

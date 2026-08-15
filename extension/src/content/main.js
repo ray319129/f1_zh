@@ -413,6 +413,7 @@
   const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_)/i;
   let authTokenCache = null;
   let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
+  let authBestHeader = null;       // 伺服器確實讀到的那個 header 名稱
 
   /** JWT 或夠長的無空白字串才可能是權杖 */
   function looksLikeToken(s) {
@@ -619,6 +620,14 @@
           (pb.topKeys && pb.topKeys.length ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
           (pb.hint ? `
     伺服器回應：${pb.hint}` : ''));
+        if (pb.best) {
+          authBestHeader = pb.best.headerNames.join(' + ');
+          evWarn(`✔ header 名稱正確：${pb.best.headerNames.join(' + ')}（HTTP ${pb.best.status}）
+` +
+            `    伺服器已讀到權杖但不接受 → 值有問題（可能是舊的，或播放器另外換發）
+` +
+            `    ${pb.best.msg}`);
+        }
         evWarn('退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。');
         setPhase('逐句模式');
         return;
@@ -814,6 +823,7 @@
     L.push(`掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：`);
     L.push(authSources.length ? '  ' + authSources.join('\n  ') : '  (尚未掃描)');
     L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含任何權杖內容`);
+    L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
