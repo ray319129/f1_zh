@@ -272,10 +272,14 @@ async function tryPlay(url, headers) {
 async function resolvePlayback(cid, tokens, playUrl) {
   // 優先沿用播放器自己發過的網址：參數（channelId 等）一定完整。
   // 自己拼的話少一個 channelId 就會拿到 500 "Failed to evaluate stream rule"。
-  const url = (typeof playUrl === 'string' && /^https:\/\/f1tv\.formula1\.com\/.*\/CONTENT\/PLAY\?/i.test(playUrl))
-    ? playUrl
-    : `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
-      + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
+  // 只接受播放器自己發過的網址。自行拼接一定缺 channelId（實測必回
+  // 500 "Failed to evaluate stream rule"），而 F1TV 有 Imperva 機器人
+  // 防護，送注定失敗的請求只是在累積風險。
+  if (typeof playUrl !== 'string'
+      || !/^https:\/\/f1tv\.formula1\.com\/[^\s]*\/CONTENT\/PLAY\?/i.test(playUrl)) {
+    return { ok: false, status: 0, noPlayUrl: true, hint: '沒有可用的 PLAY 網址，未送出任何請求' };
+  }
+  const url = playUrl;
 
   const list = (Array.isArray(tokens) ? tokens : []).filter((t) => t && t.v);
   const attempts = buildAttempts(list);

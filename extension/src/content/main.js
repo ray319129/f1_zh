@@ -680,16 +680,47 @@
     if (myGen === harvestGen) liveTimer = setTimeout(() => refreshLive(myGen), LIVE_REFRESH_MS);
   }
 
+  /**
+   * 等播放器自己發出 PLAY 請求。
+   *
+   * 之前是啟動後 0.6 秒就去找，那時播放器根本還沒發——找不到就退回
+   * 自己拼的網址，結果三次全部 500（缺 channelId），而且都白白打在
+   * 有 Imperva 機器人防護的 API 上。
+   *
+   * 寧可多等幾秒，也不要送出一個注定失敗的請求。
+   */
+  function waitForPlayApiUrl(cid, myGen) {
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = () => {
+        if (myGen !== harvestGen) return resolve(null);
+        const u = findPlayApiUrl(cid);
+        if (u) return resolve(u);
+        if (++tries >= 40) return resolve(null);        // 最多等 40 秒
+        setTimeout(tick, 1000);
+      };
+      tick();
+    });
+  }
+
   async function startPrefetch(cid) {
     if (harvestInFlight || !cid) return;
     harvestInFlight = true;
     const myGen = harvestGen;
-    setPhase('取得串流位址');
+    setPhase('等待播放器取得串流位址');
     try {
-      const tokens = await findAuthTokens();
-      const playUrl = findPlayApiUrl(cid);
+      const playUrl = await waitForPlayApiUrl(cid, myGen);
       authPlayUrlFound = !!playUrl;
-      if (playUrl) evInfo(`沿用播放器自己的 PLAY 網址（參數完整，不用猜）`);
+      if (myGen !== harvestGen) return;
+      if (!playUrl) {
+        evWarn('等待 40 秒仍未觀察到播放器的 PLAY 請求。'
+          + '不自行拼接網址送出——缺 channelId 必定 500，且會無謂觸發機器人防護。');
+        setPhase('逐句模式');
+        return;
+      }
+      setPhase('取得串流位址');
+      evInfo('沿用播放器自己的 PLAY 網址（參數完整，不用猜）');
+      const tokens = await findAuthTokens();
       const pb = (await send({ type: 'resolvePlayback', cid, tokens, playUrl })).playback || {};
       if (!pb.ok || !pb.master) {
         const NL = String.fromCharCode(10);
@@ -841,6 +872,10 @@
     applyHideNative();
     mount();
 
+    // 預設的資源計時緩衝只有 250 筆，長時間觀看會把播放器的 PLAY 請求擠出去，
+    // 之後就再也找不到那個網址了。
+    try { performance.setResourceTimingBufferSize(1000); } catch (e) { /* noop */ }
+
     setInterval(pollCaption, POLL_MS);
     setInterval(() => {
       checkContentChange();
@@ -906,7 +941,7 @@
     L.push(`候選來源（依可信度排序）：${authTokenCache && authTokenCache.length
       ? authTokenCache.map((t) => t.src).join(' | ') : '(無)'}`);
     L.push(`格式不合被剔除：${authRejected} 個`);
-    L.push(`沿用播放器的 PLAY 網址：${authPlayUrlFound ? '是（參數完整）' : '否（自行拼接，可能缺 channelId）'}`);
+    L.push(`觀察到播放器的 PLAY 網址：${authPlayUrlFound ? '是（參數完整，已沿用）' : '否（不送出請求，維持逐句模式）'}`);
     L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
