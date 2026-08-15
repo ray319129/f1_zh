@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.7.1
+// @version      4.7.2
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -657,7 +657,7 @@ sorry mate → 抱歉
   // ---- 事件時間軸 ----
   // 所有重要狀態變化都經過這裡：印到 Console 讓人知道現在在做什麼，
   // 同時存進環形緩衝區，「匯出完整診斷」時一併帶出，回報問題不用再翻 Console。
-  const VERSION = '4.7.1';
+  const VERSION = '4.7.2';
   const eventLog = [];
   function logEvent(level, msg) {
     const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;
@@ -1308,7 +1308,14 @@ sorry mate → 抱歉
     }
     // 只有「全部抓齊且零失敗」才算完整，這個旗標會決定上傳時要不要標記 segCount
     harvestComplete = stats.segFailed === 0 && stats.segFetched >= list.length;
-    if (harvestComplete) prefetchDoneForCid = currentContentId();
+    if (harvestComplete) {
+      prefetchDoneForCid = currentContentId();
+      // 把本機的收割成果也登記成「已涵蓋整支影片」。
+      // 這樣任何重新進入（不論是流程旗標被重設，還是使用者手動觸發）
+      // 都會走到既有的「跳過收割」判斷，而不是靠單一旗標防守。
+      bundleSegCount = list.length;
+      bundleLineCount = Math.max(bundleLineCount, sessionKeys.size);
+    }
     setPhase('翻譯中');
     evOk(`整軌預抓完成：${stats.segFetched} 段成功、${stats.segFailed} 段失敗，待翻 ${prefetchQueue.length} 句`);
     drainPrefetch();
@@ -1329,9 +1336,10 @@ sorry mate → 抱歉
     // 併發鎖：手動按鈕會重設 fullPrefetchStarted，若不擋住就會在收割進行中
     // 再啟一條，實測會對 CDN 發出雙倍請求（1056 段抓了 2112 次）
     if (harvestInFlight) {
-      if (force) console.log('[f1zh] 整軌預抓已在進行中，忽略這次觸發');
+      if (force) evWarn('整軌預抓已在進行中，忽略這次觸發');
       return;
     }
+    if (force) evWarn('⚠ 手動強制整軌預抓（會繞過所有自動防護）');
     if (fullPrefetchStarted || !CFG.fullPrefetch || !CFG.prefetch || !enabled) return;
     const cidNow = currentContentId();
     if (!force && cidNow && prefetchDoneForCid === cidNow) return;   // 這支已經決策過了
@@ -2182,6 +2190,18 @@ sorry mate → 抱歉
     if (!manifests.length) { alert('還沒攔到 manifest。請先開始播放，等幾秒再試。'); return; }
     const sp = findSubtitlePlaylist();
     if (!sp) { alert('攔到 ' + manifests.length + ' 份 manifest，但找不到字幕清單。'); return; }
+
+    // 已經抓完整支就別默默再抓一次。手動觸發是刻意繞過所有自動防護的，
+    // 若不在這裡攔住，按一下就是白白對 CDN 再發上千個請求。
+    if (bundleLineCount > 0 && bundleSegCount > 0) {
+      const msg = `本片的字幕已經完整取得了：\n\n` +
+        `　分段 ${bundleSegCount} 段\n　譯文 ${bundleLineCount} 句\n` +
+        `　待翻佇列 ${prefetchQueue.length} 句\n\n` +
+        `重新抓一次會再向 CDN 發 ${bundleSegCount} 個請求，而且幾乎不會找到新句子。\n\n` +
+        `確定要強制重抓嗎？`;
+      if (!confirm(msg)) return;
+    }
+
     fullPrefetchStarted = false;
     prefetchAttempts = 0;
     startFullPrefetch(true);
