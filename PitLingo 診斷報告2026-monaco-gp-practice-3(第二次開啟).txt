@@ -1,0 +1,153 @@
+════════ PitLingo 診斷報告 ════════
+產生時間　：2026-08-15T18:32:28.010Z
+腳本版本　：v4.7.0
+目前階段　：就緒
+網址　　　：https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010262（網址解析 1000010262 / 觀察值 1000010262）
+video 元素 ：有（播放中 45.2s / Infinity）
+字幕容器　：1 個（已掛載 2）
+容器原始文字長度：16 字
+目前抓到　：For the details.
+曾看到字幕：是　距上次 0 秒
+隱藏原生CC：是　翻譯：開啟
+
+──── 共用譯文後端 ────
+位址　　　：https://f1zh-api.pitlingo.workers.dev
+權限　　　：可上傳
+下載/上傳 ：1855 / 1838 句　錯誤 0
+待上傳　　：0 句（已上傳過 0 句）
+快取完整度：後端記錄 1042 段 / 1823 句
+
+──── 前瞻預譯 ────
+收割狀態　：閒置　世代 3　已跳過 2 次
+清單/已抓 ：1042 / 0 段（失敗 0）
+完整旗標　：false
+Worker　　：注入 2 / 偵測 2　收到 VTT 92 份
+主執行緒VTT：1134 次（解析 1110）
+已預譯　　：1838 句　待翻佇列 0 句
+本機快取　：3693 句
+提前量中位：樣本不足　採用等待 8000 ms
+
+──── 用量與成本 ────
+逐句 0 次 / 批次 128 次（平均 14.4 句）
+命中 179 次　錯誤 0 次　平均耗時 3048 ms
+tokens：未快取輸入 26403 / 快取寫 0 / 快取讀 1016320 / 輸出 31117
+本次花費：US$0.2836
+
+──── 設定 ────
+model = "claude-haiku-4-5"
+batchSize = 15
+flushDelayMs = 8000
+adaptiveFlush = true
+fullPrefetch = true
+prefetch = true
+workerInject = true
+fetchConcurrency = 3
+captionPollMs = 250
+captionRoot = ".tm-subtitle-region-container"
+captionLabel = ".tm-ui-subtitle-label"
+
+──── 事件時間軸（最近 56 筆）────
+[18:24:17.569] INFO ▶ 等待播放
+[18:24:17.570] OK   PitLingo v4.7.0 已載入　|　共用後端：已啟用　|　翻譯：開啟
+[18:24:17.570] INFO 提示：油猴選單的「📋 匯出完整診斷」可一鍵複製所有狀態
+[18:24:17.951] OK   ☁ 從共用快取取得 1855 句譯文（cid 1000010261），這些不會再花錢
+[18:24:41.573] INFO ▶ 切換影片
+[18:24:41.573] INFO 偵測到影片切換 1000010261 → 1000010262，重置狀態
+[18:24:42.527] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[18:24:44.573] INFO ▶ 收割中
+[18:24:44.573] INFO 🎯 找到字幕播放清單（eng，由 master 解析）
+[18:24:45.065] INFO 字幕分段共 1042 個，開始抓取
+[18:24:45.601] OK   ✅ 攔截到 VTT 字幕，已啟動前瞻批次預譯
+[18:24:52.528] INFO ▶ 翻譯中
+[18:24:52.528] INFO 開始翻譯 16 句（約 2 次呼叫）
+[18:24:56.370] OK   ✅ Prompt caching 生效（寫入 0 / 讀取 7940 tokens）
+[18:24:56.370] INFO 翻譯進度 90%（15/16 句，剩 3 句）
+[18:25:02.541] OK   已偵測到第一句字幕，CC 運作正常
+[18:25:13.537] OK   翻譯完成：82 句
+[18:25:13.537] INFO ▶ 就緒
+[18:25:16.949] INFO ▶ 翻譯中
+[18:25:16.949] INFO 開始翻譯 16 句（約 2 次呼叫）
+[18:25:19.908] INFO 翻譯進度 90%（15/16 句，剩 8 句）
+[18:25:20.763] OK   ☁ 已上傳 82 句到共用快取（該影片累計 82 句）
+[18:25:43.528] INFO 收割進度 10%（105/1042 段，待翻 28 句）
+[18:26:10.192] INFO 收割進度 20%（209/1042 段，待翻 129 句）
+[18:26:19.370] OK   ☁ 已上傳 289 句到共用快取（該影片累計 371 句）
+[18:26:40.096] INFO 收割進度 30%（313/1042 段，待翻 243 句）
+[18:27:04.066] INFO 收割進度 40%（417/1042 段，待翻 364 句）
+[18:27:20.394] OK   ☁ 已上傳 298 句到共用快取（該影片累計 669 句）
+[18:27:36.730] INFO 收割進度 50%（521/1042 段，待翻 438 句）
+[18:27:55.520] INFO 收割進度 60%（626/1042 段，待翻 594 句）
+[18:28:20.409] OK   ☁ 已上傳 278 句到共用快取（該影片累計 947 句）
+[18:28:42.650] INFO 收割進度 70%（730/1042 段，待翻 608 句）
+[18:29:02.728] INFO 收割進度 80%（834/1042 段，待翻 756 句）
+[18:29:20.516] OK   ☁ 已上傳 280 句到共用快取（該影片累計 1227 句）
+[18:29:22.350] INFO 收割進度 90%（938/1042 段，待翻 915 句）
+[18:30:18.327] OK   整軌預抓完成：1042 段成功、0 段失敗，待翻 891 句
+[18:30:21.171] OK   ☁ 已上傳 284 句到共用快取（該影片累計 1511 句）
+[18:31:20.275] OK   ☁ 已上傳 282 句到共用快取（該影片累計 1793 句，已標記完整：1042 段）
+[18:31:25.071] INFO ▶ 切換影片
+[18:31:25.072] INFO 偵測到影片切換 1000010262 → 1000010261，重置狀態
+[18:31:26.057] OK   翻譯完成：1774 句
+[18:31:26.057] INFO ▶ 就緒
+[18:31:26.596] OK   ☁ 已上傳 30 句到共用快取（該影片累計 1823 句，已標記完整：1042 段）
+[18:31:28.984] OK   ☁ 已上傳 15 句到共用快取（該影片累計 1870 句，已標記完整：1076 段）
+[18:31:29.570] INFO ▶ 切換影片
+[18:31:29.570] INFO 偵測到影片切換 1000010261 → 1000010262，重置狀態
+[18:31:35.998] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[18:31:37.073] INFO ▶ 收割中
+[18:31:37.073] INFO 🎯 找到字幕播放清單（eng，由 master 解析）
+[18:31:37.413] INFO ▶ 就緒
+[18:31:37.413] OK   ⏭ 共用快取已涵蓋整支影片（1823 句 / 1042 段），跳過整軌預抓
+[18:31:47.024] OK   已偵測到第一句字幕，CC 運作正常
+[18:32:11.961] INFO ▶ 收割中
+[18:32:11.961] INFO 🎯 找到字幕播放清單（eng，直接攔到字幕清單）
+[18:32:11.969] INFO ▶ 就緒
+[18:32:11.969] OK   ⏭ 共用快取已涵蓋整支影片（1823 句 / 1042 段），跳過整軌預抓
+
+──── 網路記錄（最近 40 筆）────
+18:31:34 fetch          https://www.google-analytics.com/g/collect?v=2&tid=G-D9BP6Y3R6M&gtm=45je68c1v877506130za200zd877506130&_p=1786818259920&gcs=G111&gcd=13n3n3n3n5l1&npa=0&dma_cps=a&dma=1&tcfd=1065a&gdid=dMjkzMm&_eu=AAAAAAQC&_fid=dmWZvoa0XT
+18:31:35 xhr:blob       https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY?channelId=1033&contentId=1000010262&player=player_tm
+18:31:35 xhr:text       blob:https://f1tv.formula1.com/bebf746e-375f-4e81-b46a-3b61b705219c
+18:31:35 WORKER         blob:https://f1tv.formula1.com/a30eec29-321e-40d4-a405-e9194b5cad10
+18:31:36 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:37 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:37 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:37 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:37 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:38 xhr:text       https://bam.nr-data.net/jserrors/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=441535&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&
+18:31:39 xhr:text       https://bam.nr-data.net/events/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=441536&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&pt
+18:31:39 xhr:text       https://bam.nr-data.net/resources/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=442205&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3
+18:31:40 fetch          https://www.google-analytics.com/g/collect?v=2&tid=G-D9BP6Y3R6M&gtm=45je68c1v877506130za200zd877506130&_p=1786818259920&gcs=G111&gcd=13n3n3n3n5l1&npa=0&dma_cps=a&dma=1&tcfd=1065a&gdid=dMjkzMm&_eu=AAAAAAQC&_fid=dmWZvoa0XT
+18:31:45 worker:MANIFEST https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:46 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:46 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:48 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:48 xhr:text       https://bam.nr-data.net/events/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=451537&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&pt
+18:31:48 xhr:text       https://bam.nr-data.net/ins/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=451460&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&ptid=
+18:31:48 xhr:text       https://bam.nr-data.net/jserrors/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=451537&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&
+18:31:49 xhr:text       https://bam.nr-data.net/resources/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=452208&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3
+18:31:50 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:51 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:52 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:53 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:53 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:31:54 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:01 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:02 xhr:text       https://bam.nr-data.net/jserrors/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=465006&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&
+18:32:02 xhr:text       https://bam.nr-data.net/resources/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=465007&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3
+18:32:03 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:09 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:13 xhr:text       https://bam.nr-data.net/jserrors/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=475011&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&
+18:32:13 xhr:text       https://bam.nr-data.net/resources/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=475012&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3
+18:32:15 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:21 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+18:32:22 xhr:text       https://bam.nr-data.net/jserrors/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=485013&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3&
+18:32:22 xhr:text       https://bam.nr-data.net/resources/1/NRJS-0824a09d21af6db759a?a=379418656&sa=1&v=1.237.1&t=Unnamed%20Transaction&rst=485013&ck=0&s=5cfcce92980b48db&ref=https://f1tv.formula1.com/detail/1000010262/2026-monaco-gp-practice-3
+18:32:24 xhr:blob       https://f1tv.formula1.com/?drmode=webv2
+18:32:26 worker:VTT     https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGY2NhYzkwMzdhOTAxNGMzNGE0MWJiNjU4YzQwZWNiMjYlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0Mnxl
+
+════════ 報告結束 ════════

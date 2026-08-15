@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.7.0
+// @version      4.7.1
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -657,7 +657,7 @@ sorry mate → 抱歉
   // ---- 事件時間軸 ----
   // 所有重要狀態變化都經過這裡：印到 Console 讓人知道現在在做什麼，
   // 同時存進環形緩衝區，「匯出完整診斷」時一併帶出，回報問題不用再翻 Console。
-  const VERSION = '4.7.0';
+  const VERSION = '4.7.1';
   const eventLog = [];
   function logEvent(level, msg) {
     const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;
@@ -1246,6 +1246,10 @@ sorry mate → 抱歉
   let prefetchAttempts = 0;
   const PREFETCH_MAX_ATTEMPTS = 3;
 
+  // 以 contentId 為鍵的保險。fullPrefetchStarted 是流程旗標，可能被別處重設；
+  // 這個只在「真的換影片」時才清掉，確保同一支影片的預抓決策只做一次。
+  let prefetchDoneForCid = null;
+
   /**
    * 收割中止判斷。
    * 光看 contentId 不夠：使用者點播放器左上角的返回時，網址可能完全沒變，
@@ -1304,6 +1308,7 @@ sorry mate → 抱歉
     }
     // 只有「全部抓齊且零失敗」才算完整，這個旗標會決定上傳時要不要標記 segCount
     harvestComplete = stats.segFailed === 0 && stats.segFetched >= list.length;
+    if (harvestComplete) prefetchDoneForCid = currentContentId();
     setPhase('翻譯中');
     evOk(`整軌預抓完成：${stats.segFetched} 段成功、${stats.segFailed} 段失敗，待翻 ${prefetchQueue.length} 句`);
     drainPrefetch();
@@ -1328,6 +1333,8 @@ sorry mate → 抱歉
       return;
     }
     if (fullPrefetchStarted || !CFG.fullPrefetch || !CFG.prefetch || !enabled) return;
+    const cidNow = currentContentId();
+    if (!force && cidNow && prefetchDoneForCid === cidNow) return;   // 這支已經決策過了
     // 失敗就別再無限重試 —— 這個函式掛在 1.5 秒的輪詢裡，
     // 沒有上限的話會一直洗版並反覆打 CDN
     if (!force && prefetchAttempts >= PREFETCH_MAX_ATTEMPTS) return;
@@ -1358,6 +1365,7 @@ sorry mate → 抱歉
         setPhase('就緒');
         evOk(`⏭ 共用快取已涵蓋整支影片（${bundleLineCount} 句 / ${segs.length} 段），跳過整軌預抓`);
         stats.harvestSkipped++;
+        prefetchDoneForCid = cidNow;
         return;
       }
       evInfo(`字幕分段共 ${segs.length} 個，開始抓取` +
@@ -1600,8 +1608,15 @@ sorry mate → 抱歉
       if (!t || t.length < 2) continue;
       const k = normKey(t);
       // 分段 VTT 前後會重疊，且同一句可能已翻過
-      if (!k || prefetchSeen.has(k) || memo.has(k)) continue;
+      if (!k || prefetchSeen.has(k)) continue;
       prefetchSeen.add(k);
+
+      // 已經有譯文（可能來自共用快取，或來自剛才看的另一支影片）就不用再翻，
+      // 但**一定要算進本片的成果**——這句確實出現在這支影片的 VTT 裡。
+      // 少了這一步，跨影片重複的句子會既不翻譯也不上傳，
+      // 伺服器上這支的 bundle 就會缺角，害下一個全新觀看者白花錢。
+      if (memo.has(k)) { sessionKeys.add(k); continue; }
+
       prefetchQueue.push(t);
       enqueuedAt.set(k, Date.now());
       if (enqueuedAt.size > 3000) enqueuedAt.delete(enqueuedAt.keys().next().value);
@@ -1949,6 +1964,7 @@ sorry mate → 抱歉
     playbackSecs = 0; prefetchWarned = false;  // 新影片重新計時
     bundleSegCount = 0; bundleLineCount = 0; harvestComplete = false;
     everSawCaption = false; hintShownAt = 0; videoMissingSince = 0;
+    prefetchDoneForCid = null;
     stats.segFetched = 0; stats.segFailed = 0; stats.playlistSegs = 0;
     // memo 保留（key 是正規化後的原文，不同影片不會撞，重看還能受惠），其餘全清
     lastRaw = ''; lastSeenCaption = '';
@@ -2207,7 +2223,7 @@ sorry mate → 抱歉
     L.push('──── 影片與字幕 ────');
     L.push(`contentId　：${currentContentId() || '(無)'}（網址解析 ${(location.pathname.match(/\/detail\/(\d+)/) || [])[1] || '-'} / 觀察值 ${seenContentId || '-'}）`);
     L.push(`video 元素 ：${v ? `有（${v.paused ? '暫停' : '播放中'} ${v.currentTime.toFixed(1)}s / ${v.duration}）` : '無'}`);
-    L.push(`字幕容器　：${captionContainers().length} 個（已掛載 ${hookedRoots}）`);
+    L.push(`字幕容器　：${captionContainers().length} 個（觀察中 ${observedNodes.size}，累計重掛 ${hookedRoots} 次）`);
     L.push(`容器原始文字長度：${rootEl ? (rootEl.textContent || '').trim().length : 0} 字`);
     L.push(`目前抓到　：${collectCaption() || '(空)'}`);
     L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}　距上次 ${Math.round((Date.now() - lastNonEmptyAt) / 1000)} 秒`);
