@@ -16,6 +16,17 @@
   line-height: 1.35;
   opacity: 0;
   transition: opacity 0.12s ease;
+
+  /*
+   * 中文與英文必須上下堆疊。
+   * 兩個子元素都是 inline-block，若父層不是 flex 就會並排在同一行——
+   * userscript 版本是靠一個 <br> 分隔的，移植過來時拿掉了 <br> 卻沒改排版。
+   * 用 flex column 比 <br> 乾淨，也不受子元素 display 值影響。
+   */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
 }
 
 #pitlingo-box.on { opacity: 1; }
@@ -37,6 +48,12 @@
   border-radius: 5px;
   padding: 2px 12px;
   display: inline-block;
-  margin-top: 3px;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* 尚未取得譯文時的等待指示（只有逐句即時翻譯路徑會用到） */
+#pitlingo-zh.pending {
+  color: #b9c0c8;
+  font-weight: 400;
+  font-style: italic;
 }

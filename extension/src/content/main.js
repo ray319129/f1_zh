@@ -24,7 +24,13 @@
 
   const POLL_MS = 250;             // 主動輪詢字幕的間隔（偵測主力）
   const STRUCT_MS = 1500;          // 結構性檢查的間隔
-  const PENDING_FLUSH_MS = 1200;   // 未命中的句子聚合多久後送去翻譯
+
+  // 逐句即時翻譯（後備路徑）的節流參數。
+  // 這條路只有在影片沒被預先收割時才會用到，本來就追不上 F1 的語速，
+  // 但至少要把「等待聚合」與「一次只能飛一個請求」這兩個自找的瓶頸拿掉。
+  const PENDING_FLUSH_MS = 300;    // 原本 1200ms，光是等待就吃掉大半預算
+  const MAX_INFLIGHT = 3;          // 允許並行，否則第二句要等第一句回來才送
+  const BATCH_MAX = 20;
 
   let settings = Object.assign({}, DEFAULT_SETTINGS);
   let site = null;                 // 目前網域適用的選擇器設定
@@ -38,9 +44,10 @@
   let lastRaw = '';
   let everSawCaption = false;
 
-  const pending = new Map();       // normKey -> 原文（等待翻譯）
+  const pending = new Map();       // normKey -> 原文（待送出）
+  const requested = new Set();     // 已送出、等待回應中的 normKey
   let pendingTimer = null;
-  let translating = false;
+  let inflight = 0;
 
   const state = { bundleCount: 0, translated: 0, misses: 0, errors: 0 };
 
@@ -194,43 +201,64 @@
   // =========================================================================
   // 翻譯：先查快取，未命中才聚合送後端
   // =========================================================================
+  let currentEn = '';              // 畫面上正在顯示的英文原句
+
   function handleCaption(raw) {
     const text = clean(raw);
     if (!text || text.length < 2 || text === lastRaw) return;
     lastRaw = text;
+    currentEn = text;
 
     const k = normKey(text);
     const hit = memo.get(k);
     if (hit) { render(hit, text); return; }
 
     state.misses++;
-    // 沒有預先收割過的影片才會走到這裡。聚合一下再送，避免一句一個請求。
+    // 走到這裡代表這支影片沒被預先收割過。
+    // 先把英文推上畫面（總比空白好），譯文回來後會就地覆蓋。
+    renderPending(text);
+
+    if (requested.has(k)) return;  // 已經送出去了，等回應就好
     pending.set(k, text);
-    if (!pendingTimer) pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS);
+    scheduleFlush();
+  }
+
+  function scheduleFlush() {
+    if (pendingTimer) return;
+    pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS);
   }
 
   async function flushPending() {
     pendingTimer = null;
-    if (translating || !pending.size) return;
-    translating = true;
-    const batch = Array.from(pending.values()).slice(0, 40);
-    const keys = Array.from(pending.keys()).slice(0, 40);
-    keys.forEach((k) => pending.delete(k));
+    if (!pending.size) return;
+    if (inflight >= MAX_INFLIGHT) { scheduleFlush(); return; }
+
+    const keys = Array.from(pending.keys()).slice(0, BATCH_MAX);
+    const batch = keys.map((k) => pending.get(k));
+    keys.forEach((k) => { pending.delete(k); requested.add(k); });
+
+    inflight++;
     try {
       const res = await send({ type: 'translate', cid: contentId, lines: batch });
       const lines = (res.ok && res.result && res.result.lines) || {};
       let n = 0;
       for (const [k, zh] of Object.entries(lines)) { memo.set(k, zh); n++; }
       state.translated += n;
-      if (res.ok && res.result && res.result.error) { state.errors++; log('翻譯後端回報錯誤：', res.result.error); }
-      // 剛翻好的那句可能正好還在畫面上，補顯示
-      const cur = collectCaption();
-      if (cur) { const zh = memo.get(normKey(clean(cur))); if (zh) render(zh, clean(cur)); }
+      if (res.ok && res.result && res.result.error) {
+        state.errors++;
+        log('翻譯後端回報錯誤：', res.result.error);
+      }
+      // 譯文可能正好對應畫面上還在顯示的那一句，補上去
+      if (currentEn) {
+        const zh = memo.get(normKey(currentEn));
+        if (zh) render(zh, currentEn);
+      }
     } catch (e) {
       state.errors++;
     } finally {
-      translating = false;
-      if (pending.size && !pendingTimer) pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS);
+      keys.forEach((k) => requested.delete(k));
+      inflight--;
+      if (pending.size) scheduleFlush();
     }
   }
 
@@ -302,29 +330,68 @@
     enEl.style.display = settings.showEnglish ? 'inline-block' : 'none';
   }
 
-  function render(zh, en) {
+  function show(zhText, enText, isPending) {
     if (!settings.enabled) return;
     mount(); reposition();
-    zhEl.textContent = zh;
-    enEl.textContent = en || '';
+    zhEl.textContent = zhText;
+    zhEl.classList.toggle('pending', !!isPending);
+    enEl.textContent = enText || '';
     box.classList.add('on');
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => box.classList.remove('on'), settings.holdMs);
   }
 
+  function render(zh, en) { show(zh, en, false); }
+
+  /**
+   * 譯文還沒回來時的暫時顯示。
+   * 只在逐句即時翻譯（沒有預先收割）時才會出現——與其留白，
+   * 不如先給英文，譯文到了就地覆蓋。
+   */
+  function renderPending(en) {
+    if (!settings.showEnglish) { show('翻譯中…', '', true); return; }
+    show('翻譯中…', en, true);
+  }
+
   // =========================================================================
   // 影片切換
   // =========================================================================
-  async function loadBundle(cid) {
+  /**
+   * 取回整支影片的譯文。
+   *
+   * 一定要能重試：實測過「啟動時金鑰還沒填 → 401 → 之後永遠不再嘗試」，
+   * 結果整場都走最慢的逐句路徑。任何暫時性失敗都該自己恢復。
+   */
+  let bundleRetryTimer = null;
+  let bundleAttempts = 0;
+  const BUNDLE_MAX_ATTEMPTS = 5;
+
+  async function loadBundle(cid, isRetry) {
     if (!cid) return;
+    clearTimeout(bundleRetryTimer);
+    if (!isRetry) bundleAttempts = 0;
+
     const res = await send({ type: 'getBundle', cid });
     const b = (res.ok && res.bundle) || {};
     let n = 0;
     for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { memo.set(k, zh); n++; } }
     state.bundleCount = n;
-    if (n) log(`從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`);
-    else if (b.error) log('共用快取讀取失敗（不影響功能，會改用即時翻譯）：', b.error);
-    else log(`共用快取尚無此影片的譯文（cid ${cid}），將以即時翻譯運作`);
+
+    if (n) { log(`從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`); return; }
+
+    if (b.error) {
+      bundleAttempts++;
+      const hint = /401/.test(b.error) ? '（存取金鑰無效或尚未設定）' : '';
+      if (bundleAttempts < BUNDLE_MAX_ATTEMPTS) {
+        const wait = Math.min(30000, 3000 * bundleAttempts);   // 3s、6s、9s…
+        log(`共用快取讀取失敗${hint}：${b.error}，${wait / 1000} 秒後重試（${bundleAttempts}/${BUNDLE_MAX_ATTEMPTS}）`);
+        bundleRetryTimer = setTimeout(() => loadBundle(cid, true), wait);
+      } else {
+        log(`共用快取讀取失敗${hint}：${b.error}。已停止重試，改用逐句即時翻譯（較慢且較貴）。`);
+      }
+      return;
+    }
+    log(`共用快取尚無此影片的譯文（cid ${cid}），將以逐句即時翻譯運作`);
   }
 
   function checkContentChange() {
@@ -335,8 +402,9 @@
     const prev = contentId;
     contentId = cid;
     // 換影片時重置顯示狀態，但 memo 保留——不同影片的重複用語可以互相受惠
-    lastRaw = ''; lastSeenCaption = ''; everSawCaption = false;
-    pending.clear();
+    lastRaw = ''; lastSeenCaption = ''; everSawCaption = false; currentEn = '';
+    pending.clear(); requested.clear();
+    clearTimeout(bundleRetryTimer); bundleAttempts = 0;
     observedNodes = new Set();
     if (prev) log(`影片切換 ${prev} → ${cid}`);
     loadBundle(cid);
@@ -376,16 +444,32 @@
 
   // 設定在選項頁被改動時即時反映，不用重新整理
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes.settings) return;
-    settings = Object.assign({}, DEFAULT_SETTINGS, changes.settings.newValue || {});
-    applyHideNative();
-    reposition();
-    if (!settings.enabled) box.classList.remove('on');
+    if (area !== 'local') return;
+
+    if (changes.settings) {
+      settings = Object.assign({}, DEFAULT_SETTINGS, changes.settings.newValue || {});
+      applyHideNative();
+      reposition();
+      if (!settings.enabled) box.classList.remove('on');
+    }
+
+    // 金鑰是後填的很常見（開了播放頁才想到要設定）。
+    // 一填好就立刻重抓 bundle，不必等使用者重新整理或換影片。
+    if (changes.clientToken && contentId) {
+      log('偵測到存取金鑰更新，重新讀取共用快取');
+      bundleAttempts = 0;
+      loadBundle(contentId);
+    }
   });
 
   // 給偵錯用：在 Console 打 window.__pitlingo 可以看目前狀態
   window.__pitlingo = {
-    get state() { return Object.assign({ contentId, memo: memo.size, pending: pending.size, everSawCaption }, state); },
+    get state() {
+      return Object.assign({
+        contentId, memo: memo.size, pending: pending.size,
+        requested: requested.size, inflight, everSawCaption,
+      }, state);
+    },
     peek: () => collectCaption(),
     settings: () => settings,
     site: () => site,
