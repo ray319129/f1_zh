@@ -1,0 +1,17 @@
+name = "f1zh-api"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# 建立 KV：wrangler kv namespace create SUBS
+# 然後把回傳的 id 填進來
+[[kv_namespaces]]
+binding = "SUBS"
+id = "606ab33223b74d929d4d0ba8f5e1ae69"
+
+# 機密不寫在這裡，用 wrangler secret put 設定：
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put ADMIN_TOKEN
+#   wrangler secret put CLIENT_TOKEN
+
+[observability]
+enabled = true

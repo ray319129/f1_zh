@@ -1,0 +1,24 @@
+# === 機密：絕對不能進 repo ===
+c api.txt
+*api*.txt
+*.key
+.env
+.env.*
+secrets/
+
+# === 個人資料 ===
+*.csv          # Anthropic 用量報表
+stats/
+
+# === Cloudflare / wrangler ===
+.wrangler/
+backend/.wrangler/
+.dev.vars
+.dev.vars.*
+
+# === 系統 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+node_modules/
+dist/
