@@ -227,6 +227,9 @@
       // 字幕清空可能只是換句空檔，也可能是切換視角導致重建。
       // 一定要重置 lastRaw，否則切回來時若第一句與切走前相同會被去重擋掉。
       lastRaw = '';
+      // currentEn 也要清。它是「補顯示」的依據，不清的話畫面上明明沒字幕了，
+      // 慢回來的翻譯還是會把那句舊的重新畫出來。
+      currentEn = '';
       return;
     }
     if (!everSawCaption) { everSawCaption = true; log('已偵測到第一句字幕，CC 運作正常'); }
@@ -303,10 +306,16 @@
         // 「翻譯後端回報錯誤：」後面空白，等於白記一筆。一律用字串串接。
         evWarn('翻譯後端回報錯誤：' + String(res.result.error || '(無訊息)'));
       }
-      // 譯文可能正好對應畫面上還在顯示的那一句，補上去
-      if (currentEn) {
-        const zh = memo.get(normKey(currentEn));
-        if (zh) render(zh, currentEn);
+      // 譯文可能正好對應畫面上「此刻仍在顯示」的那一句，補上去。
+      //
+      // 一定要當場重讀 DOM 比對，不能只信 currentEn：
+      // 那個變數只反映「最後一次看到的字幕」，翻譯慢回來時畫面早就換過了，
+      // 直接拿它補顯示會把過時的句子重新彈出來——實測表現為
+      // 「同一段字幕在不同時間斷斷續續重複出現」。
+      const nowEn = clean(collectCaption());
+      if (nowEn && nowEn === currentEn) {
+        const zh = memo.get(normKey(nowEn));
+        if (zh) render(zh, nowEn);
       }
     } catch (e) {
       state.errors++;
