@@ -15,9 +15,15 @@ importScripts('/src/shared/normalize.js', '/src/shared/defaults.js');
 
 const BACKEND = self.PL.BACKEND;
 // 遠端設定是「F1TV 改版時能不能在幾分鐘內救回所有使用者」的唯一保障。
-// 原本設 6 小時，那等於比賽日出事就整場報銷——TTL 必須短於一次比賽的長度。
-// 這個請求很小，多打幾次不痛不癢。
-const CONFIG_TTL_MS = 10 * 60 * 1000;       // 10 分鐘
+//
+// 這個值踩過兩次：
+//   6 小時  → 比賽日出事等於整場報銷
+//   10 分鐘 → content script 每 60 秒重讀變成空轉，實際傳播仍是 10 分鐘
+//
+// 真正的傳播延遲 = SW 快取 TTL + content script 的重讀間隔。
+// 設 2 分鐘，最壞情況約 3 分鐘。設定 JSON 只有幾百 bytes，
+// 每位使用者每 2 分鐘一次請求的負載完全可接受。
+const CONFIG_TTL_MS = 2 * 60 * 1000;        // 2 分鐘
 
 // 生命週期內的記憶體快取。被殺掉就沒了，但 storage 裡有備份。
 const memCache = {

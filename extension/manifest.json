@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PitLingo — F1TV 繁體中文字幕",
   "short_name": "PitLingo",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "把 F1TV 的英文 CC 即時翻譯成繁體中文，雙語疊字顯示。保留 F1TV 原本的多視角與英文原聲體驗。",
   "permissions": [
     "storage",

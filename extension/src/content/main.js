@@ -1059,7 +1059,10 @@
     L.push('');
     L.push('──── 設定 ────');
     L.push(JSON.stringify(settings));
-    L.push(`遠端設定版本：v${configVersion}（每 ${CONFIG_RECHECK_MS / 1000} 秒重讀一次並就地套用）`);
+    // 傳播延遲 = SW 快取 TTL（2 分鐘）+ 這邊的重讀間隔，最壞約 3 分鐘。
+    // 只寫「每 60 秒重讀」會誤導——那 60 秒常常只是問到 SW 的快取。
+    L.push(`遠端設定版本：v${configVersion}（重讀間隔 ${CONFIG_RECHECK_MS / 1000} 秒；`
+      + `含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）`);
     L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
     L.push('');
     L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 150)} 筆）────`);
@@ -1073,6 +1076,13 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === 'collectDiagnostics') {
       sendResponse({ ok: true, report: buildDiagnostics() });
+      return true;
+    }
+    // 選項頁按「立即重新載入設定」時會打這個，不用等下一次輪詢
+    if (msg && msg.type === 'applyConfigNow') {
+      applyRemoteConfig(true).then((changed) => {
+        sendResponse({ ok: true, changed, version: configVersion });
+      });
       return true;
     }
     return false;

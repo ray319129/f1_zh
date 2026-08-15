@@ -94,6 +94,40 @@ $('diag').addEventListener('click', async () => {
   }
 });
 
+/**
+ * 立刻丟掉設定快取並重抓，然後叫 F1TV 分頁就地套用。
+ *
+ * 沒有這顆按鈕的話，改了後端設定要等「SW 快取 TTL + content script 重讀間隔」，
+ * 最壞約三分鐘——驗證熱修流程時很難確認到底生效了沒。
+ * 緊急狀況下自己也用得到。
+ */
+$('reloadCfg').addEventListener('click', async () => {
+  const out = $('reloadCfgResult');
+  out.textContent = '重新載入中…';
+  out.className = 'result';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'refreshConfig' });
+    if (!res || !res.ok) throw new Error((res && res.error) || '沒有回應');
+    const v = res.config && res.config.version;
+
+    // 通知所有 F1TV 分頁就地套用，不用等下一次輪詢
+    let applied = 0;
+    const tabs = await chrome.tabs.query({ url: 'https://f1tv.formula1.com/*' });
+    for (const t of tabs) {
+      try {
+        const r = await chrome.tabs.sendMessage(t.id, { type: 'applyConfigNow' });
+        if (r && r.ok) applied++;
+      } catch (e) { /* 該分頁還沒載入 content script */ }
+    }
+    out.textContent = `✅ 設定版本 v${v}，已通知 ${applied} 個 F1TV 分頁套用`;
+    out.className = 'result ok';
+    refreshStatus();
+  } catch (e) {
+    out.textContent = `❌ ${String(e.message || e)}`;
+    out.className = 'result err';
+  }
+});
+
 /** 顯示目前分頁的即時狀態，方便自己與使用者排查 */
 async function refreshStatus() {
   const lines = [];
