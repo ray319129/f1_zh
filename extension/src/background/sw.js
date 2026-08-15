@@ -149,24 +149,70 @@ function deepFindM3u8(obj, depth) {
   return null;
 }
 
-async function resolvePlayback(cid) {
+/**
+ * PLAY API 需要的授權 header 名稱未知，所以逐一嘗試。
+ * F1TV 回的錯誤訊息點名了三種：Ascendon Token / Entitlement Token / Access Token。
+ * 成功之後把組合記進 storage，之後直接用，不必每次重試。
+ */
+const AUTH_HEADER_VARIANTS = [
+  (t) => ({ ascendontoken: t }),
+  (t) => ({ entitlementtoken: t }),
+  (t) => ({ 'x-f1-ascendon-token': t }),
+  (t) => ({ authorization: `Bearer ${t}` }),
+  (t) => ({ authorization: t }),
+  (t) => ({ accesstoken: t }),
+];
+
+async function tryPlay(url, headers) {
+  const res = await fetch(url, { credentials: 'include', headers: headers || {} });
+  const text = await res.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) { /* 非 JSON */ }
+  const master = data ? deepFindM3u8(data) : null;
+  return { status: res.status, ok: res.ok && !!master, master, text, data };
+}
+
+async function resolvePlayback(cid, tokens) {
   const url = `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
             + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
-  const res = await fetch(url, { credentials: 'include' });
-  const bodyText = await res.text();
-  if (!res.ok) {
-    return { ok: false, status: res.status, hint: bodyText.slice(0, 200) };
-  }
-  let data;
-  try { data = JSON.parse(bodyText); }
-  catch { return { ok: false, status: res.status, hint: '回應不是 JSON' }; }
 
-  const master = deepFindM3u8(data);
+  // 先試上次成功的組合
+  const { authRecipe } = await chrome.storage.local.get('authRecipe');
+  const list = Array.isArray(tokens) ? tokens : [];
+  const attempts = [];
+
+  if (authRecipe && typeof authRecipe.variant === 'number' && list[authRecipe.tokenIndex]) {
+    attempts.push({ v: authRecipe.variant, ti: authRecipe.tokenIndex });
+  }
+  for (let ti = 0; ti < list.length; ti++) {
+    for (let v = 0; v < AUTH_HEADER_VARIANTS.length; v++) attempts.push({ v, ti });
+  }
+  attempts.push({ v: -1, ti: -1 });   // 最後試「完全不帶 header」
+
+  let last = null;
+  for (const a of attempts) {
+    const headers = a.v >= 0 ? AUTH_HEADER_VARIANTS[a.v](list[a.ti]) : {};
+    let r;
+    try { r = await tryPlay(url, headers); }
+    catch (e) { last = { status: 0, text: String(e.message || e) }; continue; }
+    last = r;
+    if (r.ok) {
+      if (a.v >= 0) await chrome.storage.local.set({ authRecipe: { variant: a.v, tokenIndex: a.ti } });
+      return {
+        ok: true, status: r.status, master: r.master,
+        usedHeader: a.v >= 0 ? Object.keys(AUTH_HEADER_VARIANTS[a.v]('x'))[0] : '(無)',
+      };
+    }
+  }
+
+  await chrome.storage.local.remove('authRecipe');
   return {
-    ok: !!master,
-    status: res.status,
-    master,
-    topKeys: Object.keys(data || {}).slice(0, 20),   // 找不到時用來診斷結構
+    ok: false,
+    status: last ? last.status : 0,
+    tokensTried: list.length,
+    variantsTried: AUTH_HEADER_VARIANTS.length,
+    topKeys: last && last.data ? Object.keys(last.data).slice(0, 20) : [],
+    hint: last ? String(last.text).slice(0, 260) : '無回應',
   };
 }
 
@@ -190,7 +236,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
           break;
         case 'resolvePlayback':
-          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid) });
+          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid, msg.tokens) });
           break;
         case 'fetchText':
           try {

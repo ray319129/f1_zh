@@ -396,6 +396,60 @@
   const prefetchSeen = new Set();     // 已排入翻譯的 normKey
   let liveTimer = null;
 
+  // -------------------------------------------------------------------------
+  // 授權權杖
+  //
+  // PLAY API 回：「Missing parameter Ascendon Token or Entitlement Token or
+  // Access Token」——光有 cookies 不夠，還要帶授權 header。
+  //
+  // 關鍵事實：content script 雖然跑在 ISOLATED world，但 localStorage 是依
+  // **來源**隔離的，不是依 world。所以我們讀得到 F1TV 存的登入資訊。
+  //
+  // ⚠️ 權杖值**絕對不可以**寫進診斷報告——那份報告是要貼給別人看的。
+  //    只記錄鍵名與長度。
+  // -------------------------------------------------------------------------
+  const TOKEN_KEY_HINT = /token|session|auth|login|ascendon|entitlement/i;
+  const TOKEN_FIELD_HINT = /token|jwt|access|subscription|ascendon|entitlement/i;
+  let authTokenCache = null;
+  let authKeyNames = [];
+
+  function harvestStrings(obj, out, depth) {
+    depth = depth || 0;
+    if (depth > 5 || obj == null || out.length > 40) return;
+    if (typeof obj === 'string') {
+      // 權杖通常是長字串；太短的一定不是
+      if (obj.length >= 40 && !/\s/.test(obj)) out.push(obj);
+      return;
+    }
+    if (typeof obj !== 'object') return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string' && v.length >= 40 && TOKEN_FIELD_HINT.test(k)) { out.unshift(v); continue; }
+      harvestStrings(v, out, depth + 1);
+    }
+  }
+
+  function findAuthTokens() {
+    if (authTokenCache) return authTokenCache;
+    const candidates = [];
+    authKeyNames = [];
+    for (const store of [localStorage, sessionStorage]) {
+      let keys = [];
+      try { keys = Object.keys(store); } catch (e) { continue; }
+      for (const key of keys) {
+        if (!TOKEN_KEY_HINT.test(key)) continue;
+        let raw = '';
+        try { raw = store.getItem(key) || ''; } catch (e) { continue; }
+        if (!raw) continue;
+        authKeyNames.push(`${key}(${raw.length})`);
+        try { harvestStrings(JSON.parse(raw), candidates); }
+        catch (e) { if (raw.length >= 40 && !/\s/.test(raw)) candidates.push(raw); }
+      }
+    }
+    authTokenCache = Array.from(new Set(candidates)).slice(0, 6);
+    evInfo(`授權權杖探索：找到 ${authKeyNames.length} 個相關鍵、${authTokenCache.length} 個候選值`);
+    return authTokenCache;
+  }
+
   async function swFetchText(url) {
     const res = await send({ type: 'fetchText', url });
     if (!res.ok) throw new Error(res.error || 'fetch 失敗');
@@ -508,15 +562,19 @@
     const myGen = harvestGen;
     setPhase('取得串流位址');
     try {
-      const pb = (await send({ type: 'resolvePlayback', cid })).playback || {};
+      const tokens = findAuthTokens();
+      const pb = (await send({ type: 'resolvePlayback', cid, tokens })).playback || {};
       if (!pb.ok || !pb.master) {
         evWarn(`取不到串流位址（HTTP ${pb.status || '?'}）` +
-          (pb.topKeys ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
-          (pb.hint ? `，內容開頭：${pb.hint}` : ''));
-        evWarn('將退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。');
+          `，已試 ${pb.tokensTried || 0} 個權杖 × ${pb.variantsTried || 0} 種 header` +
+          (pb.topKeys && pb.topKeys.length ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
+          (pb.hint ? `
+    伺服器回應：${pb.hint}` : ''));
+        evWarn('退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。');
         setPhase('逐句模式');
         return;
       }
+      evOk(`取得串流位址（授權 header：${pb.usedHeader}）`);
 
       setPhase('讀取字幕清單');
       const masterBody = await swFetchText(pb.master);
@@ -702,6 +760,10 @@
     L.push(`容器文字長：${rootEl ? (rootEl.textContent || '').trim().length : 0} 字`);
     L.push(`目前抓到　：${collectCaption() || '(空)'}`);
     L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}`);
+    L.push('');
+    L.push('──── 授權（PLAY API 需要）────');
+    L.push(`localStorage 相關鍵：${authKeyNames.length ? authKeyNames.join(', ') : '(尚未掃描或沒找到)'}`);
+    L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含權杖內容`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
