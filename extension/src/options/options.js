@@ -67,6 +67,33 @@ $('test').addEventListener('click', async () => {
   }
 });
 
+/**
+ * 向 F1TV 分頁的 content script 要一份完整診斷報告並複製到剪貼簿。
+ * 報告涵蓋預抓狀態、命中率、事件時間軸——回報問題時貼這一份就夠。
+ */
+$('diag').addEventListener('click', async () => {
+  const out = $('diagResult');
+  out.textContent = '收集中…';
+  out.className = 'result';
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://f1tv.formula1.com/*' });
+    if (!tabs.length) {
+      out.textContent = '❌ 找不到 F1TV 分頁，請先開啟並播放影片';
+      out.className = 'result err';
+      return;
+    }
+    const res = await chrome.tabs.sendMessage(tabs[0].id, { type: 'collectDiagnostics' });
+    if (!res || !res.ok) throw new Error((res && res.error) || '沒有回應');
+    await navigator.clipboard.writeText(res.report);
+    out.textContent = `✅ 已複製 ${res.report.length} 字元`;
+    out.className = 'result ok';
+    console.log(res.report);
+  } catch (e) {
+    out.textContent = `❌ ${String(e.message || e)}（請重新整理 F1TV 分頁再試）`;
+    out.className = 'result err';
+  }
+});
+
 /** 顯示目前分頁的即時狀態，方便自己與使用者排查 */
 async function refreshStatus() {
   const lines = [];

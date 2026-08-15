@@ -112,6 +112,65 @@ async function translateLines(cid, lines) {
 }
 
 // ---------------------------------------------------------------------------
+// F1TV 串流資源
+//
+// 為什麼要在這裡發請求，而不是在 content script：
+//   1. 有 host_permissions 的 SW 不受頁面 CSP 限制
+//   2. CDN 是跨來源，content script 的 fetch 會被 CORS 擋
+//
+// 為什麼要拿這些：擴充功能若只讀畫面上的 DOM，提前量是 0，
+// 逐句翻譯永遠追不上轉播語速。拿到 VTT 才有提前量（實測 47~53 秒），
+// 那正是 userscript 跟得上而擴充功能跟不上的原因。
+// ---------------------------------------------------------------------------
+
+/** 純文字抓取（m3u8 / vtt）。帶上使用者的 session。 */
+async function fetchText(url) {
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+/**
+ * 呼叫 F1TV 的播放 API 取得串流網址。
+ * 這是播放器自己也會發的同一個請求，用的是使用者已登入的 session。
+ *
+ * ⚠️ 回應的 JSON 結構我尚未實地確認，所以這裡用「遞迴找出第一個 .m3u8 網址」
+ *    的方式解析，而不是寫死欄位名。同時把頂層鍵名記下來供診斷用。
+ */
+function deepFindM3u8(obj, depth) {
+  depth = depth || 0;
+  if (depth > 6 || obj == null) return null;
+  if (typeof obj === 'string') return /\.m3u8/i.test(obj) ? obj : null;
+  if (typeof obj !== 'object') return null;
+  for (const v of Array.isArray(obj) ? obj : Object.values(obj)) {
+    const hit = deepFindM3u8(v, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function resolvePlayback(cid) {
+  const url = `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
+            + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
+  const res = await fetch(url, { credentials: 'include' });
+  const bodyText = await res.text();
+  if (!res.ok) {
+    return { ok: false, status: res.status, hint: bodyText.slice(0, 200) };
+  }
+  let data;
+  try { data = JSON.parse(bodyText); }
+  catch { return { ok: false, status: res.status, hint: '回應不是 JSON' }; }
+
+  const master = deepFindM3u8(data);
+  return {
+    ok: !!master,
+    status: res.status,
+    master,
+    topKeys: Object.keys(data || {}).slice(0, 20),   // 找不到時用來診斷結構
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 與 content script 的訊息通道
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -129,6 +188,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
+          break;
+        case 'resolvePlayback':
+          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid) });
+          break;
+        case 'fetchText':
+          try {
+            sendResponse({ ok: true, text: await fetchText(msg.url) });
+          } catch (e) {
+            sendResponse({ ok: false, error: String(e.message || e) });
+          }
           break;
         case 'health':
           try {

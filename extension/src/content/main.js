@@ -49,9 +49,36 @@
   let pendingTimer = null;
   let inflight = 0;
 
-  const state = { bundleCount: 0, translated: 0, misses: 0, errors: 0 };
+  const state = {
+    bundleCount: 0, translated: 0, misses: 0, errors: 0,
+    playlistSegs: 0, segFetched: 0, segFailed: 0, prefetched: 0,
+    hits: 0, isLive: false, harvestDone: false,
+  };
 
-  const log = (...a) => console.log('%c[PitLingo]', 'color:#e10600;font-weight:bold', ...a);
+  // ---- 事件時間軸 ----
+  // 所有狀態變化都記在這裡，「匯出診斷」時一併帶出。
+  // 沒有這個就只能靠翻 Console 猜，而 SW 的 log 又在另一個視窗。
+  const eventLog = [];
+  let phase = '啟動中';
+  function logEvent(level, msg) {
+    eventLog.push(`[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`);
+    if (eventLog.length > 400) eventLog.shift();
+    const style = level === 'err' ? 'color:#e10600;font-weight:bold'
+                : level === 'ok' ? 'color:#0a0;font-weight:bold'
+                : level === 'warn' ? 'color:#c80;font-weight:bold'
+                : 'color:#57f';
+    console.log(`%c[PitLingo] ${msg}`, style);
+  }
+  const evOk = (m) => logEvent('ok', m);
+  const evInfo = (m) => logEvent('info', m);
+  const evWarn = (m) => logEvent('warn', m);
+  const evErr = (m) => logEvent('err', m);
+  function setPhase(p, extra) {
+    if (phase === p) return;
+    phase = p;
+    evInfo(`▶ ${p}${extra ? ' — ' + extra : ''}`);
+  }
+  const log = evInfo;
 
   // =========================================================================
   // 與 service worker 通訊
@@ -211,12 +238,12 @@
 
     const k = normKey(text);
     const hit = memo.get(k);
-    if (hit) { render(hit, text); return; }
+    if (hit) { state.hits++; render(hit, text); return; }
 
     state.misses++;
-    // 走到這裡代表這支影片沒被預先收割過。
-    // 先把英文推上畫面（總比空白好），譯文回來後會就地覆蓋。
-    renderPending(text);
+    // 走到這裡代表預抓還沒涵蓋到這句。
+    // 不顯示「翻譯中…」之類的佔位字——那會一直在畫面上閃、非常分心。
+    // 就讓畫面保持空白，譯文回來時若這句還在螢幕上就補顯示。
 
     if (requested.has(k)) return;  // 已經送出去了，等回應就好
     pending.set(k, text);
@@ -343,14 +370,192 @@
 
   function render(zh, en) { show(zh, en, false); }
 
-  /**
-   * 譯文還沒回來時的暫時顯示。
-   * 只在逐句即時翻譯（沒有預先收割）時才會出現——與其留白，
-   * 不如先給英文，譯文到了就地覆蓋。
-   */
-  function renderPending(en) {
-    if (!settings.showEnglish) { show('翻譯中…', '', true); return; }
-    show('翻譯中…', en, true);
+  // =========================================================================
+  // 預抓 —— 擴充功能能不能跟上語速的關鍵
+  //
+  // 只讀 DOM 的話提前量是 0：字幕出現在畫面上我們才知道有這句，
+  // 翻譯來回 1~3 秒，而轉播每 3~4 秒一句，永遠追不上。
+  //
+  // 但播放器本來就會**提前約 50 秒**下載字幕分段。只要我們也拿得到那些分段，
+  // 就等於拿回同樣的提前量。userscript 是靠注入 Worker 攔截，
+  // 擴充功能不需要——master 網址本來就來自主執行緒的 PLAY API，
+  // 而我們有 host_permissions，可以自己發同一個請求。
+  //
+  //   PLAY API → master m3u8 → 字幕清單 → VTT 分段 → 批次翻譯 → 存進快取
+  //
+  // 重播：一次抓完整支。直播：滑動視窗，定期重抓補新分段。
+  // =========================================================================
+  const FETCH_CONCURRENCY = 3;
+  const FETCH_GAP_MS = 60;
+  const LIVE_REFRESH_MS = 20000;
+
+  let harvestGen = 0;
+  let harvestInFlight = false;
+  let subtitlePlaylistUrl = null;
+  const seenSegments = new Set();     // 已抓過的分段網址，直播重抓時用來去重
+  const prefetchSeen = new Set();     // 已排入翻譯的 normKey
+  let liveTimer = null;
+
+  async function swFetchText(url) {
+    const res = await send({ type: 'fetchText', url });
+    if (!res.ok) throw new Error(res.error || 'fetch 失敗');
+    return res.text;
+  }
+
+  /** 從 master m3u8 找出英文字幕軌的播放清單位址 */
+  function findSubtitlePlaylist(masterBody, masterUrl) {
+    const re = /#EXT-X-MEDIA:([^\n]*TYPE=SUBTITLES[^\n]*)/gi;
+    let m, best = null;
+    while ((m = re.exec(masterBody))) {
+      const attrs = m[1];
+      const uri = (attrs.match(/URI="([^"]+)"/i) || [])[1];
+      if (!uri) continue;
+      const lang = (attrs.match(/LANGUAGE="([^"]+)"/i) || [])[1] || '';
+      if (!best) best = { uri, lang };
+      if (/^en/i.test(lang)) { best = { uri, lang }; break; }
+    }
+    if (!best) return null;
+    try { return { url: new URL(best.uri, masterUrl).href, lang: best.lang }; }
+    catch (e) { return null; }
+  }
+
+  function parseMediaPlaylist(body, baseUrl) {
+    const segs = [];
+    let dur = 0;
+    body.replace(/\r/g, '').split('\n').forEach((raw) => {
+      const t = raw.trim();
+      if (!t) return;
+      if (/^#EXTINF:/i.test(t)) { dur = parseFloat(t.slice(8)) || 0; return; }
+      if (t[0] === '#') return;
+      try { segs.push({ url: new URL(t, baseUrl).href, dur }); } catch (e) { /* noop */ }
+      dur = 0;
+    });
+    return { segs, isVod: /#EXT-X-ENDLIST/i.test(body) };
+  }
+
+  /** 極簡 WebVTT 解析：只要 cue 文字，不要時間軸 */
+  function parseVtt(raw) {
+    const out = [];
+    if (!raw || raw.indexOf('-->') === -1) return out;
+    let cur = null;
+    String(raw).replace(/\r\n?/g, '\n').split('\n').forEach((ln) => {
+      if (ln.indexOf('-->') !== -1) { if (cur && cur.length) out.push(cur.join(' ')); cur = []; return; }
+      if (cur === null) return;
+      if (ln.trim() === '') { if (cur.length) { out.push(cur.join(' ')); cur = null; } return; }
+      cur.push(ln.trim());
+    });
+    if (cur && cur.length) out.push(cur.join(' '));
+    return out;
+  }
+
+  function ingestVtt(text) {
+    let added = 0;
+    for (const cue of parseVtt(text)) {
+      const t = clean(cue);
+      if (!t || t.length < 2) continue;
+      const k = normKey(t);
+      if (!k || prefetchSeen.has(k)) continue;
+      prefetchSeen.add(k);
+      if (memo.has(k)) continue;          // 共用快取已有，不用再翻
+      pending.set(k, t);
+      added++;
+    }
+    if (added) scheduleFlush();
+    return added;
+  }
+
+  async function fetchSegments(list, myGen) {
+    let idx = 0, lastPct = -1;
+    const worker = async () => {
+      while (idx < list.length && myGen === harvestGen && settings.enabled) {
+        const s = list[idx++];
+        if (seenSegments.has(s.url)) continue;
+        seenSegments.add(s.url);
+        try {
+          const t = await swFetchText(s.url);
+          state.segFetched++;
+          ingestVtt(t);
+        } catch (e) { state.segFailed++; }
+        const pct = Math.floor((state.segFetched / Math.max(1, list.length)) * 10) * 10;
+        if (pct > lastPct && pct > 0 && pct < 100) {
+          lastPct = pct;
+          evInfo(`預抓進度 ${pct}%（${state.segFetched}/${list.length} 段，待翻 ${pending.size} 句）`);
+        }
+        if (FETCH_GAP_MS) await new Promise((r) => setTimeout(r, FETCH_GAP_MS));
+      }
+    };
+    await Promise.all(new Array(FETCH_CONCURRENCY).fill(0).map(worker));
+  }
+
+  /** 直播：字幕清單是滑動視窗，定期重抓才能持續拿到 live edge 的新分段 */
+  async function refreshLive(myGen) {
+    if (myGen !== harvestGen || !subtitlePlaylistUrl) return;
+    try {
+      const body = await swFetchText(subtitlePlaylistUrl);
+      const { segs } = parseMediaPlaylist(body, subtitlePlaylistUrl);
+      const fresh = segs.filter((s) => !seenSegments.has(s.url));
+      if (fresh.length) {
+        evInfo(`直播：清單新增 ${fresh.length} 段`);
+        await fetchSegments(fresh, myGen);
+      }
+    } catch (e) { evWarn(`直播清單更新失敗：${e.message}`); }
+    if (myGen === harvestGen) liveTimer = setTimeout(() => refreshLive(myGen), LIVE_REFRESH_MS);
+  }
+
+  async function startPrefetch(cid) {
+    if (harvestInFlight || !cid) return;
+    harvestInFlight = true;
+    const myGen = harvestGen;
+    setPhase('取得串流位址');
+    try {
+      const pb = (await send({ type: 'resolvePlayback', cid })).playback || {};
+      if (!pb.ok || !pb.master) {
+        evWarn(`取不到串流位址（HTTP ${pb.status || '?'}）` +
+          (pb.topKeys ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
+          (pb.hint ? `，內容開頭：${pb.hint}` : ''));
+        evWarn('將退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。');
+        setPhase('逐句模式');
+        return;
+      }
+
+      setPhase('讀取字幕清單');
+      const masterBody = await swFetchText(pb.master);
+      const sp = findSubtitlePlaylist(masterBody, pb.master);
+      if (!sp) { evWarn('master 裡找不到字幕軌'); setPhase('逐句模式'); return; }
+
+      subtitlePlaylistUrl = sp.url;
+      const body = await swFetchText(sp.url);
+      const { segs, isVod } = parseMediaPlaylist(body, sp.url);
+      state.playlistSegs = segs.length;
+      state.isLive = !isVod;
+
+      if (isVod) {
+        setPhase('預抓中', `${segs.length} 段`);
+        evInfo(`字幕分段共 ${segs.length} 個（重播，一次抓完）`);
+        // 從目前播放位置開始，讓馬上要用到的先翻，不要先去翻片尾
+        const v = document.querySelector('video');
+        const cur = (v && isFinite(v.currentTime)) ? v.currentTime : 0;
+        let acc = 0, start = 0;
+        for (let i = 0; i < segs.length; i++) {
+          if (acc + segs[i].dur > cur) { start = i; break; }
+          acc += segs[i].dur;
+        }
+        await fetchSegments(segs.slice(start).concat(segs.slice(0, start)), myGen);
+        if (myGen !== harvestGen) { evInfo('預抓已中止（影片切換）'); return; }
+        state.harvestDone = state.segFailed === 0;
+        evOk(`預抓完成：${state.segFetched} 段成功、${state.segFailed} 段失敗，待翻 ${pending.size} 句`);
+      } else {
+        setPhase('直播預抓中');
+        evInfo(`偵測到直播（無 EXT-X-ENDLIST），改用滑動視窗持續補抓`);
+        await fetchSegments(segs, myGen);
+        liveTimer = setTimeout(() => refreshLive(myGen), LIVE_REFRESH_MS);
+      }
+    } catch (e) {
+      evErr(`預抓失敗：${e.message}`);
+      setPhase('逐句模式');
+    } finally {
+      harvestInFlight = false;
+    }
   }
 
   // =========================================================================
@@ -377,7 +582,7 @@
     for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { memo.set(k, zh); n++; } }
     state.bundleCount = n;
 
-    if (n) { log(`從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`); return; }
+    if (n) { evOk(`☁ 從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`); return; }
 
     if (b.error) {
       bundleAttempts++;
@@ -406,8 +611,17 @@
     pending.clear(); requested.clear();
     clearTimeout(bundleRetryTimer); bundleAttempts = 0;
     observedNodes = new Set();
-    if (prev) log(`影片切換 ${prev} → ${cid}`);
-    loadBundle(cid);
+
+    // 讓還在跑的預抓自行中止，並清掉上一支的收割狀態
+    harvestGen++;
+    clearTimeout(liveTimer);
+    subtitlePlaylistUrl = null;
+    seenSegments.clear(); prefetchSeen.clear();
+    state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
+    state.isLive = false; state.harvestDone = false;
+
+    if (prev) { setPhase('切換影片'); evInfo(`影片切換 ${prev} → ${cid}`); }
+    loadBundle(cid).then(() => startPrefetch(cid));
   }
 
   // =========================================================================
@@ -422,8 +636,11 @@
     settings = Object.assign({}, DEFAULT_SETTINGS, (setRes.ok && setRes.settings) || {});
     site = siteConfigFor(config, location.hostname);
 
-    if (!site) { log('這個網域沒有對應的設定，不啟用'); return; }
-    log(`PitLingo 已啟動 | 設定版本 ${config.version} | 翻譯：${settings.enabled ? '開啟' : '關閉'}`);
+    if (!site) { evWarn('這個網域沒有對應的設定，不啟用'); return; }
+    setPhase('等待播放');
+    evOk(`PitLingo v${chrome.runtime.getManifest().version} 已啟動　|　設定版本 ${config.version}`
+       + `　|　翻譯：${settings.enabled ? '開啟' : '關閉'}`);
+    evInfo('提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態');
 
     applyHideNative();
     mount();
@@ -462,8 +679,68 @@
     }
   });
 
+  // =========================================================================
+  // 診斷報告
+  // 一鍵匯出所有狀態。回報問題時直接貼這份，不用翻 Console，
+  // 也不用另外去 chrome://extensions 開 service worker 的視窗。
+  // =========================================================================
+  function buildDiagnostics() {
+    const L = [];
+    const v = document.querySelector('video');
+    const rootEl = activeContainer();
+    L.push('════════ PitLingo 擴充功能 診斷報告 ════════');
+    L.push(`產生時間　：${new Date().toISOString()}`);
+    L.push(`版本　　　：${chrome.runtime.getManifest().version}`);
+    L.push(`目前階段　：${phase}`);
+    L.push(`網址　　　：${location.href}`);
+    L.push(`UA　　　　：${navigator.userAgent}`);
+    L.push('');
+    L.push('──── 影片與字幕 ────');
+    L.push(`contentId　：${contentId || '(無)'}（網址 ${(location.pathname.match(/\/detail\/(\d+)/) || [])[1] || '-'} / 觀察 ${seenContentId || '-'}）`);
+    L.push(`video　　　：${v ? `${v.paused ? '暫停' : '播放中'} ${v.currentTime.toFixed(1)}s / ${v.duration}` : '無'}`);
+    L.push(`字幕容器　：${captionContainers().length} 個（觀察中 ${observedNodes.size}）`);
+    L.push(`容器文字長：${rootEl ? (rootEl.textContent || '').trim().length : 0} 字`);
+    L.push(`目前抓到　：${collectCaption() || '(空)'}`);
+    L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}`);
+    L.push('');
+    L.push('──── 預抓（決定跟不跟得上語速）────');
+    L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
+    L.push(`字幕清單　：${subtitlePlaylistUrl ? subtitlePlaylistUrl.slice(0, 120) : '(尚未取得)'}`);
+    L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
+    L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
+    L.push('');
+    L.push('──── 翻譯 ────');
+    L.push(`共用快取取得：${state.bundleCount} 句`);
+    L.push(`本機快取　：${memo.size} 句`);
+    L.push(`命中 / 未命中：${state.hits} / ${state.misses}`);
+    L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}`);
+    L.push(`待送出　　：${pending.size} 句　飛行中 ${inflight} 個請求（上限 ${MAX_INFLIGHT}）`);
+    L.push('');
+    L.push('──── 設定 ────');
+    L.push(JSON.stringify(settings));
+    L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
+    L.push('');
+    L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 150)} 筆）────`);
+    L.push(eventLog.slice(-150).join('\n'));
+    L.push('');
+    L.push('════════ 報告結束 ════════');
+    return L.join('\n');
+  }
+
+  // 選項頁按「匯出診斷」時會來要這份報告
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'collectDiagnostics') {
+      sendResponse({ ok: true, report: buildDiagnostics() });
+      return true;
+    }
+    return false;
+  });
+
   // 給偵錯用：在 Console 打 window.__pitlingo 可以看目前狀態
   window.__pitlingo = {
+    diag: () => { const r = buildDiagnostics(); console.log(r); return r; },
+    events: () => { console.log(eventLog.join('\n')); return eventLog.length; },
+    prefetch: () => startPrefetch(contentId),
     get state() {
       return Object.assign({
         contentId, memo: memo.size, pending: pending.size,
