@@ -299,7 +299,9 @@
       state.translated += n;
       if (res.ok && res.result && res.result.error) {
         state.errors++;
-        log('翻譯後端回報錯誤：', res.result.error);
+        // logEvent 只吃一個參數，第二個會被靜默丟掉——實測就這樣印出
+        // 「翻譯後端回報錯誤：」後面空白，等於白記一筆。一律用字串串接。
+        evWarn('翻譯後端回報錯誤：' + String(res.result.error || '(無訊息)'));
       }
       // 譯文可能正好對應畫面上還在顯示的那一句，補上去
       if (currentEn) {
