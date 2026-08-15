@@ -1,16 +1,16 @@
 ════════ PitLingo 擴充功能 診斷報告 ════════
-產生時間　：2026-08-15T21:30:53.582Z
-版本　　　：0.2.8
+產生時間　：2026-08-15T21:33:52.726Z
+版本　　　：0.2.9
 目前階段　：逐句模式
 網址　　　：https://f1tv.formula1.com/detail/1000010184/post-race-show-australia?action=play
 UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
 
 ──── 影片與字幕 ────
 contentId　：1000010184（網址 1000010184 / 觀察 1000010184）
-video　　　：暫停 22.2s / Infinity
+video　　　：播放中 13.4s / Infinity
 字幕容器　：1 個（觀察中 1）
-容器文字長：36 字
-目前抓到　：They flew off the line at the start.
+容器文字長：57 字
+目前抓到　：And we're going to do it in the paddock in the company of
 曾看到字幕：是
 
 ──── 授權（PLAY API 需要）────
@@ -20,6 +20,7 @@ video　　　：暫停 22.2s / Infinity
   CK:entitlement_token(1707)
   LS:TiledmediaPlayerDeviceAppID(36)
   LS:subtitleStylingPreferences(93)
+  SS:isFirstPlayback(4)
   SS:customState(20)
   SS:liveNowData(307)
   SS:__imt_handshake_page_id(36)
@@ -29,7 +30,7 @@ video　　　：暫停 22.2s / Infinity
 候選權杖數　：2　※ 報告不含任何權杖內容
 候選來源（依可信度排序）：cookie:login-session/subscriptionToken | cookie:entitlement_token
 格式不合被剔除：1 個
-沿用播放器的 PLAY 網址：否（自行拼接，可能缺 channelId）
+觀察到播放器的 PLAY 網址：是（參數完整，已沿用）
 正確的 header：(尚未確認)
 
 ──── 預抓（決定跟不跟得上語速）────
@@ -40,31 +41,33 @@ video　　　：暫停 22.2s / Infinity
 
 ──── 翻譯 ────
 共用快取取得：0 句
-本機快取　：5 句
-命中 / 未命中：0 / 5
-即時翻譯　：5 句　錯誤 0
+本機快取　：2 句
+命中 / 未命中：0 / 2
+即時翻譯　：2 句　錯誤 0
 待送出　　：0 句　飛行中 0 個請求（上限 3）
 
 ──── 設定 ────
 {"enabled":true,"showEnglish":true,"fontSize":26,"bottomPct":8,"holdMs":3000,"hideNativeCC":true}
 選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
 
-──── 事件時間軸（最近 10 筆）────
-[21:30:21.445] INFO ▶ 等待播放
-[21:30:21.445] OK   PitLingo v0.2.8 已啟動　|　設定版本 1　|　翻譯：開啟
-[21:30:21.445] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
-[21:30:22.078] INFO 共用快取尚無此影片的譯文（cid 1000010184），將以逐句即時翻譯運作
-[21:30:22.079] INFO ▶ 取得串流位址
-[21:30:22.247] INFO 授權權杖探索：掃過 11 個來源，取得 2 個可用候選（另有 1 個因格式不合被剔除）
-[21:30:25.711] WARN 取不到串流位址（HTTP 500），已試 3 種組合（2 個候選權杖）
+──── 事件時間軸（最近 12 筆）────
+[21:33:31.685] INFO ▶ 等待播放
+[21:33:31.685] OK   PitLingo v0.2.9 已啟動　|　設定版本 1　|　翻譯：開啟
+[21:33:31.685] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[21:33:32.134] INFO 共用快取尚無此影片的譯文（cid 1000010184），將以逐句即時翻譯運作
+[21:33:32.134] INFO ▶ 等待播放器取得串流位址
+[21:33:35.145] INFO ▶ 取得串流位址
+[21:33:35.145] INFO 沿用播放器自己的 PLAY 網址（參數完整，不用猜）
+[21:33:35.283] INFO 授權權杖探索：掃過 12 個來源，取得 2 個可用候選（另有 1 個因格式不合被剔除）
+[21:33:39.001] WARN 取不到串流位址（HTTP 500），已試 3 種組合（2 個候選權杖）
     嘗試過的配對：
       ascendon←cookie:login-session/subscriptionToken + entitlement←cookie:entitlement_token → 500 Failed to evaluate stream rule
       ascendontoken←cookie:login-session/subscriptionToken → 500 Failed to evaluate stream rule
       entitlementtoken←cookie:entitlement_token → 500 Failed to evaluate stream rule
     回應欄位：resultCode, message, errorDescription, resultObj, systemTime
-    伺服器回應：{"resultCode":"OK","message":"Failed to evaluate stream rule","errorDescription":"ACN_2008","resultObj":{},"systemTime":1786829427006}
-[21:30:25.711] WARN 退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。
-[21:30:25.712] INFO ▶ 逐句模式
-[21:30:38.190] INFO 已偵測到第一句字幕，CC 運作正常
+    伺服器回應：{"resultCode":"OK","message":"Failed to evaluate stream rule","errorDescription":"ACN_2008","resultObj":{},"systemTime":1786829620261}
+[21:33:39.001] WARN 退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。
+[21:33:39.002] INFO ▶ 逐句模式
+[21:33:45.017] INFO 已偵測到第一句字幕，CC 運作正常
 
 ════════ 報告結束 ════════

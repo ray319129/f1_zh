@@ -52,6 +52,7 @@
   const state = {
     bundleCount: 0, translated: 0, misses: 0, errors: 0,
     playlistSegs: 0, segFetched: 0, segFailed: 0, prefetched: 0,
+    workerPatched: 0, workerVtt: 0, prefetchAnnounced: false,
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -414,6 +415,13 @@
   const FETCH_GAP_MS = 60;
   const LIVE_REFRESH_MS = 20000;
 
+  // PLAY API 那條路已停用：header 名稱、權杖、URL 參數全部解決之後，
+  // 即使原封不動重放播放器自己的網址，伺服器仍回 500
+  // "Failed to evaluate stream rule"——還缺無法窮舉的裝置／平台 header。
+  // 改用 MAIN world 的 worker 注入取得提前量（見 inject.js）。
+  // 設為 true 可重新啟用那條路做比對。
+  const USE_PLAY_API = false;
+
   let harvestGen = 0;
   let harvestInFlight = false;
   let subtitlePlaylistUrl = null;
@@ -626,6 +634,38 @@
     return out;
   }
 
+  /**
+   * 接收 MAIN world 轉送過來的 VTT。
+   *
+   * 這是擴充功能取得「提前量」的唯一來源：播放器會提前約 50 秒下載字幕分段，
+   * inject.js 在 worker 內攔到之後用 BroadcastChannel 送到 MAIN world，
+   * MAIN world 再用 window.postMessage 轉給這裡（只有這裡有 chrome.* API）。
+   */
+  const MARK = '__pitlingo_vtt__';
+  function installInjectBridge() {
+    window.addEventListener('message', (ev) => {
+      // 只接受同一個 window 發出、帶我們自己標記的訊息
+      if (ev.source !== window) return;
+      const d = ev.data;
+      if (!d || d[MARK] !== true) return;
+
+      if (d.kind === 'injected') {
+        state.workerPatched++;
+        evOk(`✅ 已注入 Worker hook（原始腳本 ${d.bytes} bytes）`);
+        return;
+      }
+      if (d.kind === 'vtt' && typeof d.vtt === 'string') {
+        state.workerVtt++;
+        const added = ingestVtt(d.vtt);
+        if (added && !state.prefetchAnnounced) {
+          state.prefetchAnnounced = true;
+          setPhase('前瞻預譯中');
+          evOk('✅ 從播放器的字幕分段取得提前量，開始批次預譯');
+        }
+      }
+    }, false);
+  }
+
   function ingestVtt(text) {
     let added = 0;
     for (const cue of parseVtt(text)) {
@@ -703,7 +743,13 @@
     });
   }
 
+  /**
+   * PLAY API 這條路已停用（見 inject.js 的說明）。
+   * 現在的提前量來自 MAIN world 注入 worker 後轉送回來的 VTT。
+   * 保留這個函式是為了在 CFG.usePlayApi 打開時還能重跑那條路做比對。
+   */
   async function startPrefetch(cid) {
+    if (!USE_PLAY_API) return;
     if (harvestInFlight || !cid) return;
     harvestInFlight = true;
     const myGen = harvestGen;
@@ -872,6 +918,9 @@
     applyHideNative();
     mount();
 
+    // 接收 MAIN world 注入 worker 後轉送回來的 VTT —— 提前量的唯一來源
+    installInjectBridge();
+
     // 預設的資源計時緩衝只有 250 筆，長時間觀看會把播放器的 PLAY 請求擠出去，
     // 之後就再也找不到那個網址了。
     try { performance.setResourceTimingBufferSize(1000); } catch (e) { /* noop */ }
@@ -943,6 +992,11 @@
     L.push(`格式不合被剔除：${authRejected} 個`);
     L.push(`觀察到播放器的 PLAY 網址：${authPlayUrlFound ? '是（參數完整，已沿用）' : '否（不送出請求，維持逐句模式）'}`);
     L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
+    L.push('');
+    L.push('──── 提前量來源：Worker 注入 ────');
+    L.push(`已注入 Worker：${state.workerPatched} 個`);
+    L.push(`收到的 VTT 分段：${state.workerVtt} 份`);
+    L.push(`PLAY API 路徑：${USE_PLAY_API ? '啟用' : '已停用（八輪未通，改用 Worker 注入）'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
