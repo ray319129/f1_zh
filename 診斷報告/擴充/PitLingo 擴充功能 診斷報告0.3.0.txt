@@ -1,0 +1,57 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-15T21:40:41.493Z
+版本　　　：0.3.0
+目前階段　：前瞻預譯中
+網址　　　：https://f1tv.formula1.com/detail/1000010184/post-race-show-australia?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010184（網址 1000010184 / 觀察 1000010184）
+video　　　：播放中 69.9s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：0 字
+目前抓到　：(空)
+曾看到字幕：是
+
+──── 授權（PLAY API 需要）────
+掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：
+  (尚未掃描)
+候選權杖數　：0　※ 報告不含任何權杖內容
+候選來源（依可信度排序）：(無)
+格式不合被剔除：0 個
+觀察到播放器的 PLAY 網址：否（不送出請求，維持逐句模式）
+正確的 header：(尚未確認)
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：19 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入）
+
+──── 預抓（決定跟不跟得上語速）────
+型態　　　：重播
+字幕清單　：(尚未取得)
+分段　　　：清單 0 / 已抓 0（失敗 0）
+收割完成　：false　進行中：false　世代 1
+
+──── 翻譯 ────
+共用快取取得：0 句
+本機快取　：48 句
+命中 / 未命中：24 / 5
+即時翻譯　：48 句　錯誤 0
+待送出　　：0 句　飛行中 1 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":26,"bottomPct":8,"holdMs":3000,"hideNativeCC":true}
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 8 筆）────
+[21:39:23.175] INFO ▶ 等待播放
+[21:39:23.175] OK   PitLingo v0.3.0 已啟動　|　設定版本 1　|　翻譯：開啟
+[21:39:23.175] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[21:39:23.842] INFO 共用快取尚無此影片的譯文（cid 1000010184），將以逐句即時翻譯運作
+[21:39:25.956] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[21:39:39.660] INFO ▶ 前瞻預譯中
+[21:39:39.660] OK   ✅ 從播放器的字幕分段取得提前量，開始批次預譯
+[21:39:39.687] INFO 已偵測到第一句字幕，CC 運作正常
+
+════════ 報告結束 ════════

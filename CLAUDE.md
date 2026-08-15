@@ -78,6 +78,15 @@ F1TV 繁體中文即時字幕工具。攔截 F1TV 官方英文 CC，經 Claude H
 - API key 存在 Tampermonkey 的 `GM_setValue`，**不在程式碼裡**
 - `.gitignore` 已排除 `c api.txt`、`*.csv` 等機密與個資
 
+
+## 擴充功能的關鍵事實（P2，2026-08-16 驗證）
+
+- **必須用雙 world**：MAIN 負責注入 blob worker，ISOLATED 才有 `chrome.*` API
+- **PLAY API 那條路走不通**（八個版本），程式碼保留但 `USE_PLAY_API = false`
+- **F1TV 有 Imperva 機器人防護**（`reese84` cookie）——任何需要大量呼叫
+  F1TV API 的設計都不可行；Worker 注入零額外流量，反而最安全
+- 注入的 worker 腳本 **707,103 bytes**，與 userscript 攔到的完全一致
+
 ## 目前進度
 
 | 階段 | 狀態 |
@@ -85,7 +94,7 @@ F1TV 繁體中文即時字幕工具。攔截 F1TV 官方英文 CC，經 Claude H
 | 個人自用版 | ✅ 完成並驗證 |
 | P0 免費開源驗證 | ⬜ 建議補做 |
 | P1 共用譯文後端 | ✅ 已部署並驗證（100% 命中） |
-| P2 MV3 擴充功能 | ⬜ 下一個 |
+| P2 MV3 擴充功能 | 🟢 v0.3.0 提前量已打通（Worker 注入） |
 | P3 商業化（金流／授權／Trial） | ⬜ |
 | P4 Chrome Web Store 上架 | ⬜ |
 

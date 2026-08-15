@@ -4,7 +4,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| 目前版本 | `v4.7.2`（userscript）／ `v1.1`（backend） |
+| 目前版本 | `v4.7.2`（userscript）／ `v1.1`（backend）／ `v0.3.0`（擴充功能） |
 | 最後更新 | 2026-08-16 |
 | 狀態 | 個人自用版完成並驗證；**P1 後端已部署並驗證共用生效** |
 | 主檔案 | `f1tv-zh-subtitles.user.js`、`backend/` |
@@ -369,26 +369,61 @@ F1TV 的串流網路請求全在 blob worker 內，主執行緒 patch `fetch`/`X
 
 ## 7.7 擴充功能架構（P2）
 
-`extension/`，MV3，`v0.1.0`。詳見 [`extension/README.md`](./extension/README.md)。
+`extension/`，MV3，`v0.3.0` — **提前量已打通，命中率 83%（開播 14 秒後逼近 100%）**。
+詳見 [`extension/README.md`](./extension/README.md)。
 
-### 為什麼不需要 MAIN world
+### 最終架構：雙 world
 
-userscript 需要 `unsafeWindow` 是為了注入 blob worker。擴充功能依 7.3 的決策**不做 worker 注入**，
-所以只需要 DOM —— 可以跑在 **ISOLATED world**，與頁面 JS 完全隔離。
-
-| | Userscript | 擴充功能 |
+| World | 檔案 | 職責 |
 |---|---|---|
-| 執行環境 | 頁面環境 | **ISOLATED world** |
-| 取得字幕 | 三層降級 | **只有 DOM** |
-| contentId | 攔截網路請求 | **`performance.getEntriesByType('resource')`** |
-| API 金鑰 | 使用者本機 | **不存在，後端保管** |
-| 網路請求 | 直接發 | **全部經 service worker** |
+| **MAIN**（`document_start`） | `inject.js` | patch `URL.createObjectURL`，把 hook 注入 blob worker |
+| **ISOLATED**（`document_idle`） | `main.js` 等 | 只有這裡有 `chrome.*` API：批次翻譯、共用快取、疊字顯示 |
 
-`performance` API 在 ISOLATED world 就能讀到，而且是**回溯的**——不需要提早 hook，
-也不需要 `webRequest` 那種高風險權限。這正是專案第一天用來診斷的同一個工具。
+需要兩個 world 是因為：**注入必須在頁面環境，但 `chrome.*` API 只存在隔離環境。**
 
-結果：權限只有兩個網域、審核好過、程式碼約為 userscript 的三分之一，
-而且沒有任何會被 F1TV 改版打壞的注入邏輯。
+資料流：
+
+```
+worker 內攔到 VTT
+  → BroadcastChannel（不是 postMessage，避免污染播放器的訊息通道）
+  → MAIN world
+  → window.postMessage
+  → ISOLATED world → 批次翻譯 → 共用快取 → 顯示
+```
+
+**實測驗證**：注入的 worker 腳本是 707,103 bytes，與 userscript 攔到的完全一致。
+
+### ⚠️ PLAY API 這條路走不通（v0.1.0 → v0.2.9，八個版本）
+
+原本的設計是「擴充功能不做注入，改自己呼叫 F1TV 的 PLAY API 取得串流位址」。
+**這條路失敗了。** 完整的排查軌跡（負面知識同樣有價值）：
+
+| 版本 | 伺服器回應 | 解決了什麼 |
+|---|---|---|
+| v0.2.2 | `400 Missing parameter … Token` | header 名稱錯 → 確認是 `ascendontoken` / `entitlementtoken` |
+| v0.2.3 | `401 signature validation failed` | 送的是 URL-encoded 的 JWT，要先解碼 |
+| v0.2.5 | 同上 | 兩個是**不同的權杖**，要各自配對來源一起送 |
+| v0.2.6 | 同上 | 候選被 `ABTastyData`（18KB）擠掉，改成依可信度排序 |
+| v0.2.7 | `500 Failed to evaluate stream rule` | **認證通過了**，改剔除不能當 header 值的候選 |
+| v0.2.9 | 同上 | **原封不動重放播放器自己的網址仍然 500** |
+
+**結論**：還缺播放器會帶的裝置／平台 header，而那個清單無法窮舉。停損。
+
+程式碼保留，由 `USE_PLAY_API = false` 控制。
+
+### ⚠️ F1TV 有 Imperva 機器人防護（重要，影響商業架構）
+
+cookie 清單裡的 **`reese84` 是 Imperva Advanced Bot Protection**。
+實測連續快速的 API 重試會開始被擋（表現為 `Failed to fetch`）。
+
+**這對商品化的影響很大：**
+
+1. **任何需要大量呼叫 F1TV API 的設計都不可行** —— 例如「每個用戶端各自去抓 manifest」
+2. **共用譯文快取的價值因此更高** —— 全站一次收割，其他人只跟我們自己的後端說話
+3. **Worker 注入反而是最安全的方案** —— 它搭播放器自己的請求便車，**零額外流量**
+
+原本以為 Worker 注入的審核風險是缺點，實測後發現它在「不觸發對方防護」這點上
+反而優於自行呼叫 API。
 
 ### ⚠️ 7.3 的「擴充功能只做 DOM」是錯的（v0.2.0 修正）
 
@@ -492,7 +527,7 @@ v4.1.0 的「切換車手鏡頭後字幕消失」暴露了一個比 DOM 改版�
 | — | 個人自用版 | — | ✅ 完成 |
 | **P0** | **免費開源驗證需求**（整理 README、發文、看裝機數） | 1 週 | ⬜ **仍建議補做** |
 | P1 | 後端（Workers + KV 快取 + 上傳／下載 API） | 2 週 | ✅ **已部署並驗證**（見 10.1） |
-| P2 | MV3 擴充功能 | 2 週 | 🟡 **v0.2.0 加入 PLAY API 預抓，實機測試中** |
+| P2 | MV3 擴充功能 | 2 週 | 🟢 **v0.3.0 提前量已打通（Worker 注入），命中率 83%** |
 | P3 | 商業化（金流、登入、配額、免費層） | 3 週 | ⬜ |
 | P4 | 上架（隱私政策、審核、著陸頁） | 1 週 | ⬜ |
 
@@ -560,6 +595,7 @@ v4.1.0 的「切換車手鏡頭後字幕消失」暴露了一個比 DOM 改版�
 
 | 日期 | 版本 | 內容 |
 |---|---|---|
+| 2026-08-16 | **extension v0.3.0** | **P2 核心障礙解除**。放棄 PLAY API（八個版本、詳見 7.7），改用 MAIN world 注入 blob worker 取得提前量——與 userscript 相同的機制，實測注入的腳本同為 707,103 bytes，命中率 83%。發現 F1TV 掛有 Imperva 機器人防護（`reese84`），這反而讓 Worker 注入成為最安全的方案（零額外 API 流量） |
 | 2026-08-16 | **extension v0.2.0** | **推翻 7.3 的 DOM-only 決策**。實測擴充功能跟不上語速而 userscript 可以，根因是提前量 50 秒 vs 0 秒。改為直接呼叫 PLAY API 取得 master m3u8 → 字幕清單 → VTT 分段預抓，拿回提前量且不需注入。直播用滑動視窗。移除會分心的「翻譯中…」佔位字。新增事件時間軸與「匯出診斷」按鈕 |
 | 2026-08-16 | **extension v0.1.0（P2 起步）** | MV3 擴充功能骨架。關鍵決策：**不做 Worker 注入，因此不需要 MAIN world，跑在 ISOLATED world**；contentId 改用 `performance.getEntriesByType('resource')` 取得（回溯、免 webRequest 權限）；所有網路請求集中在 service worker；`/v1/config` 遠端設定讓 F1TV 改版可熱修不用送審。新增 `tools/check-normkey.js` 驗證三份 `normKey()` 一致 |
 | 2026-08-16 | **v4.7.2** | 修坑 #17（手動 🎯 會默默重抓整支）。收割完成時登記本機覆蓋率，讓重新進入自動走「跳過」路徑；按鈕在已完整時要求確認；強制觸發留下時間軸紀錄 |
