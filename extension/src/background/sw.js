@@ -205,7 +205,7 @@ async function getCookieTokens() {
     let cookies = [];
     try { cookies = await chrome.cookies.getAll({ domain }); } catch (e) { continue; }
     for (const c of cookies) {
-      if (!c.value || /^(_ga|_gid|OptanonC|__utm|NRBA_)/i.test(c.name)) continue;
+      if (!c.value || /^(_ga|_gid|OptanonC|__utm|NRBA_|ABTasty|reese84|consent|_rdt|_sfid|_evga|sp_)/i.test(c.name)) continue;
       const before = out.length;
       pickTokens(c.value, out, 'cookie:' + c.name);
       if (out.length > before) names.push(`${c.name}(${c.value.length})`);

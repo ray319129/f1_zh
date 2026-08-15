@@ -410,7 +410,21 @@
   // -------------------------------------------------------------------------
   // 欄位名優先序：越前面越像我們要的那個
   const TOKEN_FIELD_HINT = /subscriptionToken|ascendon|entitlement|accessToken|access_token|idToken|\btoken\b|jwt/i;
-  const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_)/i;
+
+  // 這些來源只會製造雜訊。ABTastyData 實測有 18,065 字元的 A/B 測試資料，
+  // 裡面一堆長字串會被誤判成權杖，把真正的 cookie 權杖擠出候選清單。
+  const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_|ABTasty|sp_|_sp_|ClearVR|reese84|consent|_rdt|_sfid|_evga|loglevel|isFirstRendering)/i;
+
+  /** 來源可信度評分：越高越可能是真正的授權權杖 */
+  function tokenScore(src) {
+    if (/subscriptionToken/i.test(src)) return 100;
+    if (/entitlement/i.test(src)) return 95;
+    if (/login-session/i.test(src)) return 90;
+    if (/ascendon/i.test(src)) return 85;
+    if (/^cookie:/i.test(src)) return 50;
+    if (/\/token$|\/jwt$/i.test(src)) return 30;
+    return 10;
+  }
   let authTokenCache = null;
   let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
   let authBestHeader = null;       // 伺服器確實讀到的那個 header 名稱
@@ -476,10 +490,7 @@
     const out = [];
     authSources = [];
 
-    scanStore(localStorage, 'LS', out);
-    scanStore(sessionStorage, 'SS', out);
-
-    // document.cookie 讀得到的部分（非 HttpOnly）
+    // 先掃 cookie —— 真正的授權權杖在這裡，不能被 localStorage 的雜訊擠掉
     try {
       for (const part of document.cookie.split(';')) {
         const i = part.indexOf('=');
@@ -500,8 +511,18 @@
       authSources.push(...(ck.names || []).map((n) => `CK*:${n}`));
     }
 
+    scanStore(localStorage, 'LS', out);
+    scanStore(sessionStorage, 'SS', out);
+
+    // 依來源可信度排序後才截斷。
+    // 之前是「先進先出再 slice(12)」，結果 localStorage 的雜訊佔滿名額
+    // （ABTastyData 一個就 18KB），後掃到的 cookie 權杖全被切掉——
+    // 實測嘗試清單裡一個 cookie 來源都沒有。
     const seen = new Set();
-    authTokenCache = out.filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false).slice(0, 12);
+    authTokenCache = out
+      .filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false)
+      .sort((a, b) => tokenScore(b.src || '') - tokenScore(a.src || ''))
+      .slice(0, 12);
     evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個候選值`);
     return authTokenCache;
   }
@@ -832,6 +853,8 @@
     L.push(`掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：`);
     L.push(authSources.length ? '  ' + authSources.join('\n  ') : '  (尚未掃描)');
     L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含任何權杖內容`);
+    L.push(`候選來源（依可信度排序）：${authTokenCache && authTokenCache.length
+      ? authTokenCache.map((t) => t.src).join(' | ') : '(無)'}`);
     L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
     L.push('');
     L.push('──── 預抓（決定跟不跟得上語速）────');
