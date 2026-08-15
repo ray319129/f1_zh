@@ -132,7 +132,8 @@ function normKey(s) {
 }
 
 function bundleKey(cid) { return `bundle:${cid}`; }
-function lineKey(cid, k) { return `line:${cid}:${k}`; }
+// 註：曾經有 line:<cid>:<normKey> 的逐句快取，因為每句一次 KV put 會炸掉
+// 免費額度（1,000/天）而移除。譯文現在一律存在 bundle:<cid> 裡。
 
 async function readBundle(env, cid) {
   const raw = await env.SUBS.get(bundleKey(cid));
@@ -151,13 +152,21 @@ async function writeBundle(env, cid, bundle) {
 
 /**
  * 粗略的每 IP 速率限制。
- * KV 是最終一致性，所以這是近似值而非精確計數 —— 目的是擋住失控迴圈，不是精算配額。
+ * KV 是最終一致性，所以本來就是近似值 —— 目的是擋住失控迴圈，不是精算配額。
+ *
+ * ⚠️ 每次請求都寫一次 KV 會吃掉免費額度（1,000 puts/天）。
+ * 改成取樣：平均每 SAMPLE 次才寫一次，寫入時直接加 SAMPLE 補回來。
+ * 精度變差但門檻仍然守得住，而寫入量降為 1/SAMPLE。
  */
+const RL_SAMPLE = 10;
+
 async function rateLimited(env, ip) {
   const key = `rl:${ip}:${Math.floor(Date.now() / 60000)}`;
   const n = parseInt((await env.SUBS.get(key)) || '0', 10);
   if (n >= RATE_LIMIT_PER_MIN) return true;
-  await env.SUBS.put(key, String(n + 1), { expirationTtl: 120 });
+  if (Math.random() < 1 / RL_SAMPLE) {
+    await env.SUBS.put(key, String(n + RL_SAMPLE), { expirationTtl: 120 });
+  }
   return false;
 }
 
@@ -259,6 +268,20 @@ async function handlePostSubs(request, env) {
   });
 }
 
+/**
+ * 翻譯未命中的句子。
+ *
+ * ⚠️ 這裡的 KV 寫入次數是整個系統最容易爆掉的地方。
+ * 初版是「每翻一句寫一個 line: key」，實測一場 550 句就寫了 550 次——
+ * 免費額度只有 1,000 puts/天，一場正賽（約 2,000 句）光一個觀看者就超額兩倍，
+ * 之後所有寫入回 429，表現為用戶端連續拿到 HTTP 500。
+ *
+ * 改成「讀一次 bundle、寫一次 bundle」：一次請求固定 1 put，
+ * 一場正賽約 140 puts。
+ *
+ * 併發時的 read-modify-write 可能掉幾句（多人同時看同一支全新內容），
+ * 但那只是那幾句之後會被重翻一次，不影響正確性。
+ */
 async function handleTranslate(request, env, ip) {
   if (await rateLimited(env, ip)) return err('rate limited', 429);
 
@@ -269,7 +292,8 @@ async function handleTranslate(request, env, ip) {
   if (!input.length) return err('缺少 lines');
   if (input.length > 200) return err('一次最多 200 句');
 
-  // 1) 先查快取
+  // 1) 讀一次 bundle 當快取（取代先前逐句讀 line: key）
+  const bundle = await readBundle(env, cid);
   const result = {};
   const missing = [];
   for (const raw of input) {
@@ -277,12 +301,11 @@ async function handleTranslate(request, env, ip) {
     if (!en) continue;
     const k = normKey(en);
     if (!k) continue;
-    const hit = await env.SUBS.get(lineKey(cid, k));
-    if (hit) { result[k] = hit; continue; }
+    if (bundle.lines[k]) { result[k] = bundle.lines[k]; continue; }
     missing.push({ en, k });
   }
 
-  // 2) 未命中的才呼叫 API
+  // 2) 未命中的才呼叫模型
   let translated = 0;
   const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
   for (let i = 0; i < missing.length; i += BATCH_MAX) {
@@ -293,16 +316,21 @@ async function handleTranslate(request, env, ip) {
         const zh = out[m.en];
         if (!zh) continue;
         result[m.k] = zh;
+        bundle.lines[m.k] = zh;       // 只改記憶體，最後一次寫回
         translated++;
-        await env.SUBS.put(lineKey(cid, m.k), zh, { expirationTtl: 60 * 60 * 24 * 180 });
       }
       usageTotals.input_tokens += usage.input_tokens || 0;
       usageTotals.output_tokens += usage.output_tokens || 0;
       usageTotals.cache_read_input_tokens += usage.cache_read_input_tokens || 0;
     } catch (e) {
+      // 已經翻好的先存起來，不要因為後面失敗就整批丟掉
+      if (translated) { try { await writeBundle(env, cid, bundle); } catch (e2) { /* noop */ } }
       return json({ lines: result, translated, error: String(e.message || e) }, 502);
     }
   }
+
+  // 3) 一次請求只寫一次 KV
+  if (translated) await writeBundle(env, cid, bundle);
 
   return json({
     cid,

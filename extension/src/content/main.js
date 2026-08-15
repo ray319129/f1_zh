@@ -217,7 +217,32 @@
   //
   // 輪詢不依賴任何註冊狀態，因此不可能失效。observer 只是讓反應更即時。
   // =========================================================================
+  /**
+   * 輪詢停擺偵測。
+   *
+   * 實測回報：看到一半字幕停了一小段，「動了動滑鼠就好」。
+   * 最可能的原因是 Chrome 對被遮蔽（occluded）或背景分頁的計時器做節流——
+   * setInterval 會被拉長到每分鐘一次，於是 250ms 的輪詢與 1.5 秒的結構檢查
+   * 全部失效；滑鼠一動視窗回到前景，計時器恢復正常。
+   *
+   * 這是推測而非確認，但不論真正原因為何，處理方式都一樣：
+   * **偵測到自己剛剛被凍結，就強制做一次完整重檢**，而不是假設狀態還新鮮。
+   */
+  let lastPollAt = Date.now();
+  function checkPollStall() {
+    const gap = Date.now() - lastPollAt;
+    lastPollAt = Date.now();
+    if (gap < POLL_MS * 8) return false;          // 正常抖動
+    evWarn(`偵測到輪詢停擺 ${Math.round(gap / 1000)} 秒（分頁可能被瀏覽器節流），強制重檢`);
+    observedNodes = new Set();                    // 逼 hookObservers 整組重掛
+    hookObservers();
+    lastSeenCaption = ''; lastRaw = '';           // 清掉去重狀態，避免漏掉停擺期間那句
+    mount(); reposition();
+    return true;
+  }
+
   function pollCaption() {
+    checkPollStall();
     if (!settings.enabled || !site) return;
     const cur = collectCaption();
     if (cur === lastSeenCaption) return;
@@ -990,6 +1015,15 @@
 
     ['fullscreenchange', 'webkitfullscreenchange', 'resize', 'scroll'].forEach((e) =>
       window.addEventListener(e, () => { mount(); reposition(); }, true));
+
+    // 分頁重新可見／取得焦點時立刻重檢，不用等下一次輪詢。
+    // 這正是「動了動滑鼠就好」那個症狀的直接對策。
+    ['focus', 'visibilitychange'].forEach((e) =>
+      window.addEventListener(e, () => {
+        if (document.visibilityState === 'hidden') return;
+        checkPollStall();
+        pollCaption();
+      }, true));
 
     checkContentChange();
   }
