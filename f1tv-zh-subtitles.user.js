@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         F1TV 即時繁中字幕 (Claude)
 // @namespace    f1tv-zh-subs
-// @version      4.3.1
+// @version      4.4.0
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -99,6 +99,7 @@
 ═══════════════════════════════
 若輸入以「【批次翻譯】」開頭、後面每行以「數字.」起始，這是批次請求：
 - 逐行翻譯，輸出同樣每行以「數字.」起始，數字與輸入完全對應。
+- **即使只有一句，也必須輸出編號。** 批次模式的編號規則優先於「只輸出譯文本身」。
 - 輸出行數必須與輸入行數完全一致。不要合併、拆分、重排或省略任何一行。
 - 某行若是無意義字串，仍要輸出該編號，後面留空。
 - 前後行是連續的轉播內容，翻譯時可利用相鄰行判斷代名詞與指涉，但每行仍獨立輸出。
@@ -1156,10 +1157,15 @@ sorry mate → 抱歉
         if (CFG.fetchGapMs) await new Promise(r => setTimeout(r, CFG.fetchGapMs));
       }
     };
-    await Promise.all(new Array(Math.max(1, CFG.fetchConcurrency)).fill(0).map(worker));
-    console.log(`%c[f1zh] ✅ 整軌預抓完成：成功 ${stats.segFetched} 段、失敗 ${stats.segFailed} 段`,
-      'color:#0a0;font-weight:bold');
-    scheduleFlush();
+    harvesting = true;
+    try {
+      await Promise.all(new Array(Math.max(1, CFG.fetchConcurrency)).fill(0).map(worker));
+    } finally {
+      harvesting = false;
+    }
+    console.log(`%c[f1zh] ✅ 整軌預抓完成：成功 ${stats.segFetched} 段、失敗 ${stats.segFailed} 段，` +
+      `待翻 ${prefetchQueue.length} 句`, 'color:#0a0;font-weight:bold');
+    drainPrefetch();
     // 等佇列翻完再上傳，讓共用快取拿到完整的一支
     waitForPrefetchIdleThenUpload();
   }
@@ -1464,18 +1470,35 @@ sorry mate → 抱歉
   }
 
   let flushTimer = null;
+  let harvesting = false;      // 整軌預抓進行中
+
   function scheduleFlush() {
     if (prefetchQueue.length >= CFG.batchSize) {
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
       drainPrefetch();
       return;
     }
+    // 整軌預抓期間不用計時器 flush：分段會在幾十秒內全部到齊，
+    // 靠計時器會把零星的新句切成一堆迷你批次（實測平均只有 2.7 句）。
+    // 收割結束後一次處理，才能湊出滿批。
+    if (harvesting) return;
     if (!flushTimer) {
       flushTimer = setTimeout(() => { flushTimer = null; drainPrefetch(); }, effectiveFlushDelay());
     }
   }
 
   async function translateBatch(lines) {
+    // 只有一句時走逐句路徑。批次的編號協定與【輸出規則】的「只輸出譯文本身」衝突，
+    // 模型在只有一句時會直接給譯文而不加編號，導致整批解析失敗。
+    if (lines.length === 1) {
+      const t0single = performance.now();
+      const zh = await translateOne(lines[0]);
+      stats.batchCalls++;
+      stats.totalMs += Math.round(performance.now() - t0single);
+      if (zh) { memoSet(lines[0], zh); stats.prefetched++; }
+      return;
+    }
+
     const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join('\n');
     const t0 = performance.now();
     const data = await apiPost('messages', {
@@ -1502,6 +1525,17 @@ sorry mate → 抱歉
       const zh = map[i + 1];
       if (zh) { memoSet(l, zh); ok++; }
     });
+
+    // 編號協定失敗時的後備：若回應的非空行數剛好等於輸入行數，就按順序位置對應。
+    // 模型偶爾會忘記加編號，但順序幾乎不會錯。
+    if (ok === 0) {
+      const plain = txt.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (plain.length === lines.length) {
+        lines.forEach((l, i) => { memoSet(l, plain[i]); ok++; });
+        log(`批次編號解析失敗，改用位置對應（${ok} 句）`);
+      }
+    }
+
     stats.prefetched += ok;
     log(`批次 ${lines.length} 句，成功對應 ${ok} 句`);
 
@@ -1813,7 +1847,7 @@ sorry mate → 抱歉
         '  執行 __f1zh.netlog() 可看攔到哪些網址。');
     }, 1500);
 
-    console.log(`%c[f1zh] F1TV 繁中字幕 v4.3.1 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
+    console.log(`%c[f1zh] F1TV 繁中字幕 v4.4.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
       'color:#e10600;font-weight:bold');
   }
 
