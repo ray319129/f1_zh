@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         F1TV 即時繁中字幕 (Claude)
+// @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.4.0
+// @version      4.5.0
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -625,11 +625,15 @@ sorry mate → 抱歉
     vttSeen: 0, vttParsed: 0, prefetched: 0,
     workers: 0, workerCues: 0, workerPatched: 0, workerVtt: 0,
     playlistSegs: 0, segFetched: 0, segFailed: 0,
-    beDownloaded: 0, beUploaded: 0, beHits: 0, beErrors: 0,
+    beDownloaded: 0, beUploaded: 0, beHits: 0, beErrors: 0, harvestSkipped: 0,
   };
 
   // 本次影片看過／翻過的所有 normKey，用來決定要上傳哪些。切換影片時清空。
   const sessionKeys = new Set();
+
+  // 共用快取的完整度資訊：後端記錄的分段數與句數。
+  // 若 bundleSegCount 等於字幕清單的分段數，代表整支影片都翻過了，可以完全跳過收割。
+  let bundleSegCount = 0, bundleLineCount = 0, harvestComplete = false;
 
   const log = (...a) => CFG.debug && console.log('%c[f1zh]', 'color:#e10600;font-weight:bold', ...a);
 
@@ -1024,6 +1028,8 @@ sorry mate → 抱歉
     try {
       const d = await backendRequest('GET', `/v1/subs?cid=${encodeURIComponent(cid)}`, null,
         { 'x-client-token': GM_getValue('clientToken', '') });
+      bundleSegCount = d.segCount || 0;
+      bundleLineCount = d.count || 0;
       const lines = d.lines || {};
       let n = 0;
       for (const [k, zh] of Object.entries(lines)) {
@@ -1056,7 +1062,11 @@ sorry mate → 抱歉
     }
     if (!n) return;
     try {
-      const d = await backendRequest('POST', '/v1/subs', { cid, lines }, { 'x-admin-token': admin });
+      const payload = { cid, lines };
+      // 只有「整軌抓完且零失敗」才標記 segCount。這是給後續觀看者的完整度保證，
+      // 有了它他們就能完全跳過整軌預抓（省 400+ 次 CDN 請求）。
+      if (harvestComplete && stats.playlistSegs > 0) payload.segCount = stats.playlistSegs;
+      const d = await backendRequest('POST', '/v1/subs', payload, { 'x-admin-token': admin });
       stats.beUploaded += (d.added || 0);
       console.log(`%c[f1zh] ☁ 已上傳 ${d.added} 句到共用快取（該影片累計 ${d.total} 句）`,
         'color:#0a0;font-weight:bold');
@@ -1163,6 +1173,7 @@ sorry mate → 抱歉
     } finally {
       harvesting = false;
     }
+    harvestComplete = stats.segFailed === 0 && stats.segFetched >= list.length;
     console.log(`%c[f1zh] ✅ 整軌預抓完成：成功 ${stats.segFetched} 段、失敗 ${stats.segFailed} 段，` +
       `待翻 ${prefetchQueue.length} 句`, 'color:#0a0;font-weight:bold');
     drainPrefetch();
@@ -1201,7 +1212,16 @@ sorry mate → 抱歉
         console.log('[f1zh] 偵測到直播（無 EXT-X-ENDLIST），維持即時攔截模式');
         return;
       }
-      console.log(`[f1zh] 字幕分段共 ${segs.length} 個，開始抓取`);
+      // 共用快取已涵蓋整支影片就不用再抓一次。
+      // 不跳過的話會白白對 F1 的 CDN 發 400+ 次請求，最後一句新的都找不到。
+      if (bundleLineCount > 0 && bundleSegCount === segs.length) {
+        console.log(`%c[f1zh] ⏭ 共用快取已涵蓋整支影片（${bundleLineCount} 句 / ${segs.length} 段），` +
+          `跳過整軌預抓`, 'color:#0a0;font-weight:bold');
+        stats.harvestSkipped++;
+        return;
+      }
+      console.log(`[f1zh] 字幕分段共 ${segs.length} 個，開始抓取` +
+        (bundleLineCount ? `（共用快取已有 ${bundleLineCount} 句，只會補缺漏）` : ''));
 
       // 從目前播放位置開始排序，讓馬上要用到的先翻，不要先去翻片尾
       const v = document.querySelector('video');
@@ -1747,6 +1767,8 @@ sorry mate → 抱歉
     backendPushBundle(prev);                   // 先把舊影片的成果貢獻出去
     sessionKeys.clear();
     playbackSecs = 0; prefetchWarned = false;  // 新影片重新計時
+    bundleSegCount = 0; bundleLineCount = 0; harvestComplete = false;
+    stats.segFetched = 0; stats.segFailed = 0; stats.playlistSegs = 0;
     // memo 保留（key 是正規化後的原文，不同影片不會撞，重看還能受惠），其餘全清
     lastRaw = ''; lastSeenCaption = '';
     prefetchSeen.clear();
@@ -1847,7 +1869,7 @@ sorry mate → 抱歉
         '  執行 __f1zh.netlog() 可看攔到哪些網址。');
     }, 1500);
 
-    console.log(`%c[f1zh] F1TV 繁中字幕 v4.4.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
+    console.log(`%c[f1zh] F1TV 繁中字幕 v4.5.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
       'color:#e10600;font-weight:bold');
   }
 
@@ -1959,7 +1981,9 @@ sorry mate → 抱歉
       `── 前瞻預譯 ──\n` +
       `狀態：${CFG.prefetch ? '開啟' : '關閉'}\n` +
       `整軌預抓：${CFG.fullPrefetch ? '開啟' : '關閉'}，清單 ${stats.playlistSegs} 段 / ` +
-      `已抓 ${stats.segFetched} 段（失敗 ${stats.segFailed}）\n` +
+      `已抓 ${stats.segFetched} 段（失敗 ${stats.segFailed}）` +
+      `${stats.harvestSkipped ? ' ← 已跳過（快取完整）' : ''}\n` +
+      `快取完整度：後端記錄 ${bundleSegCount} 段 / ${bundleLineCount} 句\n` +
       `Worker 注入：${CFG.workerInject ? '開啟' : '關閉'}，已注入 ${stats.workerPatched} 個\n` +
       `偵測到 Web Worker：${stats.workers} 個\n` +
       `從 Worker 收到的 VTT：${stats.workerVtt} 份\n` +

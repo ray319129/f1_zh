@@ -136,8 +136,12 @@ function lineKey(cid, k) { return `line:${cid}:${k}`; }
 
 async function readBundle(env, cid) {
   const raw = await env.SUBS.get(bundleKey(cid));
-  if (!raw) return { v: 1, cid, updatedAt: null, lines: {} };
-  try { return JSON.parse(raw); } catch { return { v: 1, cid, updatedAt: null, lines: {} }; }
+  if (!raw) return { v: 1, cid, updatedAt: null, segCount: 0, lines: {} };
+  try {
+    const b = JSON.parse(raw);
+    if (typeof b.segCount !== 'number') b.segCount = 0;
+    return b;
+  } catch { return { v: 1, cid, updatedAt: null, segCount: 0, lines: {} }; }
 }
 
 async function writeBundle(env, cid, bundle) {
@@ -217,6 +221,9 @@ async function handleGetSubs(request, env, url) {
   return json({
     cid,
     count: Object.keys(bundle.lines).length,
+    // segCount > 0 代表曾經有人「完整無失敗」地收割過這支影片。
+    // 用戶端拿它和字幕清單的分段數比對，相同就可以完全跳過整軌預抓。
+    segCount: bundle.segCount || 0,
     updatedAt: bundle.updatedAt,
     lines: bundle.lines,
   }, 200, { 'cache-control': 'public, max-age=60' });
@@ -225,11 +232,15 @@ async function handleGetSubs(request, env, url) {
 async function handlePostSubs(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return err('body 不是合法 JSON');
-  const { cid, lines } = body;
+  const { cid, lines, segCount } = body;
   if (!cid || !/^\d{1,20}$/.test(String(cid))) return err('缺少或格式錯誤的 cid');
   if (!lines || typeof lines !== 'object') return err('缺少 lines');
 
   const bundle = await readBundle(env, String(cid));
+  // 只有「完整無失敗」的收割才會帶 segCount 上來，代表這份 bundle 已涵蓋整支影片
+  if (typeof segCount === 'number' && segCount > (bundle.segCount || 0)) {
+    bundle.segCount = segCount;
+  }
   let added = 0;
   for (const [rawKey, zh] of Object.entries(lines)) {
     if (typeof zh !== 'string' || !zh) continue;
@@ -241,7 +252,11 @@ async function handlePostSubs(request, env) {
     added++;
   }
   await writeBundle(env, String(cid), bundle);
-  return json({ ok: true, cid: String(cid), added, total: Object.keys(bundle.lines).length });
+  return json({
+    ok: true, cid: String(cid), added,
+    total: Object.keys(bundle.lines).length,
+    segCount: bundle.segCount || 0,
+  });
 }
 
 async function handleTranslate(request, env, ip) {
