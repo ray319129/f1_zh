@@ -159,11 +159,13 @@ function deepFindM3u8(obj, depth) {
  * ⚠️ 只回傳權杖字串本身供 API 呼叫使用，以及**鍵名**供診斷。
  *    值永遠不會出現在診斷報告裡。
  */
-function pickTokens(text, out) {
+function pickTokens(text, out, src) {
   if (typeof text !== 'string') return;
-  const push = (s) => {
+  // 記下每個候選的「出處」。伺服器分別驗證 ascendontoken 與 entitlementtoken，
+  // 代表它們是兩個不同的權杖，必須各自配對正確的來源，不能亂試。
+  const push = (s, tag) => {
     if (typeof s !== 'string' || /\s/.test(s)) return;
-    if (/^ey[A-Za-z0-9_-]+\./.test(s) || s.length >= 40) out.push(s);
+    if (/^ey[A-Za-z0-9_-]+\./.test(s) || s.length >= 40) out.push({ v: s, src: tag || src });
   };
   push(text);
 
@@ -173,7 +175,7 @@ function pickTokens(text, out) {
   // 真正該送出去的解碼後字串從來沒進過候選清單。
   try {
     const dec = decodeURIComponent(text);
-    if (dec !== text) push(dec);
+    if (dec !== text) push(dec, src + '(decoded)');
   } catch (e) { /* 不是合法的 encoding */ }
 
   try {
@@ -184,7 +186,8 @@ function pickTokens(text, out) {
       if (typeof o !== 'object') return;
       for (const [k, v] of Object.entries(o)) {
         if (typeof v === 'string' && /subscriptionToken|ascendon|entitlement|accessToken|access_token|\btoken\b/i.test(k)) {
-          if (!/\s/.test(v) && v.length >= 20) out.unshift(v);
+          // 欄位名就是最精確的出處線索，排到最前面
+          if (!/\s/.test(v) && v.length >= 20) out.unshift({ v, src: src + '/' + k });
           continue;
         }
         walk(v, d + 1);
@@ -204,32 +207,57 @@ async function getCookieTokens() {
     for (const c of cookies) {
       if (!c.value || /^(_ga|_gid|OptanonC|__utm|NRBA_)/i.test(c.name)) continue;
       const before = out.length;
-      pickTokens(c.value, out);
+      pickTokens(c.value, out, 'cookie:' + c.name);
       if (out.length > before) names.push(`${c.name}(${c.value.length})`);
     }
   }
-  return { tokens: Array.from(new Set(out)).slice(0, 10), names: Array.from(new Set(names)) };
+  // 依 value 去重，保留第一個（出處最精確的那個）
+  const seen = new Set();
+  const uniq = out.filter((t) => (seen.has(t.v) ? false : (seen.add(t.v), true)));
+  return { tokens: uniq.slice(0, 12), names: Array.from(new Set(names)) };
 }
 
 /**
- * PLAY API 需要的授權 header 名稱未知，所以逐一嘗試。
- * F1TV 回的錯誤訊息點名了三種：Ascendon Token / Entitlement Token / Access Token。
- * 成功之後把組合記進 storage，之後直接用，不必每次重試。
+ * 建立「依出處精準配對」的嘗試清單。
+ *
+ * 實測發現伺服器**分別**驗證兩個權杖，各自回報自己的錯誤：
+ *   ascendontoken     → "AscendonToken signature validation failed"
+ *   entitlementtoken  → "EntitlementToken signature validation failed"
+ *
+ * 代表它們是兩個不同的權杖，各有各的來源：
+ *   ascendontoken     ← login-session cookie 裡的 subscriptionToken
+ *   entitlementtoken  ← entitlement_token cookie
+ *
+ * 先前的「合併」變體把**同一個值**塞進兩個 header，那組合注定失敗；
+ * 而盲目排列組合又會產生數十次無效請求（實測 60 次、74 秒）。
+ * 依出處配對後只剩個位數次嘗試。
  */
-const AUTH_HEADER_VARIANTS = [
-  (t) => ({ ascendontoken: t }),
-  (t) => ({ entitlementtoken: t }),
-  (t) => ({ ascendontoken: t, entitlementtoken: t }),   // 可能要求同時帶
-  (t) => ({ 'x-f1-ascendon-token': t }),
-  (t) => ({ accesstoken: t }),
-  (t) => ({ 'access-token': t }),
-  (t) => ({ authorization: `Bearer ${t}` }),
-  (t) => ({ authorization: t }),
-];
+function buildAttempts(tokens) {
+  const pick = (re) => tokens.filter((t) => re.test(t.src || ''));
+  const asc = pick(/subscriptionToken|login-session|ascendon/i);
+  const ent = pick(/entitlement/i);
+  const rest = tokens.filter((t) => !asc.includes(t) && !ent.includes(t));
+  const A = [];
 
-// 全排列會產生幾十次失敗請求（實測 10 權杖 × 6 header = 60 次、耗時 74 秒）。
-// 那既慢又像在探測，所以設上限；候選清單本來就已依「欄位名像不像」排序。
-const MAX_AUTH_ATTEMPTS = 14;
+  // 1) 兩個一起送，各用各的來源 —— 最可能正確的組合
+  for (const a of asc.slice(0, 2)) {
+    for (const e of ent.slice(0, 2)) {
+      A.push({
+        headers: { ascendontoken: a.v, entitlementtoken: e.v },
+        label: `ascendon←${a.src} + entitlement←${e.src}`,
+      });
+    }
+  }
+  // 2) 各自單獨送
+  for (const a of asc.slice(0, 2)) A.push({ headers: { ascendontoken: a.v }, label: `ascendontoken←${a.src}` });
+  for (const e of ent.slice(0, 2)) A.push({ headers: { entitlementtoken: e.v }, label: `entitlementtoken←${e.src}` });
+  // 3) 兜底：出處不明的候選
+  for (const t of rest.slice(0, 3)) {
+    A.push({ headers: { ascendontoken: t.v }, label: `ascendontoken←${t.src}` });
+  }
+  A.push({ headers: {}, label: '不帶授權 header' });
+  return A.slice(0, 14);
+}
 
 async function tryPlay(url, headers) {
   const res = await fetch(url, { credentials: 'include', headers: headers || {} });
@@ -244,60 +272,42 @@ async function resolvePlayback(cid, tokens) {
   const url = `https://f1tv.formula1.com/3.0/R/ENG/WEB_HLS/ALL/CONTENT/PLAY`
             + `?contentId=${encodeURIComponent(cid)}&player=player_tm`;
 
-  // 先試上次成功的組合
-  const { authRecipe } = await chrome.storage.local.get('authRecipe');
-  const list = Array.isArray(tokens) ? tokens : [];
-  const attempts = [];
-
-  if (authRecipe && typeof authRecipe.variant === 'number' && list[authRecipe.tokenIndex]) {
-    attempts.push({ v: authRecipe.variant, ti: authRecipe.tokenIndex });
-  }
-  // 廣度優先：先讓每個權杖都試最可能的前兩種 header，再往後試冷門的。
-  // 比「一個權杖試完六種再換下一個」更快命中，也更早停損。
-  for (let v = 0; v < AUTH_HEADER_VARIANTS.length; v++) {
-    for (let ti = 0; ti < list.length; ti++) attempts.push({ v, ti });
-  }
-  attempts.push({ v: -1, ti: -1 });   // 最後試「完全不帶 header」
-  attempts.length = Math.min(attempts.length, MAX_AUTH_ATTEMPTS);
+  const list = (Array.isArray(tokens) ? tokens : []).filter((t) => t && t.v);
+  const attempts = buildAttempts(list);
 
   let last = null;
-  let best = null;   // 「最接近成功」的一次
+  let best = null;        // 「最接近成功」的一次
+  const tried = [];       // 只記 label（出處名稱），不含權杖值
 
   for (const a of attempts) {
-    const headers = a.v >= 0 ? AUTH_HEADER_VARIANTS[a.v](list[a.ti]) : {};
     let r;
-    try { r = await tryPlay(url, headers); }
+    try { r = await tryPlay(url, a.headers); }
     catch (e) { last = { status: 0, text: String(e.message || e) }; continue; }
     last = r;
+    tried.push(`${a.label} → ${r.status}`);
 
     // 錯誤訊息本身就是進度指示：
-    //   400 Missing parameter…  → header 名稱錯，伺服器根本沒讀到
-    //   401 signature validation failed / expired → header 名稱**對了**，只是值不被接受
-    // 記下最接近的那次，失敗時回報出來，下一輪就知道該往哪個方向查。
+    //   400 Missing parameter…                    → header 名稱錯，伺服器沒讀到
+    //   401 signature validation failed / expired → header 名稱對，值被拒
     const reached = /signature|expired|invalid|ACN_3005/i.test(r.text || '');
     if (reached && !best) {
-      best = { headerNames: Object.keys(headers), status: r.status, msg: String(r.text).slice(0, 160) };
+      best = { headerNames: Object.keys(a.headers), status: r.status, msg: String(r.text).slice(0, 160) };
     }
 
     if (r.ok) {
-      if (a.v >= 0) await chrome.storage.local.set({ authRecipe: { variant: a.v, tokenIndex: a.ti } });
-      return {
-        ok: true, status: r.status, master: r.master,
-        usedHeader: a.v >= 0 ? Object.keys(AUTH_HEADER_VARIANTS[a.v]('x'))[0] : '(無)',
-      };
+      return { ok: true, status: r.status, master: r.master, usedHeader: a.label };
     }
   }
 
-  await chrome.storage.local.remove('authRecipe');
   return {
     ok: false,
     status: last ? last.status : 0,
     tokensTried: list.length,
-    variantsTried: AUTH_HEADER_VARIANTS.length,
     attemptsMade: attempts.length,
+    tried,
     topKeys: last && last.data ? Object.keys(last.data).slice(0, 20) : [],
     hint: last ? String(last.text).slice(0, 260) : '無回應',
-    best,   // header 名稱正確、只是權杖被拒的那一次
+    best,
   };
 }
 

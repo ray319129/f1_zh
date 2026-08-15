@@ -423,11 +423,12 @@
     return s.length >= 40;
   }
 
+  let srcTag = '?';
   function harvestStrings(obj, out, depth) {
     depth = depth || 0;
     if (depth > 6 || obj == null || out.length > 60) return;
     if (typeof obj === 'string') {
-      if (looksLikeToken(obj)) out.push(obj);
+      if (looksLikeToken(obj)) out.push({ v: obj, src: srcTag });
       // 值本身可能又是一層 JSON 或 URL-encoded JSON
       if (obj.length > 20 && /[{%]/.test(obj)) {
         try { harvestStrings(JSON.parse(decodeURIComponent(obj)), out, depth + 1); } catch (e) { /* noop */ }
@@ -437,7 +438,9 @@
     if (typeof obj !== 'object') return;
     for (const [k, v] of Object.entries(obj)) {
       // 欄位名命中提示詞的優先排到最前面
-      if (typeof v === 'string' && looksLikeToken(v) && TOKEN_FIELD_HINT.test(k)) { out.unshift(v); continue; }
+      if (typeof v === 'string' && looksLikeToken(v) && TOKEN_FIELD_HINT.test(k)) {
+        out.unshift({ v, src: srcTag + '/' + k }); continue;
+      }
       harvestStrings(v, out, depth + 1);
     }
   }
@@ -451,6 +454,7 @@
       try { raw = store.getItem(key) || ''; } catch (e) { continue; }
       if (!raw) continue;
       authSources.push(`${label}:${key}(${raw.length})`);
+      srcTag = `${label}:${key}`;
       try { harvestStrings(JSON.parse(raw), out); }
       catch (e) { harvestStrings(raw, out); }
     }
@@ -484,6 +488,7 @@
         const val = part.slice(i + 1).trim();
         if (!name || !val || NOISE_KEY.test(name)) continue;
         authSources.push(`CK:${name}(${val.length})`);
+        srcTag = `cookie:${name}`;
         harvestStrings(decodeURIComponent(val), out);
       }
     } catch (e) { /* noop */ }
@@ -495,7 +500,8 @@
       authSources.push(...(ck.names || []).map((n) => `CK*:${n}`));
     }
 
-    authTokenCache = Array.from(new Set(out)).slice(0, 10);
+    const seen = new Set();
+    authTokenCache = out.filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false).slice(0, 12);
     evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個候選值`);
     return authTokenCache;
   }
@@ -615,11 +621,14 @@
       const tokens = await findAuthTokens();
       const pb = (await send({ type: 'resolvePlayback', cid, tokens })).playback || {};
       if (!pb.ok || !pb.master) {
-        evWarn(`取不到串流位址（HTTP ${pb.status || '?'}）` +
-          `，已試 ${pb.attemptsMade || 0} 種組合（${pb.tokensTried || 0} 權杖 / ${pb.variantsTried || 0} header）` +
-          (pb.topKeys && pb.topKeys.length ? `，回應欄位：${pb.topKeys.join(', ')}` : '') +
-          (pb.hint ? `
-    伺服器回應：${pb.hint}` : ''));
+        const NL = String.fromCharCode(10);
+        evWarn('取不到串流位址（HTTP ' + (pb.status || '?') + '）'
+          + '，已試 ' + (pb.attemptsMade || 0) + ' 種組合（' + (pb.tokensTried || 0) + ' 個候選權杖）'
+          + (pb.tried && pb.tried.length
+              ? NL + '    嘗試過的配對：' + NL + '      ' + pb.tried.join(NL + '      ')
+              : '')
+          + (pb.topKeys && pb.topKeys.length ? NL + '    回應欄位：' + pb.topKeys.join(', ') : '')
+          + (pb.hint ? NL + '    伺服器回應：' + pb.hint : ''));
         if (pb.best) {
           authBestHeader = pb.best.headerNames.join(' + ');
           evWarn(`✔ header 名稱正確：${pb.best.headerNames.join(' + ')}（HTTP ${pb.best.status}）
