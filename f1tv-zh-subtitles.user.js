@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.5.0
+// @version      4.6.0
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -635,6 +635,22 @@ sorry mate → 抱歉
   // 若 bundleSegCount 等於字幕清單的分段數，代表整支影片都翻過了，可以完全跳過收割。
   let bundleSegCount = 0, bundleLineCount = 0, harvestComplete = false;
 
+  // 已成功上傳的 key。上傳只送差集，避免重複傳送整包。
+  const uploadedKeys = new Set();
+  let uploadInFlight = false;
+
+  // 收割的併發鎖與世代編號。
+  // 鎖：防止手動按鈕在收割進行中再啟一條（實測會變成雙倍 CDN 請求）。
+  // 世代：換影片時遞增，正在跑的收割迴圈看到不一致就自行中止。
+  let harvestInFlight = false;
+  let harvestGen = 0;
+
+  // 從播放 API 觀察到的 contentId。
+  // F1TV 有多種網址形式（/detail/<id>/... 與 /page/<id>/...），
+  // 只靠網址解析會在後者失敗，導致完全不上傳、譯文全丟。
+  let seenContentId = null;
+  let lastPath = location.pathname;
+
   const log = (...a) => CFG.debug && console.log('%c[f1zh]', 'color:#e10600;font-weight:bold', ...a);
 
   // ==========================================================================
@@ -945,6 +961,7 @@ sorry mate → 抱歉
   }
 
   function noteUrl(url, kind) {
+    noteContentIdFromUrl(url);
     netlog.push({ kind, url: String(url).slice(0, 220), t: new Date().toISOString().slice(11, 19) });
     if (netlog.length > 250) netlog.shift();
   }
@@ -1049,31 +1066,80 @@ sorry mate → 抱歉
     }
   }
 
-  // 收割完成後呼叫：把本機翻好的譯文貢獻回共用快取
-  async function backendPushBundle(cid) {
-    if (!backendOn() || !CFG.backendUpload || !cid) return;
-    const admin = GM_getValue('adminToken', '');
-    if (!admin) return;                       // 沒有管理權杖就不上傳
+  /** 取出尚未上傳的差集。重複呼叫不會重送同樣的內容。 */
+  function pendingUpload() {
     const lines = {};
     let n = 0;
     for (const k of sessionKeys) {
+      if (uploadedKeys.has(k)) continue;
       const zh = memo.get(k);
       if (zh) { lines[k] = zh; n++; }
     }
-    if (!n) return;
+    return { lines, n };
+  }
+
+  /**
+   * 把譯文貢獻回共用快取。只送差集。
+   * 會被三種情境呼叫：定時（每 60 秒）、佇列翻完、離開頁面。
+   * 定時上傳是為了讓「翻到一半關掉分頁」最多只損失最近 60 秒的成果。
+   */
+  async function backendPushBundle(cid, opts) {
+    const quiet = opts && opts.quiet;
+    if (!backendOn() || !CFG.backendUpload) return 0;
+    if (!cid) {
+      if (!quiet) console.warn('[f1zh] 無法上傳：抓不到 contentId');
+      return 0;
+    }
+    const admin = GM_getValue('adminToken', '');
+    if (!admin) return 0;                     // 沒有管理權杖就不上傳
+    if (uploadInFlight) return 0;             // 避免重複點按造成併發
+
+    const { lines, n } = pendingUpload();
+    if (!n) { if (!quiet) console.log('[f1zh] ☁ 沒有新譯文需要上傳'); return 0; }
+
+    uploadInFlight = true;
     try {
       const payload = { cid, lines };
       // 只有「整軌抓完且零失敗」才標記 segCount。這是給後續觀看者的完整度保證，
-      // 有了它他們就能完全跳過整軌預抓（省 400+ 次 CDN 請求）。
+      // 有了它他們就能完全跳過整軌預抓（省上千次 CDN 請求）。
       if (harvestComplete && stats.playlistSegs > 0) payload.segCount = stats.playlistSegs;
       const d = await backendRequest('POST', '/v1/subs', payload, { 'x-admin-token': admin });
+      Object.keys(lines).forEach((k) => uploadedKeys.add(k));
       stats.beUploaded += (d.added || 0);
-      console.log(`%c[f1zh] ☁ 已上傳 ${d.added} 句到共用快取（該影片累計 ${d.total} 句）`,
-        'color:#0a0;font-weight:bold');
+      console.log(`%c[f1zh] ☁ 已上傳 ${d.added} 句到共用快取（該影片累計 ${d.total} 句` +
+        `${d.segCount ? `，已標記完整：${d.segCount} 段` : ''}）`, 'color:#0a0;font-weight:bold');
+      return d.added || 0;
     } catch (e) {
       stats.beErrors++;
-      console.warn('[f1zh] 後端上傳失敗:', e.message);
+      console.warn('[f1zh] 後端上傳失敗（下次會重試）:', e.message);
+      return 0;
+    } finally {
+      uploadInFlight = false;
     }
+  }
+
+  /**
+   * 離開頁面時的最後一搏。
+   * GM_xmlhttpRequest 在 unload 時多半送不出去，改用 fetch 的 keepalive，
+   * 它就是為這個情境設計的。差集因為有定時上傳所以通常很小。
+   */
+  function flushUploadOnExit() {
+    try {
+      if (!backendOn() || !CFG.backendUpload) return;
+      const admin = GM_getValue('adminToken', '');
+      const cid = currentContentId();
+      if (!admin || !cid) return;
+      const { lines, n } = pendingUpload();
+      if (!n) return;
+      const body = JSON.stringify({ cid, lines });
+      if (body.length > 60000) return;        // keepalive 有 64KB 上限，超過就放棄
+      fetch(backendBase() + '/v1/subs', {
+        method: 'POST', keepalive: true,
+        headers: { 'content-type': 'application/json', 'x-admin-token': admin },
+        body,
+      }).catch(() => {});
+      Object.keys(lines).forEach((k) => uploadedKeys.add(k));
+    } catch (e) { /* 離開途中，不做任何事 */ }
   }
 
   // ==========================================================================
@@ -1154,10 +1220,11 @@ sorry mate → 抱歉
   let prefetchAttempts = 0;
   const PREFETCH_MAX_ATTEMPTS = 3;
 
-  async function fetchSegments(list) {
+  async function fetchSegments(list, myGen) {
     let idx = 0;
     const worker = async () => {
-      while (idx < list.length && enabled && CFG.fullPrefetch) {
+      // myGen !== harvestGen 代表使用者已經換了影片或離開，這條收割立刻收手
+      while (idx < list.length && enabled && CFG.fullPrefetch && myGen === harvestGen) {
         const s = list[idx++];
         try {
           const t = await httpGet(s.url);
@@ -1173,11 +1240,16 @@ sorry mate → 抱歉
     } finally {
       harvesting = false;
     }
+    if (myGen !== harvestGen) {
+      console.log('[f1zh] 收割已中止（影片切換或離開頁面）');
+      return;
+    }
+    // 只有「全部抓齊且零失敗」才算完整，這個旗標會決定上傳時要不要標記 segCount
     harvestComplete = stats.segFailed === 0 && stats.segFetched >= list.length;
     console.log(`%c[f1zh] ✅ 整軌預抓完成：成功 ${stats.segFetched} 段、失敗 ${stats.segFailed} 段，` +
       `待翻 ${prefetchQueue.length} 句`, 'color:#0a0;font-weight:bold');
     drainPrefetch();
-    // 等佇列翻完再上傳，讓共用快取拿到完整的一支
+    // 等佇列翻完再上傳一次，讓共用快取拿到完整的一支並標記 segCount
     waitForPrefetchIdleThenUpload();
   }
 
@@ -1191,6 +1263,12 @@ sorry mate → 抱歉
   }
 
   async function startFullPrefetch(force) {
+    // 併發鎖：手動按鈕會重設 fullPrefetchStarted，若不擋住就會在收割進行中
+    // 再啟一條，實測會對 CDN 發出雙倍請求（1056 段抓了 2112 次）
+    if (harvestInFlight) {
+      if (force) console.log('[f1zh] 整軌預抓已在進行中，忽略這次觸發');
+      return;
+    }
     if (fullPrefetchStarted || !CFG.fullPrefetch || !CFG.prefetch || !enabled) return;
     // 失敗就別再無限重試 —— 這個函式掛在 1.5 秒的輪詢裡，
     // 沒有上限的話會一直洗版並反覆打 CDN
@@ -1198,7 +1276,10 @@ sorry mate → 抱歉
     const sp = findSubtitlePlaylist();
     if (!sp) return;
     fullPrefetchStarted = true;
+    harvestInFlight = true;
     prefetchAttempts++;
+    const myGen = harvestGen;
+    stats.segFetched = 0; stats.segFailed = 0;   // 每次收割獨立計數，否則完整度判斷會失準
     try {
       console.log(`%c[f1zh] 🎯 找到字幕播放清單（${sp.lang || '?'}，${sp.how}），開始整軌預抓`,
         'color:#0a0;font-weight:bold');
@@ -1231,13 +1312,15 @@ sorry mate → 抱歉
         if (acc + segs[i].dur > cur) { startIdx = i; break; }
         acc += segs[i].dur;
       }
-      await fetchSegments(segs.slice(startIdx).concat(segs.slice(0, startIdx)));
+      await fetchSegments(segs.slice(startIdx).concat(segs.slice(0, startIdx)), myGen);
     } catch (e) {
       fullPrefetchStarted = false;
       const left = PREFETCH_MAX_ATTEMPTS - prefetchAttempts;
       console.warn(`[f1zh] 整軌預抓失敗（${e.message}），維持即時攔截。` +
         (left > 0 ? `還會重試 ${left} 次。` : '已達重試上限，不再自動重試（可用選單手動觸發）。'));
       console.warn('[f1zh] 使用的清單網址:', sp.url);
+    } finally {
+      harvestInFlight = false;
     }
   }
 
@@ -1750,22 +1833,39 @@ sorry mate → 抱歉
   }
 
   // ---- 影片切換偵測（SPA 換頁不會重新載入腳本）----
+  // 網址優先（載入當下就有），否則用從播放 API 觀察到的。
+  // 從 /page/... 進去看影片時網址不含 contentId，這時只有觀察值可用。
   function currentContentId() {
     const m = location.pathname.match(/\/detail\/(\d+)/);
-    return m ? m[1] : null;
+    if (m) return m[1];
+    return seenContentId;
+  }
+
+  // 任何經過的網址只要帶 contentId 就記下來（PLAY API 一定會帶）
+  function noteContentIdFromUrl(url) {
+    const m = String(url || '').match(/[?&]contentId=(\d+)/i);
+    if (m) seenContentId = m[1];
   }
 
   let lastContentId = null;
   function checkContentChange() {
+    // 換頁時把觀察到的 contentId 清掉，等新的 PLAY API 告訴我們現在在播什麼
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      seenContentId = null;
+    }
     const cid = currentContentId();
+    if (!cid) return;                          // 還不知道在播什麼，先等
     if (cid === lastContentId) return;
     const prev = lastContentId;
     lastContentId = cid;
-    if (prev === null) return;                 // 首次載入不算切換
+    if (prev === null) { backendPullBundle(cid); return; }   // 首次確定影片
 
     console.log(`%c[f1zh] 偵測到影片切換 ${prev} → ${cid}，重置狀態`, 'color:#e10600');
+    harvestGen++;                              // 讓還在跑的收割迴圈自行中止
     backendPushBundle(prev);                   // 先把舊影片的成果貢獻出去
     sessionKeys.clear();
+    uploadedKeys.clear();
     playbackSecs = 0; prefetchWarned = false;  // 新影片重新計時
     bundleSegCount = 0; bundleLineCount = 0; harvestComplete = false;
     stats.segFetched = 0; stats.segFailed = 0; stats.playlistSegs = 0;
@@ -1832,7 +1932,17 @@ sorry mate → 抱歉
     mount();
 
     lastContentId = currentContentId();
-    backendPullBundle(lastContentId);          // 首次載入也要問共用快取
+    if (lastContentId) backendPullBundle(lastContentId);
+
+    // 定時上傳差集：翻到一半關掉分頁時，最多只損失最近 60 秒的成果。
+    // 只在有新譯文時才真的發請求（pendingUpload 是空的就直接返回）。
+    setInterval(() => backendPushBundle(currentContentId(), { quiet: true }), 60000);
+
+    // 離開頁面時的最後一搏
+    window.addEventListener('pagehide', flushUploadOnExit);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushUploadOnExit();
+    });
 
     // 快輪詢：字幕偵測的主力。observer 失聯時由它接手，最多晚 250ms。
     setInterval(pollCaption, CFG.captionPollMs);
@@ -1869,7 +1979,7 @@ sorry mate → 抱歉
         '  執行 __f1zh.netlog() 可看攔到哪些網址。');
     }, 1500);
 
-    console.log(`%c[f1zh] F1TV 繁中字幕 v4.5.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
+    console.log(`%c[f1zh] F1TV 繁中字幕 v4.6.0 已載入（共用譯文後端：${backendOn() ? '已啟用' : '未設定'}）`,
       'color:#e10600;font-weight:bold');
   }
 
@@ -1930,13 +2040,24 @@ sorry mate → 抱歉
 
   GM_registerMenuCommand('☁ 立即上傳本片譯文', async () => {
     const cid = currentContentId();
-    if (!cid) { alert('不在播放頁。'); return; }
+    if (!cid) { alert('抓不到 contentId（可能還沒開始播放）。'); return; }
     if (!GM_getValue('adminToken', '')) { alert('未設定 ADMIN_TOKEN，無法上傳。'); return; }
-    await backendPushBundle(cid);
-    alert('上傳完成，詳情見 Console。');
+    const { n } = pendingUpload();
+    if (!n) {
+      alert(`沒有新譯文需要上傳。\n\n本片已上傳 ${uploadedKeys.size} 句` +
+            `${prefetchQueue.length ? `\n還有 ${prefetchQueue.length} 句正在翻譯中，翻完會自動上傳。` : ''}`);
+      return;
+    }
+    const added = await backendPushBundle(cid);
+    alert(`已上傳 ${added} 句。\n\n（平時不用手動按——每 60 秒與翻譯完成時都會自動上傳）`);
   });
 
   GM_registerMenuCommand('🎯 立即整軌預抓（重播用）', () => {
+    if (harvestInFlight) {
+      alert(`整軌預抓正在進行中，不會重複啟動。\n\n` +
+            `已抓 ${stats.segFetched} / ${stats.playlistSegs} 段\n待翻 ${prefetchQueue.length} 句`);
+      return;
+    }
     if (!manifests.length) { alert('還沒攔到 manifest。請先開始播放，等幾秒再試。'); return; }
     const sp = findSubtitlePlaylist();
     if (!sp) { alert('攔到 ' + manifests.length + ' 份 manifest，但找不到字幕清單。'); return; }
@@ -1977,7 +2098,8 @@ sorry mate → 抱歉
       `── 共用譯文後端 ──\n` +
       `狀態：${backendOn() ? backendBase() : '未設定（純本機模式）'}\n` +
       `權限：${GM_getValue('adminToken', '') ? '可上傳' : '唯讀'}\n` +
-      `本次下載：${stats.beDownloaded} 句 ／ 上傳：${stats.beUploaded} 句 ／ 錯誤：${stats.beErrors}\n\n` +
+      `本次下載：${stats.beDownloaded} 句 ／ 上傳：${stats.beUploaded} 句 ／ 錯誤：${stats.beErrors}\n` +
+      `待上傳：${pendingUpload().n} 句（每 60 秒自動上傳一次）\n\n` +
       `── 前瞻預譯 ──\n` +
       `狀態：${CFG.prefetch ? '開啟' : '關閉'}\n` +
       `整軌預抓：${CFG.fullPrefetch ? '開啟' : '關閉'}，清單 ${stats.playlistSegs} 段 / ` +
