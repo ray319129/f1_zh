@@ -367,6 +367,45 @@ F1TV 的串流網路請求全在 blob worker 內，主執行緒 patch `fetch`/`X
 
 ---
 
+## 7.7 擴充功能架構（P2）
+
+`extension/`，MV3，`v0.1.0`。詳見 [`extension/README.md`](./extension/README.md)。
+
+### 為什麼不需要 MAIN world
+
+userscript 需要 `unsafeWindow` 是為了注入 blob worker。擴充功能依 7.3 的決策**不做 worker 注入**，
+所以只需要 DOM —— 可以跑在 **ISOLATED world**，與頁面 JS 完全隔離。
+
+| | Userscript | 擴充功能 |
+|---|---|---|
+| 執行環境 | 頁面環境 | **ISOLATED world** |
+| 取得字幕 | 三層降級 | **只有 DOM** |
+| contentId | 攔截網路請求 | **`performance.getEntriesByType('resource')`** |
+| API 金鑰 | 使用者本機 | **不存在，後端保管** |
+| 網路請求 | 直接發 | **全部經 service worker** |
+
+`performance` API 在 ISOLATED world 就能讀到，而且是**回溯的**——不需要提早 hook，
+也不需要 `webRequest` 那種高風險權限。這正是專案第一天用來診斷的同一個工具。
+
+結果：權限只有兩個網域、審核好過、程式碼約為 userscript 的三分之一，
+而且沒有任何會被 F1TV 改版打壞的注入邏輯。
+
+### ⚠️ `normKey()` 是三份程式碼的硬性契約
+
+`extension/src/shared/normalize.js`、`backend/src/index.js`、`f1tv-zh-subtitles.user.js`
+三處必須**行為完全一致**，否則同一句話算出不同的鍵，共用快取整個失效——
+**不會報錯，只會默默重翻**。
+
+已做成可重複執行的檢查：
+
+```bash
+node tools/check-normkey.js
+```
+
+**修改任何一處的 normKey 之後都要跑這個。**
+
+---
+
 ## 8. 風險與防禦
 
 | 破壞面 | 可能性 | 衝擊 | 防禦 |
@@ -418,7 +457,7 @@ v4.1.0 的「切換車手鏡頭後字幕消失」暴露了一個比 DOM 改版�
 | — | 個人自用版 | — | ✅ 完成 |
 | **P0** | **免費開源驗證需求**（整理 README、發文、看裝機數） | 1 週 | ⬜ **仍建議補做** |
 | P1 | 後端（Workers + KV 快取 + 上傳／下載 API） | 2 週 | ✅ **已部署並驗證**（見 10.1） |
-| P2 | MV3 擴充功能（DOM-only） | 2 週 | ⬜ |
+| P2 | MV3 擴充功能（DOM-only） | 2 週 | 🟡 **v0.1.0 骨架完成，待實機測試** |
 | P3 | 商業化（金流、登入、配額、免費層） | 3 週 | ⬜ |
 | P4 | 上架（隱私政策、審核、著陸頁） | 1 週 | ⬜ |
 
@@ -486,6 +525,7 @@ v4.1.0 的「切換車手鏡頭後字幕消失」暴露了一個比 DOM 改版�
 
 | 日期 | 版本 | 內容 |
 |---|---|---|
+| 2026-08-16 | **extension v0.1.0（P2 起步）** | MV3 擴充功能骨架。關鍵決策：**不做 Worker 注入，因此不需要 MAIN world，跑在 ISOLATED world**；contentId 改用 `performance.getEntriesByType('resource')` 取得（回溯、免 webRequest 權限）；所有網路請求集中在 service worker；`/v1/config` 遠端設定讓 F1TV 改版可熱修不用送審。新增 `tools/check-normkey.js` 驗證三份 `normKey()` 一致 |
 | 2026-08-16 | **v4.7.2** | 修坑 #17（手動 🎯 會默默重抓整支）。收割完成時登記本機覆蓋率，讓重新進入自動走「跳過」路徑；按鈕在已完整時要求確認；強制觸發留下時間軸紀錄 |
 | 2026-08-16 | **v4.7.1** | 修坑 #16（跨影片 memo 污染導致共用 bundle 缺角，從診斷報告的時間軸發現）。加 `prefetchDoneForCid` 以 contentId 為鍵的預抓決策保險。診斷面板改顯示目前觀察中的容器數 |
 | 2026-08-16 | **v4.7.0** | **可觀測性**：新增事件時間軸（所有狀態變化都印到 Console 並存入環形緩衝）、階段指示、收割與翻譯的 10% 進度回報、**「📋 匯出完整診斷」一鍵複製完整報告**。修坑 #14（無旁白片段誤判為故障）、#15（收割中止只看 contentId，播放器返回鍵無效） |

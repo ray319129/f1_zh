@@ -1,0 +1,91 @@
+/**
+ * 選項頁
+ *
+ * 所有設定寫進 chrome.storage.local。content script 有掛 storage.onChanged，
+ * 所以調整字級或開關會**立刻反映在正在播放的頁面上**，不用重新整理。
+ */
+
+const DEFAULTS = {
+  enabled: true,
+  showEnglish: true,
+  fontSize: 26,
+  bottomPct: 8,
+  holdMs: 7000,
+  hideNativeCC: true,
+};
+
+const $ = (id) => document.getElementById(id);
+const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
+const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
+
+function renderOutputs(s) {
+  $('fontSizeOut').textContent = s.fontSize + ' px';
+  $('bottomPctOut').textContent = s.bottomPct + ' %';
+  $('holdMsOut').textContent = (s.holdMs / 1000).toFixed(1) + ' 秒';
+}
+
+async function load() {
+  const { settings, clientToken } = await chrome.storage.local.get(['settings', 'clientToken']);
+  const s = Object.assign({}, DEFAULTS, settings || {});
+  TOGGLES.forEach((k) => { $(k).checked = !!s[k]; });
+  RANGES.forEach((k) => { $(k).value = s[k]; });
+  $('clientToken').value = clientToken || '';
+  renderOutputs(s);
+  return s;
+}
+
+async function save() {
+  const s = {};
+  TOGGLES.forEach((k) => { s[k] = $(k).checked; });
+  RANGES.forEach((k) => { s[k] = Number($(k).value); });
+  renderOutputs(s);
+  await chrome.storage.local.set({ settings: s });
+}
+
+TOGGLES.concat(RANGES).forEach((k) => {
+  $(k).addEventListener('input', save);
+  $(k).addEventListener('change', save);
+});
+
+$('clientToken').addEventListener('change', async () => {
+  await chrome.storage.local.set({ clientToken: $('clientToken').value.trim() });
+  $('testResult').textContent = '金鑰已儲存，建議按一次「測試連線」';
+  $('testResult').className = 'result';
+});
+
+$('test').addEventListener('click', async () => {
+  const out = $('testResult');
+  out.textContent = '測試中…';
+  out.className = 'result';
+  const res = await chrome.runtime.sendMessage({ type: 'health' });
+  if (res && res.ok) {
+    out.textContent = `✅ 連線正常（模型 ${res.health.model}）`;
+    out.className = 'result ok';
+  } else {
+    out.textContent = `❌ 連線失敗：${(res && res.error) || '未知錯誤'}`;
+    out.className = 'result err';
+  }
+});
+
+/** 顯示目前分頁的即時狀態，方便自己與使用者排查 */
+async function refreshStatus() {
+  const lines = [];
+  try {
+    const cfg = await chrome.runtime.sendMessage({ type: 'getConfig' });
+    const v = cfg && cfg.ok ? cfg.config.version : '?';
+    lines.push(`遠端設定版本：${v}${v === 0 ? '（內建預設，尚未取得遠端設定）' : ''}`);
+  } catch (e) { lines.push('遠端設定：讀取失敗'); }
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && /f1tv\.formula1\.com/.test(tab.url || '')) {
+      lines.push(`目前分頁：${tab.url.slice(0, 80)}`);
+    } else {
+      lines.push('目前分頁不是 F1TV。請開啟 F1TV 播放頁後再看狀態。');
+    }
+  } catch (e) { /* popup 以外的情境可能沒有 tabs 權限，忽略 */ }
+
+  $('status').textContent = lines.join('\n');
+}
+
+load().then(refreshStatus);

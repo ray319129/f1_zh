@@ -1,0 +1,42 @@
+/*
+ * 疊字層樣式
+ *
+ * 全部用 #pitlingo- 前綴的 id 選擇器，特異性夠高，
+ * 不會被 F1TV 自己的樣式蓋掉，也不會反過來影響到頁面。
+ * position:fixed + 由 JS 計算座標，才能同時應付視窗、網頁全螢幕、真全螢幕。
+ */
+
+#pitlingo-box {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;              /* 絕對不能擋住播放器的操作 */
+  transform: translateX(-50%);
+  text-align: center;
+  font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  line-height: 1.35;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+#pitlingo-box.on { opacity: 1; }
+
+#pitlingo-zh {
+  color: #fff;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.72);
+  border-radius: 6px;
+  padding: 4px 14px;
+  display: inline-block;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+#pitlingo-en {
+  color: #c9c9c9;
+  font-weight: 400;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+  padding: 2px 12px;
+  display: inline-block;
+  margin-top: 3px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>PitLingo 設定</title>
+  <!--
+    MV3 的 CSP 禁止行內 script 與行內 style，所以樣式與邏輯都必須是獨立檔案。
+    這是上架審核最常見的失敗原因之一。
+  -->
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header>
+    <h1>PitLingo</h1>
+    <p class="sub">F1TV 英文 CC → 即時繁體中文字幕</p>
+  </header>
+
+  <section>
+    <h2>連線</h2>
+    <label class="field">
+      <span>存取金鑰</span>
+      <input id="clientToken" type="password" placeholder="貼上你的存取金鑰" autocomplete="off">
+    </label>
+    <p class="hint">目前為測試階段，金鑰由開發者提供。正式版會改為帳號登入。</p>
+    <div class="row">
+      <button id="test" class="secondary">測試連線</button>
+      <span id="testResult" class="result"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>顯示</h2>
+    <label class="toggle">
+      <input id="enabled" type="checkbox">
+      <span>啟用字幕翻譯</span>
+    </label>
+    <label class="toggle">
+      <input id="showEnglish" type="checkbox">
+      <span>同時顯示英文原文（建議開啟）</span>
+    </label>
+    <label class="toggle">
+      <input id="hideNativeCC" type="checkbox">
+      <span>隱藏 F1TV 原本的英文字幕</span>
+    </label>
+
+    <label class="field">
+      <span>字級 <output id="fontSizeOut"></output></span>
+      <input id="fontSize" type="range" min="14" max="48" step="1">
+    </label>
+
+    <label class="field">
+      <span>距離畫面底部 <output id="bottomPctOut"></output></span>
+      <input id="bottomPct" type="range" min="0" max="30" step="1">
+    </label>
+
+    <label class="field">
+      <span>字幕停留時間 <output id="holdMsOut"></output></span>
+      <input id="holdMs" type="range" min="3000" max="12000" step="500">
+    </label>
+  </section>
+
+  <section>
+    <h2>狀態</h2>
+    <pre id="status">讀取中…</pre>
+  </section>
+
+  <footer>
+    <p>
+      PitLingo 是第三方獨立工具，與 Formula 1、F1TV 無任何隸屬或合作關係，亦未獲其背書。
+      使用本工具需要你自備有效的 F1TV 訂閱。
+    </p>
+  </footer>
+
+  <script src="options.js"></script>
+</body>
+</html>
