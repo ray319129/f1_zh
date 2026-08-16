@@ -178,7 +178,27 @@ async function markComplete(cid, segCount) {
  * PLAY API 那整套（權杖掃描、header 組合、cookie 讀取）已於 v0.4.0 移除——
  * 八個版本都沒通，而且新的預抓入口根本不需要授權。
  */
+// 只允許抓這些網域。**這個白名單是必要的，不是防禦性程式設計。**
+//
+// 字幕清單的網址來自 content script，而 content script 是從 MAIN world 的
+// window.postMessage 收來的——**頁面上任何腳本都能偽造那個訊息**。
+// 沒有白名單的話，F1TV 頁面上的第三方腳本（廣告、分析、被入侵的 CDN）
+// 就能讓這個擴充功能帶著使用者的 cookie 去抓任意網址。
+const FETCH_ALLOW = [
+  'ott-video-fer-cf.formula1.com',
+  'f1tv.formula1.com',
+];
+
+function isAllowedFetch(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    return FETCH_ALLOW.some((h) => u.hostname === h || u.hostname.endsWith('.' + h));
+  } catch (e) { return false; }
+}
+
 async function fetchText(url) {
+  if (!isAllowedFetch(url)) throw new Error('網址不在允許清單內，已拒絕');
   const res = await fetch(url, { credentials: 'include' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();

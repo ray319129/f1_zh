@@ -1313,6 +1313,23 @@
   // 一鍵匯出所有狀態。回報問題時直接貼這份，不用翻 Console，
   // 也不用另外去 chrome://extensions 開 service worker 的視窗。
   // =========================================================================
+  /**
+   * 把網址裡的敏感段落遮掉，但保留足以診斷的資訊（長度、頭尾、路徑結構）。
+   * 判斷「網址有沒有被截斷」只需要長度，不需要權杖本體。
+   */
+  function maskUrl(u) {
+    if (!u) return '(尚未取得)';
+    try {
+      const url = new URL(u);
+      // F1TV 的授權段是 /v2/pa_<很長的 base64>/...
+      const path = url.pathname.replace(/\/(pa_[A-Za-z0-9_\-=]+)/g, (m, tok) =>
+        `/pa_${tok.slice(3, 11)}…${tok.slice(-6)}[共${tok.length - 3}字元·已遮蔽]`);
+      return `${url.origin}${path}${url.search ? '?<query 已遮蔽>' : ''}　(全長 ${u.length} 字元)`;
+    } catch (e) {
+      return `(網址解析失敗，全長 ${String(u).length} 字元)`;
+    }
+  }
+
   function buildDiagnostics() {
     const L = [];
     const v = document.querySelector('video');
@@ -1345,8 +1362,16 @@
     L.push('──── 整軌預抓（決定成本與拖進度條會不會漏）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
     L.push(`清單來源　：${prefetchHow || '(尚未取得)'}`);
-    // 網址完整輸出，不截斷——坑 #3 就是截斷造成的，要能一眼看出 token 有沒有被切掉
-    L.push(`字幕清單　：${subtitlePlaylistUrl || '(尚未取得)'}`);
+    // ⚠️ **絕對不能把完整網址寫進報告。**
+    //
+    // F1TV 的字幕清單網址裡有一段 base64，解開來含 sessionId 與一個 24 小時
+    // 有效的 CDN 存取權杖（ttl:1440）。這份報告是設計來貼給別人看的——
+    // 貼出去等於把該串流的存取權一起送出去。
+    //
+    // v0.4.0 為了偵錯拿掉截斷時破壞了這個原則（坑 #31）。
+    // 現在改成遮蔽權杖但保留長度與頭尾，仍然看得出「有沒有被切掉」——
+    // 那才是坑 #3 真正要防的事，不需要完整權杖也能判斷。
+    L.push(`字幕清單　：${maskUrl(subtitlePlaylistUrl)}`);
     L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
     L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
     L.push(`後端完整度：記錄 ${bundleSegCount} 段` + (state.harvestSkipped ? '　→ 本次已跳過整軌預抓' : (bundleSegCount ? '' : '（尚無人完整收割過）')));

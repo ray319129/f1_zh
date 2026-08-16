@@ -675,6 +675,9 @@ async function mergeWrite(env, cid, added) {
   if (!keys.length) return;
   const fresh = await readBundle(env, cid);
   for (const k of keys) {
+    // 上限也要在這裡擋。原本只有 handlePostSubs 檢查，
+    // 但擴充功能上線後絕大多數寫入都走這條路。
+    if (Object.keys(fresh.lines).length >= BUNDLE_MAX_LINES) break;
     if (!fresh.lines[k]) fresh.lines[k] = added[k];   // 只補、不覆蓋別人的
   }
   await writeBundle(env, cid, fresh);
@@ -874,6 +877,14 @@ async function handleTranslate(request, env, ip) {
   const input = Array.isArray(body.lines) ? body.lines : [];
   if (!input.length) return err('缺少 lines');
   if (input.length > 200) return err('一次最多 200 句');
+
+  // 每句的長度上限。沒有這個限制的話，200 句 × 每句 100KB = 20MB 進模型，
+  // 一次請求就能燒掉大量 token —— **成本放大攻擊**。
+  // 真實字幕一句不會超過 300 字元，1,000 已經非常寬鬆。
+  const MAX_LINE_LEN = 1000;
+  if (input.some((l) => typeof l === 'string' && l.length > MAX_LINE_LEN)) {
+    return err(`單句長度不可超過 ${MAX_LINE_LEN} 字元`);
+  }
 
   // 1) 讀一次 bundle 當快取（取代先前逐句讀 line: key）
   const bundle = await readBundle(env, cid);

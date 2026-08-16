@@ -129,7 +129,8 @@
 
           const blob = new Blob([WORKER_HOOK, '\n', src], { type: obj.type || 'text/javascript' });
           patched++;
-          window.postMessage({ [MARK]: true, kind: 'injected', bytes: src.length }, '*');
+          // targetOrigin 用實際來源，不要用 '*'——'*' 會讓頁面上任何 iframe 都收得到
+          window.postMessage({ [MARK]: true, kind: 'injected', bytes: src.length }, location.origin);
           return orig(blob);
         } catch (e) {
           return url;   // 任何差錯都回傳原始網址，絕不影響播放
@@ -154,9 +155,9 @@
         const d = ev && ev.data;
         if (!d) return;
         if (typeof d.vtt === 'string') {
-          window.postMessage({ [MARK]: true, kind: 'vtt', vtt: d.vtt, url: d.url || '' }, '*');
+          window.postMessage({ [MARK]: true, kind: 'vtt', vtt: d.vtt, url: d.url || '' }, location.origin);
         } else if (typeof d.manifest === 'string') {
-          window.postMessage({ [MARK]: true, kind: 'manifest', manifest: d.manifest, url: d.url || '' }, '*');
+          window.postMessage({ [MARK]: true, kind: 'manifest', manifest: d.manifest, url: d.url || '' }, location.origin);
         }
       };
     } catch (e) { /* noop */ }
