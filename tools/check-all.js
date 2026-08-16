@@ -30,6 +30,7 @@ const CHECKS = [
   ['亂操作防呆（14 個情境，不可有未捕捉的例外）', 'tools/chaos-extension.js'],
   ['設定頁的 HTML／CSS／JS 一致性', 'tools/check-options.js'],
   ['後台與後端一致（端點都有 UI、危險操作有確認）', 'tools/check-admin.js'],
+  ['法律文件與程式碼一致（權限／保存期限／價格／法規要件）', 'tools/check-legal.js'],
 ];
 
 let failed = 0;

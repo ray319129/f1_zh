@@ -73,7 +73,7 @@ v0.4.0 已移除全部 cookie 讀取程式碼與 `cookies` 權限。
 | # | 項目 | 狀態 |
 |---|---|---|
 | 1 | **輪換 `ADMIN_TOKEN`**（S7）—— 使用者決定上線前再做 | ⬜ |
-| 2 | 設定 `TOKEN_SECRET` 與 `DAILY_USD_CAP` | ⬜ |
+| 2 | 設定 `TOKEN_SECRET` 與 `DAILY_USD_CAP` | ✅ 已設定 |
 | 3 | 部署 backend v2.0，確認舊安裝能自動換發新權杖 | ⬜ |
 | 4 | 每人權杖取代共用 `CLIENT_TOKEN`（S6） | ✅ |
 | 5 | 拿掉 CORS `*` | ✅ |
@@ -82,7 +82,7 @@ v0.4.0 已移除全部 cookie 讀取程式碼與 `cookies` 權限。
 | 8 | 成本警戒線與自動熔斷 | ✅ |
 | 9 | 撤銷清單（`POST /v1/admin/revoke`） | ✅ |
 | 10 | 移除測試工具 `__pitlingo.t.*` | ⬜ |
-| 11 | 隱私政策與使用條款上線（需網域） | ⬜ |
+| 11 | 隱私政策與使用條款（`legal/`，由 `check-legal.js` 確保與程式碼一致） | ✅ 已撰寫，待部署到 pitlingo.com |
 | 12 | 淘汰 legacy `CLIENT_TOKEN`（確認所有安裝都換發後） | ⬜ |
 
 ## 金流相關（P3 實作時的硬性要求）

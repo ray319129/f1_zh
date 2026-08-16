@@ -23,7 +23,7 @@ PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 ma
 ──── 整軌預抓（決定成本與拖進度條會不會漏）────
 型態　　　：重播
 清單來源　：由 master 解析
-字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMTc4MDIzMTJmODBhNDkzNTgxZGQ0MTRlNmI0ODJiNzIlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4NjkyODYzM3x0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTA0MUhFQ0pRR1pSWFBRSzQ0NDczOUJOX1BST3xzdGFydDp8ZW5kOnx0b2tlbjp1UHRZS1V1WlRUeVlVaVpLSUtOa1hJNTFXMzlxdklBclcyNng3SzJDMzdVXw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/17802312f80a493581dd414e6b482b72/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/e53ec6289e034ae58ebfe4dfd3783331/f74fb10563564130a4702743d64112a3/index_13_0.m3u8
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDol…dVXw__[共400字元·已遮蔽]/a723ea61e7b8eb21fd7497e842f4db92/out/v1/17802312f80a493581dd414e6b482b72/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/e53ec6289e034ae58ebfe4dfd3783331/f74fb10563564130a4702743d64112a3/index_13_0.m3u8
 分段　　　：清單 383 / 已抓 383（失敗 0）
 收割完成　：true　進行中：false　世代 1
 後端完整度：記錄 0 段（尚無人完整收割過）
