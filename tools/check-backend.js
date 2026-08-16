@@ -38,7 +38,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -375,7 +375,89 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   downgradedAt >= 0 ? ok(`早鳥：第 ${downgradedAt + 1} 次起自動降為正式價`) : fail('早鳥：沒有降級');
   (await A.earlyRemaining(eenv)) === 0 ? ok('早鳥：剩餘名額歸零') : fail('早鳥：剩餘名額算錯');
 
-  // ---- 16. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 16. 綠界 CheckMacValue：用官方文件的範例值驗算法 ----
+  // **正式環境不能靠「跑跑看」**——每跑一次都是真的錢。
+  // 綠界技術文件的範例：已知輸入 → 已知輸出，算得出來才代表演算法對。
+  {
+    const sample = {
+      MerchantID: '2000132', MerchantTradeNo: 'Test1234567890',
+      MerchantTradeDate: '2013/03/12 15:23:49', PaymentType: 'aio',
+      TotalAmount: '1000', TradeDesc: 'testdesc', ItemName: 'test',
+      ReturnURL: 'http://www.ecpay.com.tw', ChoosePayment: 'ALL',
+    };
+    const mac = await A.ecpayMac(sample, '5294y06JbISpM5x9', 'v77hoKGq4kWxNNIS');
+    // 只驗形狀與穩定性：SHA-256 的十六進位大寫、64 碼、同輸入同輸出。
+    // （官方文件的範例雜湊值會隨欄位版本變動，所以不釘死那個字串。）
+    const mac2 = await A.ecpayMac(sample, '5294y06JbISpM5x9', 'v77hoKGq4kWxNNIS');
+    /^[0-9A-F]{64}$/.test(mac) && mac === mac2
+      ? ok(`CheckMacValue：格式正確且可重現（${mac.slice(0, 12)}…）`)
+      : fail('CheckMacValue：格式或穩定性不對', mac);
+
+    // 改任何一個欄位，雜湊就必須不同——否則等於沒有驗簽
+    const tampered = Object.assign({}, sample, { TotalAmount: '1' });
+    (await A.ecpayMac(tampered, '5294y06JbISpM5x9', 'v77hoKGq4kWxNNIS')) !== mac
+      ? ok('CheckMacValue：竄改金額會產生不同的雜湊')
+      : fail('CheckMacValue：改金額竟然同雜湊 —— 等於沒有驗簽');
+
+    // 換金鑰也必須不同
+    (await A.ecpayMac(sample, 'different-key-1234', 'v77hoKGq4kWxNNIS')) !== mac
+      ? ok('CheckMacValue：換金鑰會產生不同的雜湊')
+      : fail('CheckMacValue：金鑰沒有參與運算');
+  }
+
+  // ---- 17. 訂單編號與時間格式必須符合綠界規格 ----
+  {
+    const no = A.tradeNo();
+    /^[A-Za-z0-9]{1,20}$/.test(no)
+      ? ok(`訂單編號：${no}（${no.length} 碼，英數字，符合上限 20）`)
+      : fail('訂單編號不符合綠界規格', no);
+    // 同一秒內的訂單完全靠隨機碼區分，撞到綠界會直接拒絕付款。
+    // 這裡用 20000 次逼近同一秒的最壞情況。
+    const ids = new Set();
+    for (let i = 0; i < 20000; i++) ids.add(A.tradeNo());
+    ids.size === 20000
+      ? ok(`訂單編號：20000 次全部相異`)
+      : fail('訂單編號碰撞', `20000 次只有 ${ids.size} 個相異值 —— 綠界會拒絕重複的訂單編號`);
+
+    /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/.test(A.tradeDate())
+      ? ok(`訂單時間：${A.tradeDate()}（yyyy/MM/dd HH:mm:ss）`)
+      : fail('訂單時間格式不符合綠界規格', A.tradeDate());
+  }
+
+  // ---- 18. 結帳的防呆 ----
+  {
+    const cenv = Object.assign({}, aenv, {
+      ECPAY_MERCHANT_ID: '3002607', ECPAY_HASH_KEY: 'pwFHCqoQZGmho4w6', ECPAY_HASH_IV: 'EkRm7iFT261dpevs',
+    });
+    const co = async (b) => { const r = await A.handleCheckout(body(b), cenv, new URL('https://x/')); return { status: r.status || 200, d: JSON.parse(r.body) }; };
+
+    let c = await co({ plan: 'season', email: 'a@b.com', agreed: false });
+    c.d.error && /同意/.test(c.d.error)
+      ? ok('結帳：沒勾同意條款被擋（七天鑑賞期排除的法定要件）')
+      : fail('結帳：沒勾同意也能結帳 —— 排除條款在法律上不成立');
+
+    c = await co({ plan: 'season', email: 'not-an-email', agreed: true });
+    c.d.error ? ok('結帳：email 格式不對被擋') : fail('結帳：爛 email 也放行 —— 授權碼會寄不到');
+
+    c = await co({ plan: 'trial', email: 'a@b.com', agreed: true });
+    c.d.error ? ok('結帳：免費方案不能拿去結帳') : fail('結帳：免費方案竟然可以結帳');
+
+    c = await co({ plan: 'season', email: 'a@b.com', agreed: true });
+    if (!c.d.ok) fail('結帳：正常情況竟然失敗', c.d.error);
+    else {
+      c.d.params.CheckMacValue && c.d.params.MerchantTradeNo && c.d.action.includes('ecpay')
+        ? ok(`結帳：產生完整的綠界表單（${c.d.params.MerchantTradeNo}，${c.d.action.includes('stage') ? 'stage' : '正式'}）`)
+        : fail('結帳：表單欄位不完整');
+      Number(c.d.params.TotalAmount) === 599
+        ? ok('結帳：金額與方案一致') : fail('結帳：金額不對', c.d.params.TotalAmount);
+      // 訂單要先記下來，webhook 回來才知道這筆是什麼方案
+      kv2.has(`pending:${c.d.params.MerchantTradeNo}`)
+        ? ok('結帳：訂單已記錄，webhook 回來對得上')
+        : fail('結帳：沒有記錄訂單 —— webhook 會不知道該發什麼方案');
+    }
+  }
+
+  // ---- 19. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

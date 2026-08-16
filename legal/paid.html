@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>付款結果 — PitLingo</title>
+<!--
+  https://pitlingo.com/paid
+
+  ⚠️ 這頁**不決定任何事**，只顯示狀態。
+     發碼完全由伺服器對伺服器的 webhook 決定（見 backend 的 handlePaymentWebhook）。
+     這頁是瀏覽器導向，任何人都能自己打開並偽造網址參數——
+     所以它只能「查詢」訂單狀態，不能「宣告」付款成功。
+
+  ATM／超商是非即時付款：使用者拿到繳費代碼後可能幾天後才去繳。
+  這頁要能正確表達「還在等你去繳費」這個狀態，不能顯示成失敗。
+-->
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<main class="narrow">
+<a class="back" href="/">← PitLingo</a>
+<div id="out"><p class="lead">查詢中…</p></div>
+</main>
+<script src="/paid.js"></script>
+</body>
+</html>

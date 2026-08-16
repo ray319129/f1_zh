@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>購買 — PitLingo</title>
+<!--
+  https://pitlingo.com/buy
+
+  ⚠️ 這頁有一個法定要件：**同意條款的勾選**。
+     七天鑑賞期的排除必須「經消費者事先同意」才成立
+     （通訊交易解除權合理例外情事適用準則 §2(5)）。
+     沒有這個勾選，排除條款無效，使用者仍可主張無條件退貨。
+     所以 checkout 端點也會再驗一次 agreed，不是只靠前端擋。
+-->
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<main class="narrow">
+
+<a class="back" href="/">← PitLingo</a>
+<h1>購買</h1>
+<p class="lead">
+  在買之前，請先用<b>免費的 15 分鐘</b>確認合不合用——
+  每一場練習賽、衝刺賽、排位賽、正賽都有，不需註冊。
+</p>
+
+<div id="plans" class="plans"></div>
+
+<form id="form" novalidate>
+  <label class="field">
+    <span>Email</span>
+    <input id="email" type="email" required autocomplete="email"
+           placeholder="授權碼會寄到這裡">
+    <em>這是日後補發授權碼的唯一依據，請填寫常用信箱。</em>
+  </label>
+
+  <label class="agree">
+    <input id="agree" type="checkbox">
+    <span>
+      我已閱讀並同意<a href="/terms" target="_blank" rel="noopener">使用條款</a>與<a href="/privacy" target="_blank" rel="noopener">隱私權政策</a>，
+      並同意本服務為<b>數位服務，開通後不適用七天鑑賞期</b>。
+    </span>
+  </label>
+
+  <button id="go" type="submit" disabled>選擇方案後即可結帳</button>
+  <p id="msg" class="msg"></p>
+</form>
+
+<div class="faq">
+  <h2>常見問題</h2>
+
+  <h3>買了之後可以換電腦嗎？</h3>
+  <p>可以。<b>授權碼跟著你走，不綁定裝置。</b>同一組碼最多可在 3 台裝置同時啟用，
+     也能自行解除後轉移到新電腦。</p>
+
+  <h3>還需要 F1TV 訂閱嗎？</h3>
+  <p>需要。PitLingo 只是翻譯 F1TV 播放器上的英文字幕，本身不提供任何影片內容。</p>
+
+  <h3>字幕會慢半拍嗎？</h3>
+  <p>F1TV 的英文字幕本身就比語音晚約 0.5 秒，PitLingo 是跟著它翻譯的，
+     所以中文也會有相同的延遲。這是來源的特性，任何工具都無法讓它比原文更早。</p>
+
+  <h3>可以退款嗎？</h3>
+  <p>數位服務開通後原則上不退款——這也是我們提供免費 15 分鐘的原因。
+     但若服務因 F1TV 改版而失效且我們無法修復，會主動按剩餘期間比例退款。
+     詳見<a href="/terms">使用條款</a>。</p>
+</div>
+
+</main>
+
+<form id="ecpay" method="post" hidden></form>
+<script src="/buy.js"></script>
+</body>
+</html>

@@ -19,7 +19,10 @@
  *   POST /v1/report                    使用者送出診斷，回傳工單編號
  *   POST /v1/metric                    產品數據（彙總計數，不含個資）
  *   GET  /v1/admin/metrics             產品數據後台
+ *   POST /v1/checkout                  建立訂單，回傳導向綠界的表單
  *   POST /v1/payment/webhook           金流回呼：驗簽 → 防重放 → 自動發碼
+ *   POST /v1/payment/info              ATM／超商取號通知（**不發碼**）
+ *   GET  /v1/order?no=                 查單筆訂單狀態
  *   GET  /v1/admin/license/list        授權清單（可搜尋、可分頁）
  *   POST /v1/admin/license/patch       延期／換方案／解除全部裝置
  *   GET  /v1/admin/reports             診斷回報清單
@@ -1470,6 +1473,201 @@ async function handleReportList(env, url) {
 }
 
 // ---------------------------------------------------------------------------
+// 結帳（綠界 AioCheckOut V5）
+//
+// 流程：
+//   1. 使用者在 /buy 選方案、勾選同意條款 → POST /v1/checkout
+//   2. 我們建立訂單、算 CheckMacValue、回傳一份「自動送出的表單」
+//   3. 瀏覽器把表單 POST 到綠界的收銀台
+//   4. 使用者付款
+//   5. 綠界 **伺服器對伺服器** POST 到 ReturnURL（/v1/payment/webhook）→ 我們發碼
+//   6. 綠界把瀏覽器導回 OrderResultURL（/paid）→ 顯示授權碼
+//
+// ⚠️ 發碼**只認第 5 步**，不認第 6 步。
+//    第 6 步是瀏覽器導向，任何人都能自己打開那個網址並偽造參數。
+//    只有 ReturnURL 的通知帶得出正確的 CheckMacValue。
+//
+// ⚠️ ATM 與超商是**非即時付款**：
+//    綠界會先送一次「取號成功」（RtnCode=2）到 PaymentInfoURL，
+//    幾天後真的付款了才送 RtnCode=1 到 ReturnURL。
+//    **RtnCode=2 絕對不能發碼**——那時候錢還沒進來。
+// ---------------------------------------------------------------------------
+
+// 正式與測試的收銀台位址。測試環境用綠界公開的共用帳號，
+// 可以走完整流程而不會真的扣款——**正式環境上線前唯一能驗證的方法**。
+const ECPAY_URL = {
+  production: 'https://payment.ecpay.com.tw/Cashier/AioCheckOut/V5',
+  stage: 'https://payment-stage.ecpay.com.tw/Cashier/AioCheckOut/V5',
+};
+
+// 綠界公開的測試帳號（官方文件公佈，不是機密）
+const ECPAY_TEST = {
+  merchantId: '3002607',
+  hashKey: 'pwFHCqoQZGmho4w6',
+  hashIV: 'EkRm7iFT261dpevs',
+};
+
+function ecpayConf(env, mode) {
+  if (mode === 'stage') {
+    return { ...ECPAY_TEST, url: ECPAY_URL.stage, mode: 'stage' };
+  }
+  return {
+    merchantId: env.ECPAY_MERCHANT_ID || '',
+    hashKey: env.ECPAY_HASH_KEY || '',
+    hashIV: env.ECPAY_HASH_IV || '',
+    url: ECPAY_URL.production,
+    mode: 'production',
+  };
+}
+
+/**
+ * 綠界的訂單編號：英數字，最長 20 碼，**必須唯一**。
+ *
+ * ⚠️ 時間戳只到秒，所以同一秒內的訂單完全靠隨機碼區分。
+ *    第一版寫成「3 bytes → base36 → 截 5 碼」，實測 3000 次撞 12 次——
+ *    因為單一 byte 轉 base36 最多兩碼再補零，分布嚴重傾斜，實際只有約 18 bits。
+ *    綠界收到重複的訂單編號會直接拒絕，**使用者付不了錢而且看不懂為什麼**。
+ *
+ *    改成直接從字元表均勻取樣：6 碼 × log2(36) ≈ 31 bits，同一秒內幾乎不可能撞。
+ */
+const TRADE_AB = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';   // 36 個
+
+function tradeNo() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const stamp = `${String(d.getUTCFullYear()).slice(2)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`
+    + `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+
+  // 拒絕取樣去掉模數偏差（256 不是 36 的倍數）。成本可忽略，何必留個歪的分布。
+  let r = '';
+  while (r.length < 6) {
+    for (const b of crypto.getRandomValues(new Uint8Array(8))) {
+      if (b >= 252) continue;                  // 252 = 7 × 36
+      r += TRADE_AB[b % 36];
+      if (r.length === 6) break;
+    }
+  }
+  return `PL${stamp}${r}`;                     // PL + 12 + 6 = 20 碼，剛好在上限
+}
+
+/** 綠界要的時間格式：yyyy/MM/dd HH:mm:ss，且必須是台北時間。 */
+function tradeDate() {
+  const t = new Date(Date.now() + 8 * 3600 * 1000);   // UTC+8
+  const p = (n) => String(n).padStart(2, '0');
+  return `${t.getUTCFullYear()}/${p(t.getUTCMonth() + 1)}/${p(t.getUTCDate())} `
+    + `${p(t.getUTCHours())}:${p(t.getUTCMinutes())}:${p(t.getUTCSeconds())}`;
+}
+
+async function handleCheckout(request, env, url) {
+  const body = await request.json().catch(() => null);
+  if (!body) return err('body 不是合法 JSON');
+
+  const plan = PLANS[body.plan] && PLANS[body.plan].price > 0 ? body.plan : null;
+  if (!plan) return err('請選擇有效的方案');
+
+  // ⚠️ 法定要件：七天鑑賞期的排除需要「經消費者事先同意」。
+  //    沒有這個勾選，排除條款在法律上不成立，使用者仍可主張無條件退貨。
+  if (!body.agreed) return err('請先閱讀並同意使用條款與隱私權政策');
+
+  const email = String(body.email || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email)) {
+    return err('請填寫正確的 email —— 授權碼會寄到這個信箱，也是日後補發的唯一依據');
+  }
+
+  // 早鳥賣完就自動改成正式價。**在結帳前就要決定**，
+  // 否則使用者看到 399 卻被收 599（或反過來），兩種都是糾紛。
+  let finalPlan = plan;
+  if (plan === 'season_early' && (await earlyIssued(env)) >= EARLY_LIMIT) finalPlan = 'season';
+  const price = PLANS[finalPlan].price;
+
+  const conf = ecpayConf(env, body.mode === 'stage' ? 'stage' : 'production');
+  if (!conf.merchantId || !conf.hashKey || !conf.hashIV) {
+    return err('金流尚未設定完成，請稍後再試或聯絡客服', 503);
+  }
+
+  const no = tradeNo();
+  const site = env.SITE_URL || 'https://pitlingo.com';
+
+  const params = {
+    MerchantID: conf.merchantId,
+    MerchantTradeNo: no,
+    MerchantTradeDate: tradeDate(),
+    PaymentType: 'aio',
+    TotalAmount: String(price),
+    TradeDesc: 'PitLingo F1TV subtitle service',   // 不可含中文以外的特殊字元，保守用英文
+    ItemName: `PitLingo ${PLANS[finalPlan].label}`,
+    ReturnURL: `${env.API_URL || 'https://api.pitlingo.com'}/v1/payment/webhook`,
+    ClientBackURL: `${site}/paid?no=${no}`,
+    OrderResultURL: `${site}/paid`,
+    // ATM／超商取號時的通知。**與 ReturnURL 分開**，因為取號不等於付款。
+    PaymentInfoURL: `${env.API_URL || 'https://api.pitlingo.com'}/v1/payment/info`,
+    ChoosePayment: 'ALL',       // 綠界只會顯示已開通的方式，未開通的自動不出現
+    EncryptType: '1',
+    CustomerEmail: email,
+    NeedExtraPaidInfo: 'N',
+  };
+  params.CheckMacValue = await ecpayMac(params, conf.hashKey, conf.hashIV);
+
+  // 先把訂單記下來。webhook 回來時要靠它知道「這筆是什麼方案、寄給誰」——
+  // 綠界的通知不會帶我們自己的欄位。
+  await env.SUBS.put(`pending:${no}`, JSON.stringify({
+    plan: finalPlan, price, email, at: nowSec(), mode: conf.mode,
+  }), { expirationTtl: 30 * 86400 });          // 超商代碼最長可繳 30 天
+
+  return json({ ok: true, action: conf.url, params, orderId: no, plan: finalPlan, price, mode: conf.mode });
+}
+
+/**
+ * ATM／超商「取號成功」的通知。
+ * **這裡絕對不能發碼**——取號只代表拿到繳費代碼，錢還沒進來。
+ * 存起來只是為了讓使用者在 /paid 頁面看得到繳費資訊。
+ */
+async function handlePaymentInfo(request, env) {
+  const ct = request.headers.get('content-type') || '';
+  let p = {};
+  if (ct.includes('json')) p = await request.json().catch(() => ({}));
+  else {
+    const form = await request.formData().catch(() => null);
+    if (form) for (const [k, v] of form.entries()) p[k] = String(v);
+  }
+  const no = String(p.MerchantTradeNo || '').trim();
+  if (!no) return new Response('0|no order id', { status: 400 });
+
+  const conf = ecpayConf(env, 'production');
+  const stage = ecpayConf(env, 'stage');
+  const okProd = conf.hashKey && safeEqual(String(p.CheckMacValue || '').toUpperCase(),
+    await ecpayMac(p, conf.hashKey, conf.hashIV));
+  const okStage = safeEqual(String(p.CheckMacValue || '').toUpperCase(),
+    await ecpayMac(p, stage.hashKey, stage.hashIV));
+  if (!okProd && !okStage) return new Response('0|bad mac', { status: 401 });
+
+  await env.SUBS.put(`payinfo:${no}`, JSON.stringify({
+    bank: p.BankCode || '', vAccount: p.vAccount || '',
+    payNo: p.PaymentNo || '', expire: p.ExpireDate || '',
+    at: nowSec(),
+  }), { expirationTtl: 30 * 86400 });
+
+  return new Response('1|OK');
+}
+
+/** 讓 /paid 頁面查自己那筆訂單的狀態。只回「這筆訂單」的資訊，不列舉。 */
+async function handleOrderStatus(env, url) {
+  const no = String(url.searchParams.get('no') || '').trim();
+  if (!/^PL[A-Z0-9]{5,24}$/.test(no)) return err('訂單編號格式不正確');
+
+  const licKeyRaw = await env.SUBS.get(`order:${no}`);
+  if (licKeyRaw) {
+    return json({ status: 'paid', licenseKey: prettyLicense(licKeyRaw) });
+  }
+  const info = await env.SUBS.get(`payinfo:${no}`);
+  if (info) return json({ status: 'awaiting_payment', payment: JSON.parse(info) });
+
+  const pend = await env.SUBS.get(`pending:${no}`);
+  if (pend) return json({ status: 'pending' });
+  return json({ status: 'unknown' }, 404);
+}
+
+// ---------------------------------------------------------------------------
 // 金流 webhook —— 付款成功後自動發碼
 //
 // 為什麼要驗簽：webhook 的網址是公開的，任何人都能 POST 一筆假訂單過來換取
@@ -1520,11 +1718,14 @@ async function handlePaymentWebhook(request, env) {
   if (!orderId) return new Response('0|no order id', { status: 400 });
 
   // --- 驗簽 ---
+  // 正式與測試兩組憑證都試。測試環境用綠界公開的帳號，
+  // 讓我們能在**不花真錢**的情況下驗證整條路徑——正式環境上線前唯一的辦法。
   if (env.ECPAY_HASH_KEY && env.ECPAY_HASH_IV) {
-    const expect = await ecpayMac(p, env.ECPAY_HASH_KEY, env.ECPAY_HASH_IV);
-    if (!safeEqual(String(p.CheckMacValue || '').toUpperCase(), expect)) {
-      return new Response('0|bad mac', { status: 401 });
-    }
+    const prodOk = safeEqual(String(p.CheckMacValue || '').toUpperCase(),
+      await ecpayMac(p, env.ECPAY_HASH_KEY, env.ECPAY_HASH_IV));
+    const stageOk = safeEqual(String(p.CheckMacValue || '').toUpperCase(),
+      await ecpayMac(p, ECPAY_TEST.hashKey, ECPAY_TEST.hashIV));
+    if (!prodOk && !stageOk) return new Response('0|bad mac', { status: 401 });
   } else if (env.WEBHOOK_SECRET) {
     // 通用備援：自訂金流或測試時用 header 驗
     if (!safeEqual(request.headers.get('x-webhook-secret') || '', env.WEBHOOK_SECRET)) {
@@ -1545,8 +1746,20 @@ async function handlePaymentWebhook(request, env) {
   if (seen) return new Response('1|OK', { headers: { 'x-pitlingo-license': seen } });
 
   // --- 發碼 ---
-  const email = String(p.CustomerEmail || p.email || '').trim();
-  let plan = planFromItem(p.ItemName || p.plan);
+  // ⚠️ 方案要從**我們自己建立訂單時記下的** pending 讀，不要從綠界回傳的
+  //    商品名稱猜。使用者結帳當下看到的是什麼價格，就該拿到什麼方案——
+  //    靠字串比對猜商品名，改一次文案就會發錯方案，而且不會有人發現。
+  let pending = null;
+  try { pending = JSON.parse((await env.SUBS.get(`pending:${orderId}`)) || 'null'); } catch (e) { /* noop */ }
+
+  const email = String((pending && pending.email) || p.CustomerEmail || p.email || '').trim();
+  let plan = pending && PLANS[pending.plan] ? pending.plan : planFromItem(p.ItemName || p.plan);
+
+  // 金額對不上就不發碼。綠界的通知帶著實付金額，與我們記錄的價格不符
+  // 代表有人竄改了結帳參數，或我們自己算錯了——兩種都不該默默發下去。
+  if (pending && p.TradeAmt !== undefined && Number(p.TradeAmt) !== Number(pending.price)) {
+    return new Response('0|amount mismatch', { status: 400 });
+  }
   // 早鳥賣完就給正式方案。金流那邊可能還在賣舊連結，這裡是最後一道。
   // **寧可少賣一組也不要賣超**——名額只有 20，食言的代價比少賺一筆高得多。
   if (plan === 'season_early' && (await earlyIssued(env)) >= EARLY_LIMIT) plan = 'season';
@@ -1559,6 +1772,7 @@ async function handlePaymentWebhook(request, env) {
   };
   await env.SUBS.put(licKey(key), JSON.stringify(lic));
   await env.SUBS.put(dedupeKey, key, { expirationTtl: 400 * 86400 });
+  await env.SUBS.delete(`pending:${orderId}`);
   if (email) {
     const ik = `licmail:${email.toLowerCase()}`;
     let arr = [];
@@ -2437,9 +2651,34 @@ export default {
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleLicenseActivate(request, env, a);
       }
+      // 公開的方案資訊。購買頁用它顯示價格與早鳥剩餘數——
+      // **價格寫死在前端會漂**，改後端就得改兩個地方，遲早忘記一個。
+      if (path === '/v1/plans' && request.method === 'GET') {
+        const left = await earlyRemaining(env);
+        return json({
+          plans: Object.entries(PLANS)
+            .filter(([, v]) => v.price > 0)
+            .map(([k, v]) => ({ key: k, label: v.label, price: v.price, limit: v.limit || null })),
+          earlyLeft: left,
+        }, 200, { 'cache-control': 'public, max-age=60' });
+      }
+
+      // ---- 金流 ----
+      // 結帳不需要用戶端權杖：使用者是在網頁上買，不是在擴充功能裡。
+      if (path === '/v1/checkout' && request.method === 'POST') {
+        if (await rateLimited(env, `co:${ip}`)) return err('操作太頻繁，請稍後再試', 429);
+        return handleCheckout(request, env, url);
+      }
       // 金流回呼。**不需要用戶端權杖**（金流平台不會帶），改用簽章驗證。
       if (path === '/v1/payment/webhook' && request.method === 'POST') {
         return handlePaymentWebhook(request, env);
+      }
+      // ATM／超商取號通知。**這裡不發碼**——取號不等於付款。
+      if (path === '/v1/payment/info' && request.method === 'POST') {
+        return handlePaymentInfo(request, env);
+      }
+      if (path === '/v1/order' && request.method === 'GET') {
+        return handleOrderStatus(env, url);
       }
 
       // 產品數據。彙總計數，不含任何可識別個人的資訊。

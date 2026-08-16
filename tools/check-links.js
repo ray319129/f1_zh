@@ -31,11 +31,21 @@ const FILES = [
   ['legal/index.html', '網站首頁'],
   ['legal/privacy.html', '隱私權政策'],
   ['legal/terms.html', '使用條款'],
+  ['legal/buy.html', '購買頁'],
+  ['legal/paid.html', '付款結果頁'],
   ['extension/src/options/options.html', '擴充功能設定頁'],
 ];
 
 // 站內路徑 → 實際檔案
-const ROUTES = { '/': 'legal/index.html', '/privacy': 'legal/privacy.html', '/terms': 'legal/terms.html' };
+// 網址 → 實際檔案。Cloudflare Pages 會自動把 /buy 對到 buy.html。
+// 新增頁面時這裡要一起加，否則連結檢查會漏掉那一頁。
+const ROUTES = {
+  '/': 'legal/index.html',
+  '/privacy': 'legal/privacy.html',
+  '/terms': 'legal/terms.html',
+  '/buy': 'legal/buy.html',
+  '/paid': 'legal/paid.html',
+};
 
 const external = new Set();
 let internalOk = 0;
@@ -92,6 +102,16 @@ for (const [doc, want, label] of pairs) {
   doc.includes(want) ? linked++ : bad(`缺少連結：${label}`);
 }
 linked === pairs.length && ok('四條互連的路徑都在（不會走進死巷）');
+
+// 購買頁必須連得到條款與隱私政策 —— 那是「經消費者事先同意」的前提，
+// 使用者要看得到自己同意的是什麼
+const buy = fs.readFileSync(path.join(root, 'legal/buy.html'), 'utf8');
+['/terms', '/privacy'].every((u) => buy.includes(u))
+  ? ok('購買頁連得到使用條款與隱私政策')
+  : bad('購買頁沒有連到條款 —— 七天鑑賞期的排除在法律上不成立');
+/type="checkbox"[^>]*id="agree"|id="agree"[^>]*type="checkbox"/.test(buy)
+  ? ok('購買頁有同意條款的勾選（法定要件）')
+  : bad('購買頁缺少同意勾選 —— 沒有它，排除七天鑑賞期無效');
 
 // 擴充功能的設定頁要連到法律文件——商店審核會看
 const opts = fs.readFileSync(path.join(root, 'extension/src/options/options.html'), 'utf8');
