@@ -28,6 +28,13 @@ DAILY_USD_CAP = "5"
 # REPORT_WEBHOOK = "https://..."
 REPORT_TO = "pitlingo.office@gmail.com"
 
+# 金流回呼的驗簽。**沒設定任何一組時 webhook 會拒絕處理**——
+# 寧可不發碼，也不要開一個誰都能 POST 一筆假訂單來領授權的窗口。
+#   wrangler secret put ECPAY_HASH_KEY
+#   wrangler secret put ECPAY_HASH_IV
+# 或（自訂金流／測試用）
+#   wrangler secret put WEBHOOK_SECRET
+
 # ⚠️ 上線後**不要用 `wrangler deploy`**——那會 100% 立刻切換，出事沒有回頭路。
 #    改用漸進式部署：
 #      wrangler versions upload

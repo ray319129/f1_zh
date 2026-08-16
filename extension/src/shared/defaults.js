@@ -28,7 +28,35 @@
         hideCss: '.tm-subtitle-region-container{opacity:0 !important}',
       },
     ],
+    // 遠端設定拿不到時的備援。語意見 backend 的 REMOTE_CONFIG。
+    freeTier: {
+      seconds: 900,
+      exclude: ['post-race', 'weekend-warm-up', 'highlights', 'press-conference', 'review', 'documentary'],
+      // 刻意不用 `practice-?\d` 之類需要跳脫的寫法——設定是**字串**，
+      // JS 字串裡的 `\d` 會被吃掉變成 `d`，正則靜默失效而且完全不報錯。
+      // 這裡只需要判斷場次類型，用最單純的關鍵字就夠。
+      include: ['practice', 'qualifying', 'sprint', '-race$', 'grand-prix$'],
+    },
   };
+
+  /**
+   * 這支影片屬不屬於免費層涵蓋的場次。
+   *
+   * 免費層只涵蓋**四種正式賽事場次**（練習賽、衝刺賽、排位賽、正賽）的前 15 分鐘。
+   * 其餘 F1TV 影片不在免費範圍——那些是額外內容，不是使用者訂閱 F1TV 的主要理由。
+   *
+   * 先排除再納入：`post-race-show-monaco` 含 "race" 但顯然不是正賽。
+   */
+  function isFreeSession(pathname, freeTier) {
+    const ft = freeTier || BUILT_IN_CONFIG.freeTier;
+    const slug = String(pathname || '').toLowerCase();
+    try {
+      if ((ft.exclude || []).some((p) => new RegExp(p).test(slug))) return false;
+      return (ft.include || []).some((p) => new RegExp(p).test(slug));
+    } catch (e) {
+      return false;        // 設定裡的正則壞掉時保守處理：不當成免費
+    }
+  }
 
   const DEFAULT_SETTINGS = {
     enabled: true,
@@ -79,4 +107,5 @@
   root.PL.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
   root.PL.siteConfigFor = siteConfigFor;
   root.PL.sanitizeSettings = sanitizeSettings;
+  root.PL.isFreeSession = isFreeSession;
 })(typeof self !== 'undefined' ? self : this);

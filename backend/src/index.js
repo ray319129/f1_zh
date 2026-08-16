@@ -17,6 +17,7 @@
  *   POST /v1/license/deactivate        解除裝置（不需該裝置的權杖）
  *   POST /v1/license/devices           列出這組授權碼的裝置（純查詢）
  *   POST /v1/report                    使用者送出診斷，回傳工單編號
+ *   POST /v1/payment/webhook           金流回呼：驗簽 → 防重放 → 自動發碼
  *   GET  /v1/admin/license/list        授權清單（可搜尋、可分頁）
  *   POST /v1/admin/license/patch       延期／換方案／解除全部裝置
  *   GET  /v1/admin/reports             診斷回報清單
@@ -610,6 +611,22 @@ const REMOTE_CONFIG = {
   rollout: 100,
   killSwitch: false,
   minClientVersion: '0.0.0',
+
+  // ---- 免費層 ----
+  // 四種正式賽事場次的前 15 分鐘免費，其餘 F1TV 影片（賽後節目、紀錄片、
+  // 集錦、車手訪談⋯）不含在免費內。
+  //
+  // 用網址 slug 分類，而且**放在遠端設定**——F1TV 隨時可能改命名規則，
+  // 寫死在用戶端的話就得重新送審。實測到的 slug：
+  //   2026-barcelona-gp-practice-1 / 2026-barcelona-gp-qualifying
+  //   2026-miami-gp-sprint         / （正賽推測為 -race）
+  // 不免費的：post-race-show-monaco、weekend-warm-up-miami
+  freeTier: {
+    seconds: 900,
+    // 順序有意義：先排除，再納入。避免 "sprint-qualifying" 之類的組合誤判。
+    exclude: ['post-race', 'weekend-warm-up', 'highlights', 'press-conference', 'review', 'documentary'],
+    include: ['practice', 'qualifying', 'sprint', '-race$', 'grand-prix$'],
+  },
   sites: [
     {
       host: 'f1tv.formula1.com',
@@ -1069,6 +1086,209 @@ async function handleLicenseDevices(request, env) {
     max: MAX_DEVICES,
     devices: (lic.devices || []).map((d) => ({ id: d.installId.slice(0, 8), lastSeen: d.lastSeen })),
   });
+}
+
+// ---------------------------------------------------------------------------
+// 診斷回報
+//
+// 使用者按「傳送診斷」→ 後端收下、給一個工單編號、存進 KV。
+//
+// **為什麼不是直接寄信**：從 Cloudflare 寄到 Gmail 需要一個已驗證的寄件網域
+// （SPF/DKIM）。在 pitlingo.com 買下並設定好之前，任何寄信方案的送達率
+// 都會很差，甚至直接進垃圾桶——那比沒有更糟，因為你會以為沒人回報。
+//
+// 所以分兩層：
+//   1. 一律存進 KV，後台看得到（**這層永遠可靠，不依賴任何外部服務**）
+//   2. 設定了 REPORT_WEBHOOK 就額外推一份出去（Email API、Discord、Slack 都行）
+//      —— 網域好了之後填上去即可，不用改程式。
+// ---------------------------------------------------------------------------
+const REPORT_TTL_DAYS = 90;
+
+/** 工單編號：PL-YYMMDD-XXXX。使用者報修時報這組，我們就查得到。 */
+function ticketId() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const AB = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const r = Array.from(crypto.getRandomValues(new Uint8Array(4))).map((x) => AB[x % AB.length]).join('');
+  return `PL-${String(d.getUTCFullYear()).slice(2)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}-${r}`;
+}
+
+async function handleReportSubmit(request, env, auth) {
+  const body = await request.json().catch(() => null);
+  if (!body) return err('body 不是合法 JSON');
+
+  const report = String(body.report || '');
+  if (!report.trim()) return err('診斷內容是空的');
+  if (report.length > 200000) return err('診斷內容過大');
+
+  // 使用者可能填了聯絡方式（選填）。沒填就靠工單編號對。
+  const contact = String(body.contact || '').slice(0, 200);
+  const note = String(body.note || '').slice(0, 2000);
+
+  const id = ticketId();
+  const rec = {
+    id, at: nowSec(),
+    installId: auth.installId,
+    version: String(body.version || ''),
+    contact, note, report,
+  };
+  await env.SUBS.put(`report:${id}`, JSON.stringify(rec), { expirationTtl: REPORT_TTL_DAYS * 86400 });
+
+  // 第二層：有設定就推出去。**失敗不影響回報成功**——
+  // 東西已經存進 KV 了，使用者不該因為我們的通知管道有問題而被要求重送。
+  if (env.REPORT_WEBHOOK) {
+    try {
+      await fetch(env.REPORT_WEBHOOK, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subject: `[PitLingo] 診斷回報 ${id}`,
+          to: env.REPORT_TO || 'pitlingo.office@gmail.com',
+          ticket: id, version: rec.version, contact, note,
+          text: report.slice(0, 60000),
+        }),
+      });
+    } catch (e) { /* 通知失敗不影響回報本身 */ }
+  }
+
+  return json({ ok: true, ticket: id });
+}
+
+/** 管理端：列出回報。內容很長，清單只給摘要，點開才看全文。 */
+async function handleReportList(env, url) {
+  const id = url.searchParams.get('id');
+  if (id) {
+    const raw = await env.SUBS.get(`report:${id}`);
+    if (!raw) return err('查無此工單', 404);
+    return json(JSON.parse(raw));
+  }
+  const listed = await env.SUBS.list({ prefix: 'report:', limit: 200 });
+  const rows = [];
+  for (const k of listed.keys) {
+    const raw = await env.SUBS.get(k.name);
+    if (!raw) continue;
+    let r; try { r = JSON.parse(raw); } catch (e) { continue; }
+    rows.push({
+      id: r.id, at: r.at, version: r.version, contact: r.contact, note: r.note,
+      // 摘要抓幾個一眼能判斷的欄位，不用點開就能分類
+      summary: (r.report.match(/^目前階段.*$/m) || [''])[0].trim()
+        + '　' + (r.report.match(/^命中 \/ 未命中.*$/m) || [''])[0].trim(),
+    });
+  }
+  rows.sort((a, b) => b.at - a.at);
+  return json({ rows });
+}
+
+// ---------------------------------------------------------------------------
+// 金流 webhook —— 付款成功後自動發碼
+//
+// 為什麼要驗簽：webhook 的網址是公開的，任何人都能 POST 一筆假訂單過來換取
+// 免費授權。綠界用 CheckMacValue（參數排序後接上 HashKey/HashIV 再雜湊）。
+//
+// 為什麼要防重放：金流平台在沒收到 200 時會**重送同一筆通知**，
+// 不擋的話同一筆訂單會發出好幾組授權碼。以訂單編號為鍵記錄已處理過的。
+// ---------------------------------------------------------------------------
+
+/** 綠界的 CheckMacValue。演算法固定，錯一個環節就全錯。 */
+async function ecpayMac(params, hashKey, hashIV) {
+  const sorted = Object.keys(params)
+    .filter((k) => k !== 'CheckMacValue')
+    .sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1))
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+  const raw = `HashKey=${hashKey}&${sorted}&HashIV=${hashIV}`;
+  // 綠界指定的 URL encode 規則（.NET UrlEncode：小寫，且部分字元不編碼）
+  const enc = encodeURIComponent(raw).toLowerCase()
+    .replace(/%20/g, '+').replace(/%21/g, '!').replace(/%2a/g, '*')
+    .replace(/%28/g, '(').replace(/%29/g, ')').replace(/%27/g, "'");
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(enc));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+/**
+ * 商品代號 → 方案。對不上就用 season——
+ * **寧可多給也不要讓付了錢的人拿不到東西**，客服可以事後調整，
+ * 但「付了錢沒東西」是最傷的。
+ */
+function planFromItem(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.includes('lifetime') || n.includes('永久')) return 'lifetime';
+  if (n.includes('trial') || n.includes('試用')) return 'trial';
+  return 'season';
+}
+
+async function handlePaymentWebhook(request, env) {
+  const ct = request.headers.get('content-type') || '';
+  let p = {};
+  if (ct.includes('json')) {
+    p = await request.json().catch(() => ({}));
+  } else {
+    const form = await request.formData().catch(() => null);
+    if (form) for (const [k, v] of form.entries()) p[k] = String(v);
+  }
+
+  const orderId = String(p.MerchantTradeNo || p.orderId || '').trim();
+  if (!orderId) return new Response('0|no order id', { status: 400 });
+
+  // --- 驗簽 ---
+  if (env.ECPAY_HASH_KEY && env.ECPAY_HASH_IV) {
+    const expect = await ecpayMac(p, env.ECPAY_HASH_KEY, env.ECPAY_HASH_IV);
+    if (!safeEqual(String(p.CheckMacValue || '').toUpperCase(), expect)) {
+      return new Response('0|bad mac', { status: 401 });
+    }
+  } else if (env.WEBHOOK_SECRET) {
+    // 通用備援：自訂金流或測試時用 header 驗
+    if (!safeEqual(request.headers.get('x-webhook-secret') || '', env.WEBHOOK_SECRET)) {
+      return new Response('0|unauthorized', { status: 401 });
+    }
+  } else {
+    // 沒設定任何驗證方式就不處理。**寧可不發也不要開一個誰都能領的窗口。**
+    return new Response('0|webhook not configured', { status: 503 });
+  }
+
+  // 未付款成功也要回 1，否則金流會一直重送
+  const paid = String(p.RtnCode || p.status || '') === '1' || p.status === 'paid';
+  if (!paid) return new Response('1|OK');
+
+  // --- 防重放 ---
+  const dedupeKey = `order:${orderId}`;
+  const seen = await env.SUBS.get(dedupeKey);
+  if (seen) return new Response('1|OK', { headers: { 'x-pitlingo-license': seen } });
+
+  // --- 發碼 ---
+  const email = String(p.CustomerEmail || p.email || '').trim();
+  const plan = planFromItem(p.ItemName || p.plan);
+  const key = normLicense(licenseKeyNew());
+  const lic = {
+    plan, email, orderId,
+    expiresAt: planExpiry(plan),
+    devices: [], createdAt: nowSec(), revoked: false,
+    source: 'webhook',
+  };
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  await env.SUBS.put(dedupeKey, key, { expirationTtl: 400 * 86400 });
+  if (email) {
+    const ik = `licmail:${email.toLowerCase()}`;
+    let arr = [];
+    try { arr = JSON.parse((await env.SUBS.get(ik)) || '[]'); } catch (e) { /* noop */ }
+    if (!arr.includes(key)) arr.push(key);
+    await env.SUBS.put(ik, JSON.stringify(arr));
+  }
+
+  if (env.REPORT_WEBHOOK) {
+    try {
+      await fetch(env.REPORT_WEBHOOK, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subject: `[PitLingo] 新訂單 ${orderId}`,
+          to: env.REPORT_TO,
+          text: `方案 ${plan}\nemail ${email}\n授權碼 ${prettyLicense(key)}`,
+        }),
+      });
+    } catch (e) { /* 通知失敗不影響發碼 */ }
+  }
+
+  return new Response('1|OK');
 }
 
 /**
@@ -1815,6 +2035,11 @@ export default {
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleLicenseActivate(request, env, a);
       }
+      // 金流回呼。**不需要用戶端權杖**（金流平台不會帶），改用簽章驗證。
+      if (path === '/v1/payment/webhook' && request.method === 'POST') {
+        return handlePaymentWebhook(request, env);
+      }
+
       // 診斷回報。需要安裝權杖，避免被當成匿名投遞箱。
       if (path === '/v1/report' && request.method === 'POST') {
         const a = await authClient(env, request);

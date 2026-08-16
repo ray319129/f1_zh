@@ -38,8 +38,26 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit };', ctx);
 const A = sandbox.__api;
+
+// --- 懸空引用檢查 ---------------------------------------------------------
+// 路由裡呼叫了一個不存在的函式時，`node --check` 完全過得去（語法合法），
+// 要到真的有人打那個端點才會 500。實際踩過兩次：v0.4.0 的 manifests（坑 #22）、
+// v2.3 的 handleReportList——後者是因為插入腳本在 assert 失敗前沒寫檔，
+// 但路由已經先加進去了。
+{
+  const defined = new Set([...src.matchAll(/(?:async function|function|const|let)\s+(\w+)/g)].map((m) => m[1]));
+  const NAMES = ['handle[A-Za-z]+', 'ticketId', 'ecpayMac', 'planFromItem', 'flushStats', 'recordUsage', 'mergeWrite', 'readBundle', 'writeBundle', 'bucketOf', 'revokedSet', 'planExpiry', 'seasonEndSec', 'licenseKeyNew', 'prettyLicense', 'normLicense', 'issueEntitlement', 'readLicense', 'licenseProblem', 'translateBatch', 'translateOne', 'callModel', 'rateLimited', 'overBudget', 'dailyCost', 'authClient', 'authAdmin', 'safeEqual', 'hmac', 'tokenSecret', 'verifyEntitlement'];
+  // 用 new RegExp 組出來，不寫正則字面量——這一行被各層跳脫吃掉過兩次，
+  // 症狀是「檢查了 0 個函式」卻回報通過，比沒有檢查更危險。
+  const RE = new RegExp('(' + NAMES.join('|') + ')[ ]*[(]', 'g');
+  const called = new Set([...src.matchAll(RE)].map((m) => m[1]));
+  const dangling = [...called].filter((n) => !defined.has(n));
+  dangling.length
+    ? fail('後端引用了不存在的函式', dangling.join('、') + ' —— 那些端點會 500')
+    : ok(`沒有懸空引用（檢查了 ${called.size} 個函式）`);
+}
 
 const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || null } });
 
@@ -175,7 +193,88 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   }
   ok('授權：異常輸入（null／空白／超長／符號）都有正常回應，不會炸');
 
-  // ---- 8. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 8. 方案期限必須由伺服器算對 ----
+  const day = 86400;
+  const t14 = A.planExpiry('trial') - Math.floor(Date.now() / 1000);
+  Math.abs(t14 - 14 * day) < 60 ? ok('方案：試用 = 14 天') : fail('方案：試用天數不對', String(t14 / day));
+  A.planExpiry('lifetime') === null ? ok('方案：永久 = 無期限') : fail('方案：永久竟然有期限');
+  const seasonEnd = new Date(A.planExpiry('season') * 1000);
+  seasonEnd.getUTCMonth() === 0 && seasonEnd.getUTCDate() === 31
+    ? ok(`方案：賽季 = ${seasonEnd.toISOString().slice(0, 10)}（隔年 1/31）`)
+    : fail('方案：賽季到期日不是 1/31', seasonEnd.toISOString());
+
+  // ---- 9. 後台修改不可以弄丟使用者資料 ----
+  // 這是使用者明確要求的：改後台不能影響已啟用的裝置、不能弄丟 email。
+  const kv2 = new Map();
+  const aenv = { TOKEN_SECRET: 'test-secret-abc', ADMIN_TOKEN: 'admin-xyz',
+    SUBS: { get: async (k) => (kv2.has(k) ? kv2.get(k) : null), put: async (k, v) => { kv2.set(k, v); },
+            list: async () => ({ keys: [...kv2.keys()].filter((k) => k.startsWith('lic:')).map((name) => ({ name })), list_complete: true }) } };
+
+  let ir = await read(await A.handleLicenseIssue(body({ email: 'keep@me.com', plan: 'season', orderId: 'ORD-1' }), aenv));
+  const K2 = ir.licenseKey;
+  await A.handleLicenseActivate(body({ licenseKey: K2 }), aenv, asInstall('keep-device-1'));
+  await A.handleLicenseActivate(body({ licenseKey: K2 }), aenv, asInstall('keep-device-2'));
+
+  // 延期
+  let pr = await read(await A.handleLicensePatch(body({ licenseKey: K2, extendDays: 30 }), aenv));
+  pr.devices === 2 ? ok('後台：延期不影響已啟用的裝置') : fail('後台：延期把裝置弄丟了', String(pr.devices));
+
+  // 換方案
+  pr = await read(await A.handleLicensePatch(body({ licenseKey: K2, plan: 'lifetime', recalcExpiry: true }), aenv));
+  pr.plan === 'lifetime' && pr.expiresAt === null && pr.devices === 2
+    ? ok('後台：換方案會重算期限且保留裝置') : fail('後台：換方案結果不正確', JSON.stringify(pr));
+
+  // email 與訂單編號要留著
+  let lst = await read(await A.handleLicenseList(body({}), aenv, new URL('https://x/?q=keep@me.com')));
+  lst.rows.length === 1 && lst.rows[0].email === 'keep@me.com' && lst.rows[0].orderId === 'ORD-1'
+    ? ok('後台：多次修改後 email 與訂單編號仍在') : fail('後台：修改弄丟了 email 或訂單編號', JSON.stringify(lst.rows));
+
+  // 停用後可以恢復（誤按要救得回來）
+  await A.handleLicensePatch(body({ licenseKey: K2, revoked: true }), aenv);
+  pr = await read(await A.handleLicensePatch(body({ licenseKey: K2, revoked: false }), aenv));
+  !pr.revoked && pr.devices === 2 ? ok('後台：停用可以恢復，裝置不受影響') : fail('後台：恢復後狀態不對');
+
+  // 搜尋與狀態過濾
+  lst = await read(await A.handleLicenseList(body({}), aenv, new URL('https://x/?status=revoked')));
+  lst.rows.length === 0 ? ok('後台：狀態過濾正確') : fail('後台：狀態過濾沒作用');
+
+  // ---- 10. 金流 webhook ----
+  const wenv = Object.assign({}, aenv, { WEBHOOK_SECRET: 'hook-secret' });
+  const hookReq = (bodyObj, secret) => ({
+    headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json'
+      : k.toLowerCase() === 'x-webhook-secret' ? (secret || null) : null) },
+    json: async () => bodyObj,
+  });
+
+  let wr = await A.handlePaymentWebhook(hookReq({ orderId: 'O-1', status: 'paid', email: 'buy@x.com' }, 'wrong'), wenv);
+  wr.status === 401 ? ok('金流：簽章錯誤被拒') : fail('金流：假訂單可以換到免費授權');
+
+  wr = await A.handlePaymentWebhook(hookReq({ orderId: 'O-1', status: 'paid', email: 'buy@x.com', plan: 'season' }, 'hook-secret'), wenv);
+  const issued = [...kv2.keys()].filter((k) => k.startsWith('lic:')).length;
+  issued === 2 ? ok('金流：付款成功自動發碼') : fail('金流：沒有發碼', String(issued));
+
+  // 重送同一筆不可以再發一組
+  await A.handlePaymentWebhook(hookReq({ orderId: 'O-1', status: 'paid', email: 'buy@x.com' }, 'hook-secret'), wenv);
+  [...kv2.keys()].filter((k) => k.startsWith('lic:')).length === 2
+    ? ok('金流：重送同一筆訂單不會重複發碼') : fail('金流：重放會發出多組授權碼');
+
+  // 未付款不發碼，但仍回 1 讓對方停止重送
+  wr = await A.handlePaymentWebhook(hookReq({ orderId: 'O-2', status: 'pending' }, 'hook-secret'), wenv);
+  [...kv2.keys()].filter((k) => k.startsWith('lic:')).length === 2
+    ? ok('金流：未付款不發碼') : fail('金流：未付款竟然發碼了');
+
+  // 沒設定任何驗證方式時必須拒絕
+  wr = await A.handlePaymentWebhook(hookReq({ orderId: 'O-3', status: 'paid' }), aenv);
+  wr.status === 503 ? ok('金流：未設定驗證時拒絕處理') : fail('金流：沒設定驗證竟然照發');
+
+  A.planFromItem('PitLingo 永久授權') === 'lifetime' && A.planFromItem('unknown') === 'season'
+    ? ok('金流：商品代號對不上時給賽季（寧可多給）') : fail('金流：方案對照不正確');
+
+  // ---- 11. 診斷工單 ----
+  /^PL-\d{6}-[A-Z0-9]{4}$/.test(A.ticketId())
+    ? ok(`診斷：工單編號格式正確（${A.ticketId()}）`) : fail('診斷：工單編號格式不對', A.ticketId());
+
+  // ---- 12. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

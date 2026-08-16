@@ -89,13 +89,52 @@ async function getInstallId() {
   return /^[0-9a-f-]{8,}$/i.test(first) ? first : '';
 }
 
+/**
+ * 呼叫後端。
+ *
+ * ⚠️ 錯誤一定要帶著 **status 與伺服器給的訊息**。
+ *
+ * 原本只丟 `new Error('HTTP 404')`，於是每個呼叫端都只能寫
+ * 「無法連線到伺服器」——但 404（端點不存在／後端沒部署）、401（權杖問題）、
+ * 429（太頻繁）、503（額度用盡）是完全不同的四件事，
+ * **對使用者的指示也完全不同**。把它們混成同一句話，等於沒有錯誤訊息。
+ *
+ * 實際踩到：使用者按「傳送診斷」看到「無法連線到伺服器，請檢查網路」，
+ * 真正的原因是後端還沒部署 v2.3，`/v1/report` 回 404。他去檢查網路是白費工。
+ */
 async function api(path, options) {
   const token = await getClientToken();
-  const res = await fetch(BACKEND + path, Object.assign({
-    headers: { 'content-type': 'application/json', 'x-client-token': token },
-  }, options || {}));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  let res;
+  try {
+    res = await fetch(BACKEND + path, Object.assign({
+      headers: { 'content-type': 'application/json', 'x-client-token': token },
+    }, options || {}));
+  } catch (e) {
+    // 只有這裡才是真的連不上
+    const err = new Error('無法連線到伺服器，請檢查網路連線');
+    err.offline = true;
+    throw err;
+  }
+
+  const data = await res.json().catch(() => null);
+  if (res.ok) return data;
+
+  const err = new Error(describeHttp(res.status, data));
+  err.status = res.status;
+  err.data = data;
+  throw err;
+}
+
+/** 把 HTTP 狀態翻成「使用者現在能做什麼」。 */
+function describeHttp(status, data) {
+  if (data && data.error) return data.error;
+  if (status === 401) return '存取權杖無效。請重新載入擴充功能，它會自動重新取得。';
+  if (status === 403) return '沒有權限執行這個動作。';
+  if (status === 404) return '伺服器上找不到這個功能（可能是後端版本較舊）。請聯絡開發者。';
+  if (status === 429) return '操作太頻繁，請稍後再試。';
+  if (status === 503) return '服務暫時無法使用，請稍後再試。';
+  if (status >= 500) return `伺服器發生錯誤（${status}），請稍後再試。`;
+  return `請求失敗（HTTP ${status}）`;
 }
 
 /**
@@ -266,16 +305,9 @@ async function licenseActivate(licenseKey) {
     });
     return d;
   } catch (e) {
-    // api() 只丟 HTTP 狀態，訊息在 body 裡，所以這裡重打一次拿細節。
-    // 錯誤訊息是使用者唯一的線索，不能只回「失敗」。
-    try {
-      const res = await fetch(BACKEND + '/v1/license/activate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-client-token': await getClientToken() },
-        body: JSON.stringify({ licenseKey: key }),
-      });
-      return await res.json();
-    } catch (e2) { return { ok: false, error: '無法連線到伺服器，請檢查網路' }; }
+    // api() 現在會把伺服器的訊息與 body 一起帶回來，
+    // 所以裝置上限（409 + devices 清單）不用再重打一次請求。
+    return Object.assign({ ok: false, error: e.message }, e.data || {});
   }
 }
 
@@ -449,7 +481,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             });
             sendResponse({ ok: true, result: d });
           } catch (e) {
-            sendResponse({ ok: false, error: '無法連線到伺服器，請檢查網路' });
+            sendResponse({ ok: false, error: e.message });
           }
           break;
         }
