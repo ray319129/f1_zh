@@ -25,6 +25,7 @@
 | `extension/README.md` | 擴充功能架構、載入測試、診斷 | 動擴充功能前 |
 | `backend/README.md` | Workers 部署與 API | 動後端前 |
 | `GO-TO-MARKET.md` | 社群、推廣、金流、客服 SOP、指標 | 談商業化時 |
+| `P3-PLAN.md` | **分階段推送、成本後台、金流比較、介面規劃、上線檢查清單** | **做 P3 時從這裡開始** |
 | `F1TV_即時繁體中文字幕工具_產品與Launch整合企劃.md` | 品牌、定價、Landing Page、Launch 時程（使用者與 ChatGPT 討論的產物） | 談品牌／定價時 |
 
 ## 工作規則（使用者明確要求）
