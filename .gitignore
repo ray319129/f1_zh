@@ -22,3 +22,6 @@ Thumbs.db
 desktop.ini
 node_modules/
 dist/
+
+# legal/ 的圖示是從 extension/icons 複製過去給 Pages 用的，不重複追蹤
+legal/icon128.png
