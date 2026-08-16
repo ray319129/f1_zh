@@ -442,6 +442,12 @@
   const prefetchSeen = new Set();     // 已排入翻譯的 normKey
   let liveTimer = null;
 
+  // worker 攔到的 m3u8／MPD。整軌預抓的入口——播放器自己會抓這些，
+  // 我們只是搭便車，不產生任何額外的網路請求（Imperva 之下這點很重要）。
+  // 上限 12 份：換畫質、換影片都會產生新的，只保留最近的即可。
+  const MANIFEST_MAX = 12;
+  let manifests = [];
+
   async function swFetchText(url) {
     const res = await send({ type: 'fetchText', url });
     if (!res.ok) throw new Error(res.error || 'fetch 失敗');

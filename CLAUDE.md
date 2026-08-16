@@ -13,7 +13,7 @@
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.7.2 |
 | `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.4 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.4.0 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.4.1 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -31,7 +31,8 @@
 
 1. **每次修改程式碼，必須同步更新 `handoff.md`（版本號 + 更新紀錄）與對應的 README／TUTORIAL。** 不需要提醒。
 2. **每一步都要詳細解釋在做什麼、改了什麼、為什麼。**
-3. 修改後跑 `node --check`，以及 `node tools/check-normkey.js`、`node tools/check-logcalls.js`、`node tools/check-prompt.js`。
+3. 修改後跑 `node tools/check-all.js`（含 `node --check` 與四支檢查）。
+   **改動擴充功能後 `node --check` 不夠**——它抓不到「宣告被刪掉」這種執行期錯誤，一定要跑 `tools/smoke-extension.js`（見坑 #22）。
 4. 改動 userscript 的 `SYSTEM_PROMPT` 後，提醒跑選單的「🧮 檢查 token 數」確認 ≥ 4096。
 5. 使用者已決定**不再討論 F1TV 條款的法務風險**。企劃書把法務列為 P0 並會找律師——尊重該安排，不要重複勸阻。
 6. 回應用**繁體中文**。
@@ -53,6 +54,7 @@
 | 11 | **傳播延遲是所有快取層的總和**，不是最短那層 |
 | 12 | **prompt 低於 4,096 tokens 時 `cache_control` 靜默失效**——不報錯，只是每次全額計費 |
 | 13 | **在某個檔案學到的規則，要主動確認它在別的檔案成不成立**。坑 #21 就是規則只套用在 userscript、後端漏掉 |
+| 14 | **驗證強度要配得上改動性質**。批次刪除後 `node --check` 不夠，少一個宣告在語法上完全合法（坑 #22） |
 
 ## 關鍵技術事實（已實測，不要重新驗證）
 
