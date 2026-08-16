@@ -104,11 +104,15 @@ async function getInstallId() {
  */
 async function api(path, options) {
   const token = await getClientToken();
+  // 通行證一併帶上。伺服器用它判斷這個安裝有沒有付費——
+  // 用戶端的授權 UI 只是體驗，真正的閘門在伺服器（沒有 TOKEN_SECRET 就驗不了簽）。
+  const { entitlement } = await chrome.storage.local.get('entitlement');
+  const headers = { 'content-type': 'application/json', 'x-client-token': token };
+  if (entitlement) headers['x-entitlement'] = entitlement;
+
   let res;
   try {
-    res = await fetch(BACKEND + path, Object.assign({
-      headers: { 'content-type': 'application/json', 'x-client-token': token },
-    }, options || {}));
+    res = await fetch(BACKEND + path, Object.assign({ headers }, options || {}));
   } catch (e) {
     // 只有這裡才是真的連不上
     const err = new Error('無法連線到伺服器，請檢查網路連線');

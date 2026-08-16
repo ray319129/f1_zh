@@ -29,6 +29,7 @@ const CHECKS = [
   ['後端資安與維運邏輯（權杖／分流／汙染防護／成本）', 'tools/check-backend.js'],
   ['亂操作防呆（14 個情境，不可有未捕捉的例外）', 'tools/chaos-extension.js'],
   ['設定頁的 HTML／CSS／JS 一致性', 'tools/check-options.js'],
+  ['後台與後端一致（端點都有 UI、危險操作有確認）', 'tools/check-admin.js'],
 ];
 
 let failed = 0;

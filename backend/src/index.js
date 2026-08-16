@@ -914,10 +914,27 @@ const MAX_DEVICES = 3;
  *   lifetime  無期限。
  */
 const PLANS = {
-  trial: { label: '試用', days: 14 },
-  season: { label: '賽季', untilSeasonEnd: true },
-  lifetime: { label: '永久', days: null },
+  // 免費層。不需要授權碼——四種正式場次的前 15 分鐘，見 REMOTE_CONFIG.freeTier。
+  // 列在這裡是為了讓後台與統計有一致的名稱可用。
+  trial: { label: 'GP Trial', price: 0, days: null, public: true, free: true },
+
+  // 早鳥。限量 20 組，賣完就只剩正式價。
+  season_early: { label: 'Season Early Access', price: 399, untilSeasonEnd: true, limit: 20 },
+
+  // 正式價。
+  season: { label: 'Season', price: 599, untilSeasonEnd: true },
+
+  // 客服補償用，不公開販售。
+  comp: { label: '客服補償', price: 0, days: 30 },
 };
+
+// 早鳥限量。賣完自動改用正式價——**不能靠人工盯著改**，
+// 賣超了要嘛食言要嘛虧錢，兩個都不該發生。
+const EARLY_LIMIT = 20;
+
+// 通行證有效期。用戶端每 24 小時回報一次，這個 14 天只是**離線緩衝**——
+// 後端掛掉時已付費的人還能撐兩週（見 SECURITY.md 的授權模型）。
+const ENTITLEMENT_DAYS = 14;
 
 /** 賽季結束時間：隔年 1 月 31 日。今天已過 1/31 就算到明年的 1/31。 */
 function seasonEndSec(from) {
@@ -933,9 +950,14 @@ function planExpiry(plan, from) {
   if (!p) return null;
   if (p.untilSeasonEnd) return seasonEndSec(from);
   if (p.days) return Math.floor((from || Date.now()) / 1000) + p.days * 86400;
-  return null;                                               // lifetime
+  return null;
 }
-const ENTITLEMENT_DAYS = 14;      // 通行證有效期；用戶端自動續，後端掛了也還能撐兩週
+
+/** 早鳥還剩幾組。用 KV 計數，發碼時遞增。 */
+async function earlyRemaining(env) {
+  const n = parseInt((await env.SUBS.get('early:count')) || '0', 10);
+  return Math.max(0, EARLY_LIMIT - n);
+}
 
 function licenseKeyNew() {
   // 去掉容易看錯的 0/O/1/I/L，因為使用者要用手打
@@ -1089,6 +1111,72 @@ async function handleLicenseDevices(request, env) {
 }
 
 // ---------------------------------------------------------------------------
+// 伺服器端的授權閘門
+//
+// **用戶端的授權檢查只是 UI，這裡才是真正的牆。**
+// 用戶端沒有 TOKEN_SECRET，驗不了通行證的簽章；而且使用者本來就能改自己
+// 電腦上的 storage。所以「有沒有付費」必須在會花錢的端點上判定。
+//
+// 免費層的配額也在這裡。用戶端負責「播到 15 分鐘就不再顯示」（那是產品承諾），
+// 伺服器負責「未授權的安裝每天最多翻 N 句」（那是成本保護）。
+// 兩者目的不同，都要有——只做前者的話，改個 storage 就能無限用。
+// ---------------------------------------------------------------------------
+
+// 免費層每天的翻譯句數上限。
+// 一場練習賽 15 分鐘約 250~300 句，四種場次一天最多兩場，抓 800 已經寬鬆。
+// 超過就退回「只讀共用快取」——**已經有人翻過的影片仍然完全可用**，
+// 使用者不會覺得壞掉，只是新影片當天不再幫他翻。
+const FREE_DAILY_LINES = 800;
+
+const freeKey = (installId) => `free:${installId}:${new Date().toISOString().slice(0, 10)}`;
+
+/**
+ * 判定這次請求能翻幾句。回傳 { allowed, reason, plan }。
+ *
+ * 設計原則：**任何不確定的情況都往寬鬆解釋**。
+ * 讀不到授權、KV 暫時有問題、通行證剛好在續期空窗——
+ * 這些都不該讓付了錢的人被擋。真正要擋的是「明確沒有授權且已超過免費額度」。
+ */
+async function checkEntitlement(env, auth, request, wantLines) {
+  const ent = request.headers.get('x-entitlement') || '';
+
+  if (ent) {
+    const v = await verifyEntitlement(env, ent);
+    // 通行證必須是簽給這個安裝的，否則等於一張到處傳的萬用票
+    if (v.ok && v.installId === auth.installId) {
+      if ((await revokedSet(env)).has(auth.installId)) {
+        return { allowed: 0, reason: 'revoked', plan: null };
+      }
+      return { allowed: wantLines, reason: 'licensed', plan: v.plan };
+    }
+    // 通行證壞掉或過期 → 不直接拒絕，往下走免費層。
+    // 使用者可能只是續期失敗，讓他至少還有免費額度可用。
+  }
+
+  // ---- 免費層 ----
+  const k = freeKey(auth.installId);
+  let used = 0;
+  try { used = parseInt((await env.SUBS.get(k)) || '0', 10) || 0; } catch (e) { used = 0; }
+  const left = Math.max(0, FREE_DAILY_LINES - used);
+  if (left <= 0) return { allowed: 0, reason: 'free_quota_exhausted', plan: 'trial' };
+  return { allowed: Math.min(wantLines, left), reason: 'free', plan: 'trial', used, left };
+}
+
+/**
+ * 記錄免費層用量。
+ *
+ * 取樣寫入（每 5 句才寫一次並一次加 5），因為 KV 免費額度是 1,000 puts/天，
+ * 逐句寫必定撞爆（坑 #19 的教訓）。額度因此是近似值，但配合成本熔斷已足夠。
+ */
+async function noteFreeUsage(env, installId, n) {
+  if (!n) return;
+  if (Math.random() >= n / 5) return;                 // 期望值等於 n/5 次寫入
+  const k = freeKey(installId);
+  const cur = parseInt((await env.SUBS.get(k)) || '0', 10) || 0;
+  await env.SUBS.put(k, String(cur + 5), { expirationTtl: 2 * 86400 });
+}
+
+// ---------------------------------------------------------------------------
 // 診斷回報
 //
 // 使用者按「傳送診斷」→ 後端收下、給一個工單編號、存進 KV。
@@ -1170,6 +1258,7 @@ async function handleReportList(env, url) {
     let r; try { r = JSON.parse(raw); } catch (e) { continue; }
     rows.push({
       id: r.id, at: r.at, version: r.version, contact: r.contact, note: r.note,
+      resolved: !!r.resolved, adminNote: r.adminNote || '',
       // 摘要抓幾個一眼能判斷的欄位，不用點開就能分類
       summary: (r.report.match(/^目前階段.*$/m) || [''])[0].trim()
         + '　' + (r.report.match(/^命中 \/ 未命中.*$/m) || [''])[0].trim(),
@@ -1212,8 +1301,7 @@ async function ecpayMac(params, hashKey, hashIV) {
  */
 function planFromItem(name) {
   const n = String(name || '').toLowerCase();
-  if (n.includes('lifetime') || n.includes('永久')) return 'lifetime';
-  if (n.includes('trial') || n.includes('試用')) return 'trial';
+  if (n.includes('early') || n.includes('早鳥')) return 'season_early';
   return 'season';
 }
 
@@ -1356,6 +1444,77 @@ async function handleLicensePatch(request, env) {
 
   await env.SUBS.put(licKey(key), JSON.stringify(lic));
   return json({ ok: true, licenseKey: prettyLicense(key), plan: lic.plan, expiresAt: lic.expiresAt, revoked: !!lic.revoked, devices: (lic.devices || []).length });
+}
+
+/**
+ * 管理端：**永久刪除**一組授權碼。
+ *
+ * 與「停用」是不同的東西，兩個都要有：
+ *   停用  資料留著。退款、盜用、chargeback 用——**日後有爭議時你需要那筆紀錄**。
+ *   刪除  資料清掉。測試用的、發錯的、重複發的用。
+ *
+ * 安全設計：
+ *   1. **有裝置啟用過的碼預設不給刪**，除非明確帶 force。
+ *      真實使用者的碼被誤刪 = 他付了錢卻突然失效，那是最嚴重的傷害。
+ *   2. 刪除時把 email 索引與訂單去重鍵一起清掉，否則會留下指向空值的索引，
+ *      客服查詢時看到一組查不到內容的碼，比沒有更困惑。
+ *   3. 已刪除的碼不再能啟用（KV 讀不到 → 404），但**已經發出去的通行證
+ *      仍會在有效期內運作**——那是刻意的，避免誤刪立刻把人踢下線，
+ *      最長 14 天內你還有機會重新發碼補救。
+ */
+async function handleLicenseDelete(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const lic = await readLicense(env, key);
+  if (!lic) return err('查無此授權碼', 404);
+
+  const devices = (lic.devices || []).length;
+  if (devices > 0 && !body.force) {
+    return json({
+      error: `這組授權碼有 ${devices} 台裝置啟用中，不能直接刪除。`
+        + '若確定要刪，請先確認不是真實使用者（誤刪會讓付費者立刻失效）。',
+      needsForce: true, devices,
+    }, 409);
+  }
+
+  await env.SUBS.delete(licKey(key));
+
+  // 連帶清掉索引，不留下指向空值的殘骸
+  if (lic.email) {
+    const ik = `licmail:${lic.email.toLowerCase()}`;
+    let arr = [];
+    try { arr = JSON.parse((await env.SUBS.get(ik)) || '[]'); } catch (e) { /* noop */ }
+    arr = arr.filter((k) => k !== key);
+    if (arr.length) await env.SUBS.put(ik, JSON.stringify(arr));
+    else await env.SUBS.delete(ik);
+  }
+  // 訂單去重鍵也要清，否則同一筆訂單日後補發會被當成重放而拒絕
+  if (lic.orderId) await env.SUBS.delete(`order:${lic.orderId}`);
+
+  return json({ ok: true, deleted: prettyLicense(key), hadDevices: devices });
+}
+
+/** 管理端：把工單標成已解決／未解決。 */
+async function handleReportPatch(request, env) {
+  const body = await request.json().catch(() => null);
+  const id = String((body && body.id) || '').trim();
+  if (!id) return err('缺少工單編號');
+  const raw = await env.SUBS.get(`report:${id}`);
+  if (!raw) return err('查無此工單', 404);
+  const rec = JSON.parse(raw);
+
+  if (body.resolved !== undefined) {
+    rec.resolved = !!body.resolved;
+    rec.resolvedAt = body.resolved ? nowSec() : null;
+  }
+  if (body.adminNote !== undefined) rec.adminNote = String(body.adminNote).slice(0, 2000);
+  if (body.delete) { await env.SUBS.delete(`report:${id}`); return json({ ok: true, deleted: id }); }
+
+  // 保留原本的 TTL 計算方式，避免「編輯一次就重新計時 90 天」
+  const age = nowSec() - (rec.at || nowSec());
+  const left = Math.max(86400, REPORT_TTL_DAYS * 86400 - age);
+  await env.SUBS.put(`report:${id}`, JSON.stringify(rec), { expirationTtl: left });
+  return json({ ok: true, id, resolved: !!rec.resolved });
 }
 
 /** 管理端：發碼。P3 接上金流後由 webhook 呼叫，現在先手動。 */
@@ -1766,6 +1925,19 @@ async function handleTranslate(request, env, ip, auth) {
   const cid = String(body.cid || 'misc');
   const input = Array.isArray(body.lines) ? body.lines : [];
   if (!input.length) return err('缺少 lines');
+
+  // ⚠️ 授權閘門。用戶端的檢查只是 UI，**這裡才是真正的牆**。
+  const gate = await checkEntitlement(env, auth, request, input.length);
+  if (!gate.allowed) {
+    return json({
+      lines: {}, translated: 0,
+      error: gate.reason === 'revoked'
+        ? '這組授權已停用。如有疑問請聯絡客服。'
+        : '免費額度今日已用完。已翻譯過的影片仍可正常觀看，或購買 Season 解除限制。',
+      reason: gate.reason,
+      plan: gate.plan,
+    }, 402);
+  }
   if (input.length > 200) return err('一次最多 200 句');
 
   // 每句的長度上限。沒有這個限制的話，200 句 × 每句 100KB = 20MB 進模型，
@@ -1790,7 +1962,10 @@ async function handleTranslate(request, env, ip, auth) {
     missing.push({ en, k });
   }
 
-  // 2) 未命中的才呼叫模型
+  // 2) 未命中的才呼叫模型。
+  //    免費層可能只允許一部分——**先翻的是排在前面的**，也就是使用者
+  //    正在看的那一段，不是隨機丟掉。
+  if (missing.length > gate.allowed) missing.length = gate.allowed;
   let translated = 0;
   let rejected = 0;                   // 通過模型但沒通過合理性檢查、不寫入快取的數量
   const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
@@ -1823,6 +1998,9 @@ async function handleTranslate(request, env, ip, auth) {
   if (Object.keys(added).length) await mergeWrite(env, cid, added);
 
   recordUsage(cid, usageTotals, translated, input.length - missing.length);
+  if (gate.reason === 'free' && translated) {
+    try { await noteFreeUsage(env, auth.installId, translated); } catch (e) { /* 統計不擋主流程 */ }
+  }
   if (shouldFlush()) { try { await flushStats(env); } catch (e) { /* 統計不該影響主流程 */ } }
 
   return json({
@@ -1900,10 +2078,13 @@ async function routeAdmin(path, request, env, url) {
   const m = request.method;
 
   if (path === '/v1/admin/license/issue' && m === 'POST') return handleLicenseIssue(request, env);
-  if (path === '/v1/admin/license/revoke' && m === 'POST') return handleLicenseRevoke(request, env);
-  if (path === '/v1/admin/license/lookup' && m === 'GET') return handleLicenseLookup(request, env, url);
+  // license/revoke 與 license/lookup 已由 license/patch（revoked 欄位）與
+  // license/list（?q= 可搜 email）取代。**同一件事不留兩種做法**——
+  // 後台只會用其中一條，另一條遲早會漂掉而沒人發現。
   if (path === '/v1/admin/license/list' && m === 'GET') return handleLicenseList(request, env, url);
   if (path === '/v1/admin/license/patch' && m === 'POST') return handleLicensePatch(request, env);
+  if (path === '/v1/admin/license/delete' && m === 'POST') return handleLicenseDelete(request, env);
+  if (path === '/v1/admin/reports/patch' && m === 'POST') return handleReportPatch(request, env);
   if (path === '/v1/admin/reports' && m === 'GET') return handleReportList(env, url);
 
   if (path === '/v1/admin/stats' && m === 'GET') {

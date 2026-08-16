@@ -123,6 +123,19 @@
 <details class="adv">
   <summary>回報問題</summary>
 
+  <!--
+    先講延遲，再讓人填表。
+    實測 PitLingo 只替顯示加了約 4ms，那 0.5 秒是 F1TV 自己畫字幕的時機——
+    不先說清楚，光是「字幕慢半拍」就會佔掉大部分工單，真正的問題反而被淹沒。
+  -->
+  <div class="notice">
+    <strong>字幕慢半拍是正常的</strong>
+    <p>F1TV 的英文字幕本身就比語音晚約 <b>0.5 秒</b>出現。PitLingo 是跟著它翻譯的，
+    所以中文也會一起晚那 0.5 秒——這不是故障，我們也無法讓它比原文更早。</p>
+    <p>如果你遇到的是<b>字幕完全沒出現</b>、<b>停住不動</b>、<b>翻譯明顯錯誤</b>，
+    那才需要回報，請往下填。</p>
+  </div>
+
   <label class="field">
     <span>發生了什麼事？<em class="opt">選填</em></span>
     <input id="rpNote" placeholder="例如：字幕停了一段時間、翻譯怪怪的" maxlength="200">

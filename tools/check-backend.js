@@ -38,7 +38,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -53,7 +53,15 @@ const A = sandbox.__api;
   // 症狀是「檢查了 0 個函式」卻回報通過，比沒有檢查更危險。
   const RE = new RegExp('(' + NAMES.join('|') + ')[ ]*[(]', 'g');
   const called = new Set([...src.matchAll(RE)].map((m) => m[1]));
-  const dangling = [...called].filter((n) => !defined.has(n));
+  // 常數被吃掉也是同一類錯：語法合法，執行到那一行才 ReferenceError。
+  // 實際踩過——改 PLANS 時把 ENTITLEMENT_DAYS 一起換掉了。
+  const CONSTS = ['ENTITLEMENT_DAYS', 'MAX_DEVICES', 'EARLY_LIMIT', 'FREE_DAILY_LINES',
+    'BUNDLE_MAX_LINES', 'BATCH_MAX', 'RATE_LIMIT_PER_MIN', 'PLANS', 'MODEL',
+    'PRICE', 'REPORT_TTL_DAYS', 'DAILY_USD_CAP_DEFAULT'];
+  const usedConsts = CONSTS.filter((c) => new RegExp('[^A-Za-z_]' + c + '[^A-Za-z_]').test(src));
+  const danglingConsts = usedConsts.filter((c) => !defined.has(c));
+
+  const dangling = [...called].filter((n) => !defined.has(n)).concat(danglingConsts);
   dangling.length
     ? fail('後端引用了不存在的函式', dangling.join('、') + ' —— 那些端點會 500')
     : ok(`沒有懸空引用（檢查了 ${called.size} 個函式）`);
@@ -194,21 +202,30 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   ok('授權：異常輸入（null／空白／超長／符號）都有正常回應，不會炸');
 
   // ---- 8. 方案期限必須由伺服器算對 ----
+  // 手填期限一定會錯，而錯的方向不論多給少給都是糾紛。
   const day = 86400;
-  const t14 = A.planExpiry('trial') - Math.floor(Date.now() / 1000);
-  Math.abs(t14 - 14 * day) < 60 ? ok('方案：試用 = 14 天') : fail('方案：試用天數不對', String(t14 / day));
-  A.planExpiry('lifetime') === null ? ok('方案：永久 = 無期限') : fail('方案：永久竟然有期限');
-  const seasonEnd = new Date(A.planExpiry('season') * 1000);
-  seasonEnd.getUTCMonth() === 0 && seasonEnd.getUTCDate() === 31
-    ? ok(`方案：賽季 = ${seasonEnd.toISOString().slice(0, 10)}（隔年 1/31）`)
-    : fail('方案：賽季到期日不是 1/31', seasonEnd.toISOString());
+  const comp = A.planExpiry('comp') - Math.floor(Date.now() / 1000);
+  Math.abs(comp - 30 * day) < 60 ? ok('方案：客服補償 = 30 天') : fail('方案：補償天數不對', String(comp / day));
+
+  A.planExpiry('trial') === null ? ok('方案：GP Trial 無期限（免費層靠 15 分鐘閘門，不靠授權碼）')
+    : fail('方案：Trial 不該有到期日');
+
+  for (const p of ['season', 'season_early']) {
+    const end = new Date(A.planExpiry(p) * 1000);
+    end.getUTCMonth() === 0 && end.getUTCDate() === 31
+      ? ok(`方案：${p} = ${end.toISOString().slice(0, 10)}（隔年 1/31）`)
+      : fail(`方案：${p} 到期日不是 1/31`, end.toISOString());
+  }
+
+  A.planExpiry('nonexistent') === null ? ok('方案：不存在的方案回 null') : fail('方案：不存在的方案沒處理');
 
   // ---- 9. 後台修改不可以弄丟使用者資料 ----
   // 這是使用者明確要求的：改後台不能影響已啟用的裝置、不能弄丟 email。
   const kv2 = new Map();
   const aenv = { TOKEN_SECRET: 'test-secret-abc', ADMIN_TOKEN: 'admin-xyz',
     SUBS: { get: async (k) => (kv2.has(k) ? kv2.get(k) : null), put: async (k, v) => { kv2.set(k, v); },
-            list: async () => ({ keys: [...kv2.keys()].filter((k) => k.startsWith('lic:')).map((name) => ({ name })), list_complete: true }) } };
+            delete: async (k) => { kv2.delete(k); },
+            list: async (o) => ({ keys: [...kv2.keys()].filter((k) => k.startsWith((o && o.prefix) || 'lic:')).map((name) => ({ name })), list_complete: true }) } };
 
   let ir = await read(await A.handleLicenseIssue(body({ email: 'keep@me.com', plan: 'season', orderId: 'ORD-1' }), aenv));
   const K2 = ir.licenseKey;
@@ -220,8 +237,9 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   pr.devices === 2 ? ok('後台：延期不影響已啟用的裝置') : fail('後台：延期把裝置弄丟了', String(pr.devices));
 
   // 換方案
-  pr = await read(await A.handleLicensePatch(body({ licenseKey: K2, plan: 'lifetime', recalcExpiry: true }), aenv));
-  pr.plan === 'lifetime' && pr.expiresAt === null && pr.devices === 2
+  pr = await read(await A.handleLicensePatch(body({ licenseKey: K2, plan: 'season_early', recalcExpiry: true }), aenv));
+  const endOk = new Date(pr.expiresAt * 1000).getUTCDate() === 31;
+  pr.plan === 'season_early' && endOk && pr.devices === 2
     ? ok('後台：換方案會重算期限且保留裝置') : fail('後台：換方案結果不正確', JSON.stringify(pr));
 
   // email 與訂單編號要留著
@@ -267,14 +285,74 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   wr = await A.handlePaymentWebhook(hookReq({ orderId: 'O-3', status: 'paid' }), aenv);
   wr.status === 503 ? ok('金流：未設定驗證時拒絕處理') : fail('金流：沒設定驗證竟然照發');
 
-  A.planFromItem('PitLingo 永久授權') === 'lifetime' && A.planFromItem('unknown') === 'season'
-    ? ok('金流：商品代號對不上時給賽季（寧可多給）') : fail('金流：方案對照不正確');
+  A.planFromItem('unknown') === 'season'
+    ? ok('金流：商品代號對不上時給正式 Season（寧可多給）') : fail('金流：方案對照不正確');
 
   // ---- 11. 診斷工單 ----
   /^PL-\d{6}-[A-Z0-9]{4}$/.test(A.ticketId())
     ? ok(`診斷：工單編號格式正確（${A.ticketId()}）`) : fail('診斷：工單編號格式不對', A.ticketId());
 
-  // ---- 12. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 12. 刪除必須安全 ----
+  // 使用者要的：測試用的碼要刪得掉，但不能危害真實使用者的權益與資料。
+  let dr = await read(await A.handleLicenseIssue(body({ email: 'del@x.com', plan: 'season' }), aenv));
+  const DK = dr.licenseKey;
+  dr = await read(await A.handleLicenseDelete(body({ licenseKey: DK }), aenv));
+  dr.ok ? ok('刪除：沒有裝置的碼可以直接刪') : fail('刪除：乾淨的碼刪不掉', dr.error);
+
+  let gone = await read(await A.handleLicenseActivate(body({ licenseKey: DK }), aenv, asInstall('x')));
+  gone.error ? ok('刪除：刪掉後無法再啟用') : fail('刪除：刪了還能啟用');
+
+  // 有裝置啟用中的碼必須擋下來——誤刪等於讓付費者立刻失效
+  dr = await read(await A.handleLicenseIssue(body({ email: 'keep2@x.com', plan: 'season' }), aenv));
+  const DK2 = dr.licenseKey;
+  await A.handleLicenseActivate(body({ licenseKey: DK2 }), aenv, asInstall('real-user'));
+  const blocked = await A.handleLicenseDelete(body({ licenseKey: DK2 }), aenv);
+  blocked.status === 409 && (await read(blocked)).needsForce
+    ? ok('刪除：有裝置啟用中的碼被擋下並要求確認') : fail('刪除：可能誤刪真實使用者的碼');
+  dr = await read(await A.handleLicenseDelete(body({ licenseKey: DK2, force: true }), aenv));
+  dr.ok && dr.hadDevices === 1 ? ok('刪除：force 可以強制刪並回報影響的裝置數') : fail('刪除：force 沒作用');
+
+  // email 索引要一起清乾淨，不能留下查得到卻沒內容的殘骸
+  const idx = await read(await A.handleLicenseLookup(body({}), aenv, new URL('https://x/?email=del@x.com')));
+  idx.licenses.length === 0 ? ok('刪除：email 索引一併清除') : fail('刪除：留下指向空值的索引');
+
+  // ---- 13. 工單狀態 ----
+  const renv = Object.assign({}, aenv);
+  const rsub = await read(await A.handleReportSubmit(
+    body({ report: ['目前階段：測試', '命中 / 未命中：1 / 0'].join('\n'), version: '9.9.9' }),
+    renv, asInstall('rep-1')));
+  rsub.ok && rsub.ticket ? ok(`工單：送出成功 ${rsub.ticket}`) : fail('工單：送不出去');
+  let rp = await read(await A.handleReportPatch(body({ id: rsub.ticket, resolved: true }), renv));
+  rp.resolved ? ok('工單：可標示為已解決') : fail('工單：標示沒生效');
+  rp = await read(await A.handleReportPatch(body({ id: rsub.ticket, resolved: false }), renv));
+  !rp.resolved ? ok('工單：可改回未解決') : fail('工單：改不回來');
+  rp = await read(await A.handleReportPatch(body({ id: rsub.ticket, delete: true }), renv));
+  rp.deleted ? ok('工單：可刪除') : fail('工單：刪不掉');
+
+  // ---- 14. 伺服器端授權閘門 ----
+  // 用戶端的檢查只是 UI，這裡才是真正的牆。
+  const genv = Object.assign({}, aenv);
+  const noEnt = { headers: { get: () => null } };
+  let g = await A.checkEntitlement(genv, asInstall('free-user'), noEnt, 50);
+  g.allowed === 50 && g.reason === 'free' ? ok('閘門：未授權者可用免費額度') : fail('閘門：免費額度不通', JSON.stringify(g));
+
+  // 免費額度用完要擋
+  await genv.SUBS.put(`free:free-user:${new Date().toISOString().slice(0, 10)}`, String(A.FREE_DAILY_LINES));
+  g = await A.checkEntitlement(genv, asInstall('free-user'), noEnt, 50);
+  g.allowed === 0 && g.reason === 'free_quota_exhausted'
+    ? ok('閘門：免費額度用完後擋下') : fail('閘門：額度用完仍放行 —— 成本沒有上限');
+
+  // 有效通行證不受免費額度影響
+  const ent = await A.issueEntitlement(genv, 'paid-user', 'season', null);
+  const withEnt = { headers: { get: (k) => (k.toLowerCase() === 'x-entitlement' ? ent.entitlement : null) } };
+  g = await A.checkEntitlement(genv, asInstall('paid-user'), withEnt, 50);
+  g.allowed === 50 && g.reason === 'licensed' ? ok('閘門：已授權者不受免費額度限制') : fail('閘門：付費者被擋', JSON.stringify(g));
+
+  // 別人的通行證不能拿來用
+  g = await A.checkEntitlement(genv, asInstall('other-user'), withEnt, 50);
+  g.reason !== 'licensed' ? ok('閘門：他人的通行證無效（不是萬用票）') : fail('閘門：通行證可以到處傳');
+
+  // ---- 15. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

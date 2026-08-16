@@ -381,11 +381,76 @@
   // =========================================================================
   let currentEn = '';              // 畫面上正在顯示的英文原句
 
+  // =========================================================================
+  // 免費層閘門
+  //
+  // 四種正式賽事場次的前 15 分鐘免費，其餘 F1TV 影片不含在內。
+  //
+  // 這裡是**產品承諾**的實作（使用者看得到的規則）；
+  // 成本保護在伺服器（未授權的安裝每天有句數上限）。兩者目的不同，都要有——
+  // 只做這一層的話，改一下 storage 就能無限用。
+  // =========================================================================
+  let licensed = false;              // 有沒有有效授權
+  let freeSession = false;           // 這支影片屬不屬於免費涵蓋的場次
+  let freeSpent = 0;                 // 直播用：已看掉的免費秒數
+  let lastTickAt = 0;
+  let trialEndedShown = false;
+
+  /** 免費額度還剩幾秒。授權中回傳 Infinity。 */
+  function freeSecondsLeft() {
+    if (licensed) return Infinity;
+    if (!freeSession) return 0;
+    const limit = (site && site.freeTier && site.freeTier.seconds) || 900;
+    const v = document.querySelector('video');
+    // 重播：用播放位置判定「前 15 分鐘」，暫停或重看都不會多扣。
+    // 直播：沒有可靠的起點，改用實際觀看秒數累計。
+    const used = state.isLive ? freeSpent : (v && isFinite(v.currentTime) ? v.currentTime : 0);
+    return Math.max(0, limit - used);
+  }
+
+  function tickFreeUsage() {
+    const now = Date.now();
+    if (state.isLive && !licensed && freeSession && isActuallyPlaying()) {
+      if (lastTickAt) freeSpent += Math.min(5, (now - lastTickAt) / 1000);
+    }
+    lastTickAt = now;
+  }
+
+  function trialExhausted() {
+    if (licensed) return false;
+    if (!freeSession) return true;          // 不在免費範圍的影片，一律需要授權
+    return freeSecondsLeft() <= 0;
+  }
+
+  function showTrialEnded() {
+    if (trialEndedShown) return;
+    trialEndedShown = true;
+    box.classList.remove('on');
+    if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }   // 把原生英文字幕還給使用者
+    evWarn(freeSession
+      ? '⏳ 免費試看的 15 分鐘已結束。原生英文字幕已恢復顯示，購買 Season 可解除限制。'
+      : '🔒 這支影片不在免費範圍內（免費只涵蓋練習賽／衝刺賽／排位賽／正賽的前 15 分鐘）。');
+  }
+
+  async function refreshLicensed() {
+    const res = await send({ type: 'licenseStatus' });
+    const was = licensed;
+    licensed = !!(res.ok && res.license && res.license.active);
+    if (licensed !== was) {
+      evInfo(licensed ? '✅ 授權已生效，無使用限制' : 'ℹ️ 目前為免費模式');
+      if (licensed) trialEndedShown = false;      // 剛買完要立刻恢復顯示
+    }
+  }
+
   function handleCaption(raw) {
     const text = clean(raw);
     if (!text || text.length < 2 || text === lastRaw) return;
     lastRaw = text;
     currentEn = text;
+
+    // 免費額度用完就停止顯示。**已經在畫面上的不會被抽走**，
+    // 只是不再翻新的——中途把字幕整個抽掉比一開始就沒有更惱人。
+    if (trialExhausted()) { showTrialEnded(); return; }
 
     const k = normKey(text);
     sessionKeys.add(k);
@@ -1268,6 +1333,9 @@
     //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
     manifests = [];
     sessionKeys = new Set();
+    // 每支影片各自判定免費資格
+    freeSession = self.PL.isFreeSession(location.pathname, site && site.freeTier);
+    freeSpent = 0; lastTickAt = 0; trialEndedShown = false;
     bundleSegCount = 0;
     state.manifests = 0;
     state.harvestSkipped = false;
@@ -1300,6 +1368,11 @@
        + `　|　翻譯：${settings.enabled ? '開啟' : '關閉'}`);
     evInfo('提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態');
 
+    // 授權狀態決定免費層的閘門。取不到就當未授權——
+    // **但那不會鎖住功能**，只是套用免費額度（15 分鐘）。
+    await refreshLicensed();
+    freeSession = self.PL.isFreeSession(location.pathname, site && site.freeTier);
+
     applyHideNative();
     mount();
 
@@ -1317,12 +1390,15 @@
       mount();
       reposition();
       checkNoCaption();
+      tickFreeUsage();
     }, STRUCT_MS);
 
     // 定期重讀遠端設定並「就地套用」。
     // 沒有這個的話，F1TV 改版時就算後端已經推了新選擇器，
     // 使用者還是得自己重新整理頁面才會生效——比賽播到一半沒人會想這樣做。
     setInterval(applyRemoteConfig, CONFIG_RECHECK_MS);
+    // 剛買完要立刻能用，剛被停用也要及時反映
+    setInterval(refreshLicensed, CONFIG_RECHECK_MS);
 
     ['fullscreenchange', 'webkitfullscreenchange', 'resize', 'scroll'].forEach((e) =>
       window.addEventListener(e, () => { mount(); reposition(); }, true));
@@ -1490,6 +1566,9 @@
     L.push(`遠端設定版本：v${configVersion}（重讀間隔 ${CONFIG_RECHECK_MS / 1000} 秒；`
       + `含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）`);
     L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
+    L.push(`授權狀態：${licensed ? '已授權' : '免費模式'}`
+      + `　場次${freeSession ? '在' : '不在'}免費範圍`
+      + (licensed ? '' : `　剩餘 ${Math.round(freeSecondsLeft())} 秒`));
     L.push(`遠端狀態：${killed ? '⛔ killSwitch 已啟用' : '正常'}`
       + `${tooOld ? '　⛔ 版本過舊，已停止翻譯' : ''}`);
     L.push('');

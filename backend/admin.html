@@ -49,6 +49,8 @@
   .st-active { color: #0a7; }
   .st-expired { color: #b8730a; }
   .st-revoked { color: #d33; }
+  tr.done { opacity: .55; }
+  .planSel { padding: 2px 6px; font-size: 12px; margin-right: 4px; }
   .full { background: rgba(128,128,128,.1); padding: 12px; border-radius: 8px;
           max-height: 460px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin-top: 14px; }
 </style>
@@ -79,14 +81,29 @@
 <section id="p-lic" hidden>
   <div class="panel">
     <h3>發放授權碼</h3>
-    <p class="hint">期限由伺服器依方案自動計算：<b>試用</b> 14 天　·　<b>賽季</b> 到隔年 1/31（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）　·　<b>永久</b> 無期限。</p>
+    <p class="hint">期限由伺服器依方案自動計算，一律到隔年 <b>1/31</b>（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）。客服補償為 30 天。<br>GP Trial 是免費層，<b>不需要授權碼</b>——四種正式場次的前 15 分鐘自動生效。</p>
     <div class="bar">
       <input id="li-mail" size="24" placeholder="買家 email（強烈建議填）">
-      <select id="li-plan"><option value="season">賽季</option><option value="lifetime">永久</option><option value="trial">試用 14 天</option></select>
+      <select id="li-plan"><option value="season_early">Season Early Access（NT$399）</option><option value="season">Season（NT$599）</option><option value="comp">客服補償 30 天</option></select>
       <input id="li-order" size="14" placeholder="訂單編號">
       <button id="li-go">發碼</button>
     </div>
     <div id="li-out"></div>
+  </div>
+
+  <div class="panel">
+    <h3>封鎖安裝</h3>
+    <p class="hint">
+      這與「停用授權碼」不同：停用是針對<b>付費者</b>（退款、爭議），
+      封鎖是針對<b>某一個安裝</b>（濫用免費額度、機器人）。
+      被封鎖的安裝連免費層都不能用。
+      <br>安裝編號可以從使用者的診斷工單裡看到。
+    </p>
+    <div class="bar">
+      <input id="bl-id" size="30" placeholder="installId（UUID）">
+      <button id="bl-go" class="danger">封鎖</button>
+    </div>
+    <div id="bl-out"></div>
   </div>
 
   <div class="panel">
@@ -127,7 +144,13 @@ async function apiCall(path, opts) {
     headers: { 'content-type': 'application/json', 'x-admin-token': $('tok').value },
   }, opts || {}));
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  if (!res.ok) {
+    // 錯誤要帶著伺服器的 body —— needsForce、devices 這些細節都在裡面
+    const e = new Error(data.error || ('HTTP ' + res.status));
+    e.status = res.status;
+    e.data = data;
+    throw e;
+  }
   return data;
 }
 
@@ -188,9 +211,13 @@ function renderLicenses(d) {
       <td class="mail">${r.email || '—'}</td>
       <td class="st-${r.state}">${STATE_LABEL[r.state]}</td>
       <td class="ops">
+        <select data-a="plan" data-i="${i}" class="planSel">
+          ${['season_early', 'season', 'comp'].map((pk) => `<option value="${pk}"${r.plan === pk ? ' selected' : ''}>${PLAN_LABEL[pk]}</option>`).join('')}
+        </select>
         <button data-a="extend" data-i="${i}" class="secondary">+30 天</button>
         <button data-a="clear" data-i="${i}" class="secondary">清空裝置</button>
         <button data-a="toggle" data-i="${i}" class="${r.state === 'revoked' ? 'secondary' : 'danger'}">${r.state === 'revoked' ? '恢復' : '停用'}</button>
+        <button data-a="delete" data-i="${i}" class="danger">刪除</button>
       </td></tr>`).join('')}
     </table>
     ${d && d.complete === false ? '<div class="hint">資料超過一頁，請用搜尋縮小範圍。</div>' : ''}`;
@@ -198,10 +225,52 @@ function renderLicenses(d) {
   $('ll-out').querySelectorAll('button[data-a]').forEach((b) => {
     b.onclick = () => licenseAction(b.dataset.a, llRows[Number(b.dataset.i)], b);
   });
+  // 換方案用下拉，改完立刻套用並重算到期日
+  $('ll-out').querySelectorAll('select[data-a="plan"]').forEach((sel) => {
+    sel.onchange = () => licenseAction('plan', llRows[Number(sel.dataset.i)], sel, sel.value);
+  });
 }
 
-async function licenseAction(action, row, btn) {
+const PLAN_LABEL = {
+  season_early: 'Early NT$399', season: 'Season NT$599', comp: '補償 30 天', trial: 'GP Trial',
+};
+
+async function licenseAction(action, row, btn, value) {
   const payload = { licenseKey: row.raw };
+
+  if (action === 'plan') {
+    if (!confirm('把 ' + row.licenseKey + ' 改成「' + PLAN_LABEL[value] + '」？到期日會依新方案重算。')) {
+      loadLicenses();
+      return;
+    }
+    payload.plan = value;
+    payload.recalcExpiry = true;
+  }
+
+  if (action === 'delete') {
+    // 刪除與停用是不同的東西：停用留紀錄（日後有爭議時需要），刪除是清掉。
+    // 有裝置啟用中的碼後端會先擋一次，這裡再問一次。
+    if (!confirm('永久刪除 ' + row.licenseKey + '？\n\n這與「停用」不同——資料會完全消失，'
+      + '日後有爭議時查不到紀錄。建議只用來刪測試碼。')) return;
+    btn.disabled = true;
+    try {
+      await apiCall('/v1/admin/license/delete', { method: 'POST', body: JSON.stringify(payload) });
+    } catch (e) {
+      const d = e.data || {};
+      if (d.needsForce && confirm(d.error + '\n\n仍要強制刪除嗎？')) {
+        try {
+          await apiCall('/v1/admin/license/delete', {
+            method: 'POST', body: JSON.stringify(Object.assign({}, payload, { force: true })),
+          });
+        } catch (e2) { $('err').textContent = String(e2.message || e2); }
+      } else if (!d.needsForce) {
+        $('err').textContent = String(e.message || e);
+      }
+    }
+    await loadLicenses();
+    return;
+  }
+
   if (action === 'extend') payload.extendDays = 30;
   if (action === 'clear') {
     if (!confirm(`清空 ${row.licenseKey} 的所有裝置？
@@ -222,6 +291,19 @@ async function licenseAction(action, row, btn) {
   } catch (e) { btn.disabled = false; $('err').textContent = String(e.message || e); }
 }
 
+$('bl-go').onclick = async () => {
+  const id = $('bl-id').value.trim();
+  if (!id) { $('err').textContent = '請填入 installId'; return; }
+  if (!confirm('封鎖這個安裝？
+它會立刻失去所有存取權，包含免費層。')) return;
+  $('err').textContent = '';
+  try {
+    const d = await apiCall('/v1/admin/revoke', { method: 'POST', body: JSON.stringify({ installId: id }) });
+    $('bl-out').innerHTML = `<div class="okmsg">已封鎖，目前共 ${d.revoked} 個安裝在封鎖清單中。</div>`;
+    $('bl-id').value = '';
+  } catch (e) { $('err').textContent = String(e.message || e); }
+};
+
 $('ll-go').onclick = loadLicenses;
 $('ll-q').onkeydown = (e) => { if (e.key === 'Enter') loadLicenses(); };
 $('ll-status').onchange = loadLicenses;
@@ -233,18 +315,46 @@ $('rp-go').onclick = async () => {
   try {
     const d = await apiCall('/v1/admin/reports');
     $('rp-out').innerHTML = d.rows.length ? `<table>
-      <tr><th>工單</th><th>時間</th><th>版本</th><th>使用者說明</th><th>聯絡方式</th><th></th></tr>
-      ${d.rows.map((r) => `<tr>
+      <tr><th>狀態</th><th>工單</th><th>時間</th><th>版本</th><th>使用者說明</th><th>聯絡方式</th><th></th></tr>
+      ${d.rows.map((r) => `<tr class="${r.resolved ? 'done' : ''}">
+        <td>${r.resolved ? '<span class="st-active">已解決</span>' : '<span class="st-expired">待處理</span>'}</td>
         <td class="mono">${r.id}</td>
         <td>${new Date(r.at * 1000).toLocaleString('zh-TW')}</td>
         <td>${r.version || '—'}</td>
         <td>${r.note || '—'}</td>
         <td class="mail">${r.contact || '—'}</td>
-        <td><button class="secondary" data-rid="${r.id}">看全文</button></td>
+        <td class="ops">
+          <button class="secondary" data-rid="${r.id}">看全文</button>
+          <button class="secondary" data-rdone="${r.id}" data-v="${r.resolved ? '0' : '1'}">${r.resolved ? '重開' : '標記已解決'}</button>
+          <button class="danger" data-rdel="${r.id}">刪除</button>
+        </td>
       </tr>`).join('')}
       </table><pre id="rp-full" class="full" hidden></pre>`
       : '<div class="hint">目前沒有任何回報。</div>';
 
+    $('rp-out').querySelectorAll('button[data-rdone]').forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          await apiCall('/v1/admin/reports/patch', {
+            method: 'POST',
+            body: JSON.stringify({ id: b.dataset.rdone, resolved: b.dataset.v === '1' }),
+          });
+          $('rp-go').click();
+        } catch (e) { b.disabled = false; $('err').textContent = String(e.message || e); }
+      };
+    });
+    $('rp-out').querySelectorAll('button[data-rdel]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('刪除這張工單？內容會完全消失。')) return;
+        try {
+          await apiCall('/v1/admin/reports/patch', {
+            method: 'POST', body: JSON.stringify({ id: b.dataset.rdel, delete: true }),
+          });
+          $('rp-go').click();
+        } catch (e) { $('err').textContent = String(e.message || e); }
+      };
+    });
     $('rp-out').querySelectorAll('button[data-rid]').forEach((b) => {
       b.onclick = async () => {
         const pre = $('rp-full');
