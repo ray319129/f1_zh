@@ -51,7 +51,8 @@
   // Map 保留插入順序，砍最舊的就近似 LRU（重看同一支時最近的那些才有價值）。
   const MEMO_MAX = 12000;
   const PENDING_MAX = 3000;        // 待翻佇列。正常收割不會逼近，防的是異常情況
-  const memo = new Map();          // normKey -> 譯文
+  const memo = new Map();          // normKey -> 譯文（**跨影片共用**，不要拿來當單片的分母）
+  let sessionKeys = new Set();     // 這支影片出現過的 normKey，回寫查核的分母
   let contentId = null;
   let seenContentId = null;        // 從 performance 觀察到的
   let lastPath = location.pathname;
@@ -72,6 +73,7 @@
     workerPatched: 0, workerVtt: 0, manifests: 0, prefetchAnnounced: false,
     serverCount: -1,               // 回寫查核：後端實際有幾句（-1 = 尚未查核）
     harvestSkipped: false,         // 是否因為「已有人收割完整」而跳過整軌預抓
+    dropped: 0,                    // 重試 3 次仍失敗、已放棄的句數
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -386,6 +388,7 @@
     currentEn = text;
 
     const k = normKey(text);
+    sessionKeys.add(k);
     const hit = memo.get(k);
     if (hit) {
       state.hits++;
@@ -432,7 +435,15 @@
   /** 寫入本機快取並維持上限。切換影片時 memo 刻意不清（重複用語可互相受惠） */
   function remember(k, zh) {
     memo.set(k, zh);
-    while (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value);
+    if (memo.size <= MEMO_MAX) return;
+    // 淘汰最舊的，但**跳過這支影片還會用到的鍵**。
+    // 不跳過的話，連看幾支長影片之後會把正在看的這支的譯文淘汰掉，
+    // 畫面上突然開始重翻已經翻過的句子——不報錯，只是變慢又變貴。
+    for (const key of memo.keys()) {
+      if (memo.size <= MEMO_MAX) break;
+      if (sessionKeys.has(key)) continue;
+      memo.delete(key);
+    }
   }
 
   function scheduleFlush() {
@@ -493,12 +504,37 @@
       }
     } catch (e) {
       state.errors++;
-      dbg(`批次失敗：${e.message}`);
+      requeue(keys, batch, e.message);
     } finally {
       keys.forEach((k) => requested.delete(k));
       inflight--;
       if (pending.size) scheduleFlush();
     }
+  }
+
+  /**
+   * 失敗的句子要放回佇列重試。
+   *
+   * 原本是直接丟掉：`requested.delete(k)` 之後那 20 句就永遠消失了，
+   * 不重試、不記錄，只有 `state.errors++`。一次 429（後端每 IP 每分鐘 120 次，
+   * 同一個家用 IP 兩人同時收割就會逼近）或一次網路抖動 = 20 句永久遺失，
+   * 而且**共用快取會缺這 20 句，下一個人得重新付費**。
+   *
+   * 每句最多重試 3 次。超過就放棄——那通常代表後端有系統性問題，
+   * 無上限重試只會把 429 變得更嚴重（鐵則 #3）。
+   */
+  const retryCount = new Map();      // normKey -> 已重試次數
+  function requeue(keys, batch, reason) {
+    let back = 0, gaveUp = 0;
+    keys.forEach((k, i) => {
+      const n = (retryCount.get(k) || 0) + 1;
+      if (n > 3) { retryCount.delete(k); gaveUp++; return; }
+      retryCount.set(k, n);
+      if (!memo.has(k)) { pending.set(k, batch[i]); back++; }
+    });
+    state.dropped += gaveUp;
+    evWarn(`批次失敗（${reason}）：${back} 句已排回重試`
+      + (gaveUp ? `，${gaveUp} 句重試 3 次仍失敗已放棄` : ''));
   }
 
   // =========================================================================
@@ -842,6 +878,8 @@
       const k = normKey(t);
       if (!k || prefetchSeen.has(k)) continue;
       prefetchSeen.add(k);
+      // 已有譯文也要登記——那句確實出現在這支影片的 VTT 裡（坑 #16）
+      sessionKeys.add(k);
       if (memo.has(k)) continue;          // 共用快取已有，不用再翻
       if (pending.size >= PENDING_MAX) continue;   // 佇列爆了就先不收，下輪再說
       pending.set(k, t);
@@ -861,7 +899,16 @@
   let videoMissingSince = 0;
   function harvestShouldStop(myGen) {
     if (myGen !== harvestGen) return '影片切換';
-    if (!settings.enabled) return '翻譯已關閉';
+
+    // ⚠️ **關掉翻譯不算中止收割。**
+    //
+    // `settings.enabled` 控制的是「要不要在畫面上顯示疊字」，不是「要不要繼續
+    // 貢獻共用快取」。使用者可能只是想暫時看純英文，收割跑到 80% 卻整個作廢，
+    // 下一個看同一支影片的人就得從頭付費——那是白白浪費已經抓下來的東西。
+    //
+    // 收割的唯一終止條件是**使用者真的離開了這支影片**。而「離開」不能只看網址：
+    // 點播放器左上角的返回鍵時網址完全不變，播放器卻已經被拆掉（坑 #15）。
+    // 所以用 video 元素消失超過 5 秒當訊號（5 秒是為了避開播放器重建的短暫消失）。
     const v = document.querySelector('video');
     if (v) { videoMissingSince = 0; return null; }
     if (!videoMissingSince) { videoMissingSince = Date.now(); return null; }
@@ -946,13 +993,25 @@
       const res = await send({ type: 'getBundle', cid, force: true });
       const b = (res.ok && res.bundle) || {};
       if (b.error) { evWarn(`共用快取回寫查核失敗：${b.error}`); return; }
-      const serverCount = Object.keys(b.lines || {}).length;
+      const server = b.lines || {};
+      const serverCount = Object.keys(server).length;
       state.serverCount = serverCount;
-      const local = memo.size;
-      if (serverCount >= local * 0.9) {
-        evOk(`☁ 回寫查核：後端已有 ${serverCount} 句（本機 ${local} 句），共用快取正常累積`);
+
+      // ⚠️ 分母一定要用「這支影片的鍵」，不能用 memo.size。
+      //    memo 跨影片共用（重複用語互相受惠，刻意的），拿它去比單一影片的
+      //    bundle 必然偏低。實測就誤報過：本機 4308／後端 1946 看似只有 45%，
+      //    其實 4308 裡有 2357 句是上一支影片的——真實回寫率是 99.7%。
+      //    這是坑 #16 換個形式又出現，這次污染的是量測而不是資料。
+      const mine = Array.from(sessionKeys);
+      const missing = mine.filter((k) => !server[k]);
+      const rate = mine.length ? (mine.length - missing.length) / mine.length : 1;
+
+      if (rate >= 0.95) {
+        evOk(`☁ 回寫查核：這支影片本機 ${mine.length} 句，後端已有 ${mine.length - missing.length} 句`
+          + `（${Math.round(rate * 100)}%），共用快取正常累積`);
       } else {
-        evWarn(`⚠ 回寫查核：本機 ${local} 句，但後端只有 ${serverCount} 句。`
+        evWarn(`⚠ 回寫查核：這支影片本機 ${mine.length} 句，後端只有 ${mine.length - missing.length} 句`
+          + `（${Math.round(rate * 100)}%）。`
           + '譯文沒有完整進入共用快取——下一個觀看者會重新付費。'
           + '請確認後端已部署最新版（`cd backend && wrangler deploy`），'
           + '以及 Cloudflare KV 當日寫入額度未用盡。');
@@ -1042,9 +1101,17 @@
         if (stopped) { setPhase('前瞻預譯中'); return; }   // 中止就不標記完整
         state.harvestDone = state.segFailed === 0;
         evOk(`預抓完成：${state.segFetched} 段成功、${state.segFailed} 段失敗，待翻 ${pending.size} 句`);
-        // 只有全部成功才敢標記完整——少抓幾段就標記，會害後續使用者跳過預抓
-        // 卻拿到殘缺的譯文。
-        if (state.harvestDone) markComplete(cid, segs.length, myGen);
+        // 只有「分段全抓到」**且「沒有句子被放棄」**才敢標記完整。
+        //
+        // 原本只看 segFailed，那只涵蓋「分段抓取」；翻譯失敗被放棄的句子完全
+        // 不擋標記，等於可能把殘缺的 bundle 標成完整——之後所有人都跳過預抓，
+        // 拿到的永遠是缺角的譯文，而且沒有任何機制會去補。
+        if (state.harvestDone && !state.dropped) {
+          markComplete(cid, segs.length, myGen);
+        } else if (state.dropped) {
+          evWarn(`有 ${state.dropped} 句重試後仍失敗，這次不標記完整收割`
+            + '（避免後續使用者跳過預抓卻拿到缺角的譯文）');
+        }
         verifyUpload(cid, myGen);
       } else {
         setPhase('直播預抓中');
@@ -1127,9 +1194,11 @@
     // ⚠️ manifest 一定要清。留著的話新影片會拿上一支的字幕清單去抓，
     //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
     manifests = [];
+    sessionKeys = new Set();
     bundleSegCount = 0;
     state.manifests = 0;
     state.harvestSkipped = false;
+    state.dropped = 0;
     state.serverCount = -1;
     state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
     state.isLive = false; state.harvestDone = false;
@@ -1312,7 +1381,8 @@
     }
     L.push(`本機快取　：${memo.size} 句`);
     L.push(`命中 / 未命中：${state.hits} / ${state.misses}`);
-    L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}`);
+    L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}　`
+      + `放棄 ${state.dropped} 句${state.dropped ? '（已重試 3 次）' : ''}`);
     L.push(`待送出　　：${pending.size} 句　飛行中 ${inflight} 個請求（上限 ${MAX_INFLIGHT}）`);
     L.push('');
     L.push('──── 設定 ────');
