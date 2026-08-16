@@ -450,6 +450,25 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
         : fail('結帳：表單欄位不完整');
       Number(c.d.params.TotalAmount) === 599
         ? ok('結帳：金額與方案一致') : fail('結帳：金額不對', c.d.params.TotalAmount);
+      // 官方規格的硬性限制
+      const P = c.d.params;
+      P.MerchantTradeNo.length <= 20 ? ok('綠界規格：MerchantTradeNo ≤ 20') : fail('MerchantTradeNo 超長');
+      P.TradeDesc.length <= 200 && /^[ -~]+$/.test(P.TradeDesc)
+        ? ok('綠界規格：TradeDesc 無特殊字元且 ≤ 200') : fail('TradeDesc 不合規格', P.TradeDesc);
+      P.ItemName.length <= 400 && !P.ItemName.includes('#')
+        ? ok('綠界規格：ItemName ≤ 400 且不含 #（# 是多商品分隔符）') : fail('ItemName 不合規格', P.ItemName);
+      P.EncryptType === '1' ? ok('綠界規格：EncryptType = 1（SHA256）') : fail('EncryptType 不對');
+      P.PaymentType === 'aio' ? ok('綠界規格：PaymentType = aio') : fail('PaymentType 不對');
+      /^\d+$/.test(P.TotalAmount) ? ok('綠界規格：TotalAmount 為整數') : fail('TotalAmount 不是整數');
+      // 兩者相同會讓綠界的判斷錯亂
+      P.ReturnURL !== P.OrderResultURL
+        ? ok('綠界規格：ReturnURL 與 OrderResultURL 不同') : fail('ReturnURL 與 OrderResultURL 相同 —— 綠界明文禁止');
+      // 同時設 ClientBackURL 會讓它靜默失效，留著只是誤導
+      !P.ClientBackURL ? ok('綠界規格：未同時設 ClientBackURL（否則會被 OrderResultURL 蓋掉）')
+        : fail('同時設了 ClientBackURL 與 OrderResultURL');
+      [P.ReturnURL, P.OrderResultURL, P.PaymentInfoURL].every((u) => /^https:\/\/[^:]+\//.test(u))
+        ? ok('綠界規格：所有回呼網址都是 https 且未指定埠號') : fail('回呼網址不合規格');
+
       // 訂單要先記下來，webhook 回來才知道這筆是什麼方案
       kv2.has(`pending:${c.d.params.MerchantTradeNo}`)
         ? ok('結帳：訂單已記錄，webhook 回來對得上')

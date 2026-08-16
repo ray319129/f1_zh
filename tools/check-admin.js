@@ -24,6 +24,22 @@ const errors = [];
 const ok = (m) => console.log('✅ ' + m);
 const bad = (m) => { errors.push(m); console.log('❌ ' + m); };
 
+// --- 0. JS 必須能執行 -------------------------------------------------------
+// **這是最重要的一項。** 後台是單一 HTML，一個語法錯誤就讓整段 script 不執行，
+// 於是每個按鈕都沒反應——而瀏覽器只在 Console 留一行紅字，
+// 從畫面上完全看不出來「壞掉」與「還沒載入」的差別。
+//
+// 實際踩過：用腳本插入程式碼時，換行跳脫被吃掉變成真的換行，
+// 單引號字串因此跨行 → 整個後台變成靜態頁面，所有按鈕都沒反應。
+{
+  const m = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!m) bad('後台找不到 <script> 區塊');
+  else {
+    try { new (require('vm').Script)(m[1]); ok('後台 JS 語法正確（整段可執行）'); }
+    catch (e) { bad(`後台 JS 有語法錯誤，整段不會執行、所有按鈕都沒反應：${e.message}`); }
+  }
+}
+
 // --- 1. id 一致性 ---------------------------------------------------------
 const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 const used = new Set([...html.matchAll(/\$\('([^']+)'\)/g)].map((m) => m[1]));

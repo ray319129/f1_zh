@@ -1587,6 +1587,14 @@ async function handleCheckout(request, env, url) {
 
   const no = tradeNo();
   const site = env.SITE_URL || 'https://pitlingo.com';
+  const api = env.API_URL || 'https://api.pitlingo.com';
+
+  // 官方規格的硬性限制，違反了綠界會直接拒絕而且錯誤訊息很難懂：
+  //   ReturnURL 必須 HTTPS（443）、不可指定埠號、不可含中文
+  //   ReturnURL 與 OrderResultURL 不可相同
+  if (!/^https:\/\/[^:/]+(\/|$)/.test(api) || !/^https:\/\/[^:/]+(\/|$)/.test(site)) {
+    return err('伺服器設定不正確（回呼網址必須是 https 且不可指定埠號）', 500);
+  }
 
   const params = {
     MerchantID: conf.merchantId,
@@ -1594,13 +1602,20 @@ async function handleCheckout(request, env, url) {
     MerchantTradeDate: tradeDate(),
     PaymentType: 'aio',
     TotalAmount: String(price),
-    TradeDesc: 'PitLingo F1TV subtitle service',   // 不可含中文以外的特殊字元，保守用英文
-    ItemName: `PitLingo ${PLANS[finalPlan].label}`,
-    ReturnURL: `${env.API_URL || 'https://api.pitlingo.com'}/v1/payment/webhook`,
-    ClientBackURL: `${site}/paid?no=${no}`,
+    // 官方規格：TradeDesc String(200)「不可有特殊字元」。用純英數與空格最保險。
+    TradeDesc: 'PitLingo subtitle service',
+    // ⚠️ ItemName 用 # 分隔多項商品，所以商品名稱本身**絕對不能含 #**。
+    //    我們只有一項，但方案名稱是外部可改的，先過濾掉。
+    ItemName: `PitLingo ${PLANS[finalPlan].label}`.replace(/#/g, ' '),
+    ReturnURL: `${api}/v1/payment/webhook`,
+    // ⚠️ **不要同時設 ClientBackURL 與 OrderResultURL。**
+    //    官方文件：兩者都設時 OrderResultURL 優先，ClientBackURL 會失效——
+    //    留著只會讓人以為它有作用。我們要的是「付款後導回並顯示授權碼」，
+    //    所以只留 OrderResultURL。
+    //    另外它與 ReturnURL **不可相同**，否則綠界的判斷會錯亂。
     OrderResultURL: `${site}/paid`,
     // ATM／超商取號時的通知。**與 ReturnURL 分開**，因為取號不等於付款。
-    PaymentInfoURL: `${env.API_URL || 'https://api.pitlingo.com'}/v1/payment/info`,
+    PaymentInfoURL: `${api}/v1/payment/info`,
     ChoosePayment: 'ALL',       // 綠界只會顯示已開通的方式，未開通的自動不出現
     EncryptType: '1',
     CustomerEmail: email,

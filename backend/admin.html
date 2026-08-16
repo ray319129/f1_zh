@@ -317,8 +317,7 @@ async function licenseAction(action, row, btn, value) {
 $('bl-go').onclick = async () => {
   const id = $('bl-id').value.trim();
   if (!id) { $('err').textContent = '請填入 installId'; return; }
-  if (!confirm('封鎖這個安裝？
-它會立刻失去所有存取權，包含免費層。')) return;
+  if (!confirm('封鎖這個安裝？它會立刻失去所有存取權，包含免費層。')) return;
   $('err').textContent = '';
   try {
     const d = await apiCall('/v1/admin/revoke', { method: 'POST', body: JSON.stringify({ installId: id }) });
