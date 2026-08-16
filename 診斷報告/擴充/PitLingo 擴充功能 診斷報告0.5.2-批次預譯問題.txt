@@ -1,5 +1,5 @@
 ════════ PitLingo 擴充功能 診斷報告 ════════
-產生時間　：2026-08-16T07:43:30.110Z
+產生時間　：2026-08-16T07:51:02.804Z
 版本　　　：0.5.2
 目前階段　：前瞻預譯中
 網址　　　：https://f1tv.formula1.com/detail/1000010271/2026-barcelona-gp-practice-1?action=play
@@ -7,15 +7,15 @@ UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 
 ──── 影片與字幕 ────
 contentId　：1000010271（網址 1000010271 / 觀察 1000010271）
-video　　　：暫停 111.6s / Infinity
+video　　　：暫停 227.8s / Infinity
 字幕容器　：1 個（觀察中 1）
-容器文字長：82 字
-目前抓到　：So you know I know we've been talking about Kimi and George having this difference
+容器文字長：46 字
+目前抓到　：We'll find out soon enough as we hit the track
 曾看到字幕：是
 
 ──── 提前量來源：Worker 注入 ────
 已注入 Worker：1 個
-收到的 VTT 分段：18 份
+收到的 VTT 分段：32 份
 攔到的 manifest：8 份（整軌預抓的入口）
   其中 master 1 份、字幕清單 1 份
 PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
@@ -29,17 +29,18 @@ PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 ma
 後端完整度：記錄 1055 段　→ 本次已跳過整軌預抓
 
 ──── 顯示延遲的歸因 ────
-偵測來源　：observer 28 次 / 輪詢 299 次（observer 佔 9%，輪詢間隔 100ms）
-JS 耗時　　：中位數 0.3ms / p90 0.5ms / 最大 2.1ms（200 筆）
-到上畫面　：中位數 7.1ms / p90 11.8ms / 最大 12.6ms（200 筆）　← 這個才是使用者看到的
+偵測來源　：observer 86 次 / 輪詢 303 次（observer 佔 22%，輪詢間隔 100ms）
+JS 耗時　　：中位數 0.4ms / p90 0.6ms / 最大 2.8ms（200 筆）
+到上畫面　：中位數 6.6ms / p90 11.3ms / 最大 4499.4ms（200 筆）　← 這個才是使用者看到的
 ※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。
 
 ──── 翻譯 ────
 共用快取取得：2336 句
 後端回寫查核：(尚未查核)
-本機快取　：2336 句
-命中 / 未命中：327 / 0
-即時翻譯　：0 句　錯誤 0
+批次效率　：2 批、平均 1.0 句/批、平均 1726ms、回覆率 100%
+本機快取　：2338 句
+命中 / 未命中：389 / 0
+即時翻譯　：2 句　錯誤 0
 待送出　　：0 句　飛行中 0 個請求（上限 3）
 
 ──── 設定 ────
@@ -48,11 +49,6 @@ JS 耗時　　：中位數 0.3ms / p90 0.5ms / 最大 2.1ms（200 筆）
 選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
 
 ──── 事件時間軸（最近 150 筆）────
-[04:41:09.415] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
-[04:42:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
-[04:44:09.649] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
-[04:45:08.948] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
-[04:47:09.402] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 [04:48:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 [04:49:09.571] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 [04:50:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
@@ -198,5 +194,10 @@ JS 耗時　　：中位數 0.3ms / p90 0.5ms / 最大 2.1ms（200 筆）
 [07:39:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 [07:41:09.576] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 [07:42:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:46:09.414] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:47:09.305] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:48:00.834] OK   ✅ 從播放器的字幕分段取得提前量，開始批次預譯
+[07:49:09.625] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:50:09.352] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
 
 ════════ 報告結束 ════════

@@ -1,0 +1,66 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-16T07:55:38.326Z
+版本　　　：0.5.3
+目前階段　：前瞻預譯中
+網址　　　：https://f1tv.formula1.com/detail/1000010271/2026-barcelona-gp-practice-1?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010271（網址 1000010271 / 觀察 1000010271）
+video　　　：播放中 93.1s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：40 字
+目前抓到　：completed after a hundred years of work.
+曾看到字幕：是
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：21 份
+攔到的 manifest：7 份（整軌預抓的入口）
+  其中 master 1 份、字幕清單 1 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
+
+──── 整軌預抓（決定成本與拖進度條會不會漏）────
+型態　　　：重播
+清單來源　：由 master 解析
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMjJiZWQ5MmY4NzE1NGZiYjlmZDBjZjdhYTE2NmUxNzMlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4Njk1MzI0Mnx0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTA0UzBFMFhOQ0NYM1QyOFg0SDk1NjdUX1BST3xzdGFydDp8ZW5kOnx0b2tlbjpaeThITXMzMDVmdlAwYX5Kb2JZejdyR1E5d1BOWWYtMlV1a0NISU5TN0FRXw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/22bed92f87154fbb9fd0cf7aa166e173/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/0631004207b04ba08728ced5de5294be/f74fb10563564130a4702743d64112a3/index_14_0.m3u8
+分段　　　：清單 1055 / 已抓 0（失敗 0）
+收割完成　：false　進行中：false　世代 1
+後端完整度：記錄 1055 段　→ 本次已跳過整軌預抓
+
+──── 顯示延遲的歸因 ────
+偵測來源　：observer 30 次 / 輪詢 1 次（observer 佔 97%，輪詢間隔 100ms）
+JS 耗時　　：中位數 0.4ms / p90 0.6ms / 最大 0.9ms（31 筆）
+到上畫面　：中位數 4.6ms / p90 10.8ms / 最大 11.3ms（31 筆）　← 這個才是使用者看到的
+※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。
+
+──── 翻譯 ────
+共用快取取得：2338 句
+後端回寫查核：(尚未查核)
+批次效率　：2 批、平均 1.0 句/批、平均 1399ms、回覆率 50%
+本機快取　：2339 句
+命中 / 未命中：31 / 0
+即時翻譯　：1 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":24,"bottomPct":4,"holdMs":3000,"hideNativeCC":true,"debug":false}
+遠端設定版本：v1（重讀間隔 60 秒；含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 13 筆）────
+[07:53:56.929] INFO 測試版：Console 打 `__pitlingo.help()` 看可用指令
+[07:53:56.932] INFO ▶ 等待播放
+[07:53:56.932] OK   PitLingo v0.5.3 已啟動　|　設定版本 1　|　翻譯：開啟
+[07:53:56.932] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[07:53:57.553] OK   ☁ 從共用快取取得 2338 句譯文（cid 1000010271），這些不會再花錢
+[07:53:57.553] INFO ▶ 等待字幕清單
+[07:53:59.736] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[07:54:02.585] OK   ✅ 取得字幕清單（由 master 解析）
+[07:54:02.586] INFO ▶ 讀取字幕清單
+[07:54:03.551] OK   ⏭ 跳過整軌預抓：後端記錄這支已完整收割（1055 段 / 本機 2338 句），不重複向 CDN 抓 1055 個分段
+[07:54:03.551] INFO ▶ 前瞻預譯中
+[07:54:25.809] OK   ✅ 從播放器的字幕分段取得提前量，開始批次預譯
+[07:54:29.034] INFO 已偵測到第一句字幕，CC 運作正常
+
+════════ 報告結束 ════════

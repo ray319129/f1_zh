@@ -24,6 +24,8 @@
  *       的譯文存活）。新增 /v1/complete 讓用戶端標記整支已收割完整。
  * v1.6  /v1/subs 拿掉 max-age=60。bundle 現在是多寫入者，HTTP 快取
  *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
+ * v1.7  單句不再走批次編號協定（實測回覆率只有 50%，坑 #9）。
+ *       批次解析加上「行數相同就按位置對應」的備援。
  */
 
 const MODEL = 'claude-haiku-4-5';
@@ -706,8 +708,10 @@ async function rateLimited(env, ip) {
 // ---------------------------------------------------------------------------
 // Anthropic 批次翻譯
 // ---------------------------------------------------------------------------
-async function translateBatch(env, lines) {
-  const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+/**
+ * 呼叫模型。逐句與批次共用同一份 system，才能共用同一份 prompt cache。
+ */
+async function callModel(env, userContent, maxTokens) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -717,27 +721,49 @@ async function translateBatch(env, lines) {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 2500,
+      max_tokens: maxTokens,
       temperature: 0,
       system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: `【批次翻譯】共 ${lines.length} 句\n${numbered}` }],
+      messages: [{ role: 'user', content: userContent }],
     }),
   });
-
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Anthropic HTTP ${res.status}: ${body.slice(0, 300)}`);
   }
   const data = await res.json();
-
   // 一定要先看 stop_reason 再讀 content
   if (data.stop_reason === 'refusal') throw new Error('model refusal');
-
   const text = (data.content || [])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('')
     .trim();
+  return { text, usage: data.usage || {} };
+}
+
+/**
+ * ⚠️ 只有一句時**不要走批次編號協定**（userscript 坑 #9）。
+ *
+ * prompt 內部有衝突：【輸出規則】說「只輸出譯文本身」，【批次模式】說「每行加編號」。
+ * 句數多時模型照批次規則走；**只有一句時它會照輸出規則直接給譯文、不加編號**，
+ * 於是解析端一個都對不上，整批作廢。
+ *
+ * 實測就是這樣：單句批次回覆率只有 50%（送 2 句回 1 句），而且完全不報錯——
+ * 沒對上的那句只是「沒有譯文」，下次再翻一遍，白花一次錢。
+ */
+async function translateOne(env, line) {
+  const r = await callModel(env, line, 200);
+  return { out: r.text ? { [line]: r.text } : {}, usage: r.usage };
+}
+
+async function translateBatch(env, lines) {
+  if (lines.length === 1) return translateOne(env, lines[0]);
+
+  const numbered = lines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+  const r = await callModel(env, `【批次翻譯】共 ${lines.length} 句\n${numbered}`, 2500);
+  const text = r.text;
+  const data = { usage: r.usage };
 
   const map = {};
   text.split('\n').forEach((ln) => {
@@ -750,6 +776,18 @@ async function translateBatch(env, lines) {
     const zh = map[i + 1];
     if (zh) out[l] = zh;
   });
+
+  // 備援：一個編號都沒對上，但回應行數剛好等於輸入行數 → 按位置對應。
+  // 模型偶爾會整批漏掉編號，這時位置資訊仍然可信，不該整批丟掉重翻。
+  if (!Object.keys(out).length) {
+    const rows = text.split('\n').map((x) => x.trim()).filter(Boolean);
+    if (rows.length === lines.length) {
+      lines.forEach((l, i) => {
+        const zh = rows[i].replace(/^\s*\d+\s*[.、:：)]\s*/, '').trim();
+        if (zh) out[l] = zh;
+      });
+    }
+  }
   return { out, usage: data.usage || {} };
 }
 
