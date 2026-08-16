@@ -255,7 +255,7 @@
    * 輪詢命中代表 observer 沒作用，(b) 最壞是一個 POLL_MS。
    * 兩邊的比例直接告訴我們該不該把力氣花在調輪詢間隔上。
    */
-  const detect = { byObserver: 0, byPoll: 0, renderMs: [] };
+  const detect = { byObserver: 0, byPoll: 0, renderMs: [], paintMs: [] };
   let inObserverTick = false;
 
   function onMutation() {
@@ -281,6 +281,7 @@
       // currentEn 也要清。它是「補顯示」的依據，不清的話畫面上明明沒字幕了，
       // 慢回來的翻譯還是會把那句舊的重新畫出來。
       currentEn = '';
+      scheduleHide();
       return;
     }
     if (!everSawCaption) { everSawCaption = true; log('已偵測到第一句字幕，CC 運作正常'); }
@@ -320,12 +321,22 @@
     const hit = memo.get(k);
     if (hit) {
       state.hits++;
-      const t0 = Date.now();
+      const t0 = performance.now();
       render(hit, text);
-      const ms = Date.now() - t0;
-      detect.renderMs.push(ms);
+      const jsMs = performance.now() - t0;
+      detect.renderMs.push(jsMs);
       if (detect.renderMs.length > 200) detect.renderMs.shift();
-      dbg(`命中本機快取（繪製 ${ms}ms）：${hit.slice(0, 40)}`);
+
+      // ⚠️ 上面那個數字只到「JS 返回」為止，**不是使用者看到的時間**。
+      // 之前只量它就下結論「我們只加 1ms」，漏掉了版面計算與繪製。
+      // 兩次 rAF 之後才是這一幀真的上畫面，那個才能拿去跟 userscript 比。
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const paintMs = performance.now() - t0;
+        detect.paintMs.push(paintMs);
+        if (detect.paintMs.length > 200) detect.paintMs.shift();
+      }));
+
+      dbg(`命中本機快取（JS ${jsMs.toFixed(1)}ms）：${hit.slice(0, 40)}`);
       return;
     }
 
@@ -484,8 +495,32 @@
     enEl.style.display = settings.showEnglish ? 'inline-block' : 'none';
   }
 
+  /**
+   * 原生字幕消失時，跟著把疊字收掉。
+   *
+   * 這是「感覺比 userscript 慢一拍」的真正成因。原本只靠 `holdMs` 計時器：
+   *   holdMs 太短 → F1TV 的字幕還在，我們的中文先消失，空白一段才換下一句
+   *   holdMs 太長 → 講完很久了，我們還掛著上一句，跟聲音對不起來
+   * 兩種都讀起來像「延遲」，而且**調參數永遠只能二選一**。
+   *
+   * 正解是跟著來源走：我們每 100ms 就知道原生字幕清空了，那一刻收掉即可。
+   * `holdMs` 從此退化成純安全網（輪詢真的停擺時才輪到它）。
+   *
+   * 350ms 寬限是因為換句之間 F1TV 會有極短的空窗，立刻收掉會閃爍。
+   */
+  const CLEAR_GRACE_MS = 350;
+  let clearTimer = null;
+  function scheduleHide() {
+    clearTimeout(clearTimer);
+    clearTimer = setTimeout(() => {
+      box.classList.remove('on');
+      dbg('原生字幕已清空，收起疊字');
+    }, CLEAR_GRACE_MS);
+  }
+
   function show(zhText, enText, isPending) {
     if (!settings.enabled) return;
+    clearTimeout(clearTimer);          // 新句子來了，取消待執行的收起
     mount(); reposition();
     zhEl.textContent = zhText;
     zhEl.classList.toggle('pending', !!isPending);
@@ -1148,14 +1183,16 @@
     const pctObs = dTot ? Math.round((detect.byObserver / dTot) * 100) : 0;
     L.push(`偵測來源　：observer ${detect.byObserver} 次 / 輪詢 ${detect.byPoll} 次`
       + `（observer 佔 ${pctObs}%，輪詢間隔 ${POLL_MS}ms）`);
-    if (detect.renderMs.length) {
-      const arr = detect.renderMs.slice().sort((a, b) => a - b);
-      const med = arr[Math.floor(arr.length / 2)];
-      L.push(`繪製耗時　：中位數 ${med}ms / 最大 ${arr[arr.length - 1]}ms（${arr.length} 筆）`);
-    } else {
-      L.push('繪製耗時　：(尚無樣本)');
-    }
-    L.push('※ observer 佔比高且繪製耗時個位數 → 剩下的延遲來自 F1TV 自己畫字幕的時機，不是我們');
+    const stat = (arr) => {
+      if (!arr.length) return '(尚無樣本)';
+      const a = arr.slice().sort((x, y) => x - y);
+      return `中位數 ${a[Math.floor(a.length / 2)].toFixed(1)}ms / `
+        + `p90 ${a[Math.floor(a.length * 0.9)].toFixed(1)}ms / 最大 ${a[a.length - 1].toFixed(1)}ms`
+        + `（${a.length} 筆）`;
+    };
+    L.push(`JS 耗時　　：${stat(detect.renderMs)}`);
+    L.push(`到上畫面　：${stat(detect.paintMs)}　← 這個才是使用者看到的`);
+    L.push('※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。');
     L.push('');
     L.push('──── 翻譯 ────');
     L.push(`共用快取取得：${state.bundleCount} 句`);

@@ -83,6 +83,9 @@ const sandbox = {
   // 計時器全部吃掉，避免測試自己跑成無窮迴圈
   setTimeout: () => 0,
   setInterval: () => 0,
+  // 量測「到上畫面」用得到。回呼直接吃掉——這裡沒有真的繪製，
+  // 目的只是確認那條路徑上的識別字都存在。
+  requestAnimationFrame: () => 0,
   clearTimeout() {}, clearInterval() {},
   Date, Math, JSON, Map, Set, Promise, RegExp, URL, Error, Object, Array, String, Number, Boolean,
   TextDecoder: typeof TextDecoder !== 'undefined' ? TextDecoder : class {},

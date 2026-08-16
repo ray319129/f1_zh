@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.7.2
+// @version      4.8.0
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -914,6 +914,17 @@ sorry mate → 抱歉
     return textOfResponse(data);
   }
 
+  // ---- 顯示延遲量測（與擴充功能同一套，數字才能互相比較）----
+  // 只量到 JS 返回是不夠的，那不含版面計算與繪製。
+  // 兩次 rAF 之後才是這一幀真的上畫面。
+  const paintSamples = [];
+  function measurePaint(t0) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      paintSamples.push(performance.now() - t0);
+      if (paintSamples.length > 200) paintSamples.shift();
+    }));
+  }
+
   function push(raw) {
     if (!enabled) return;
     const text = clean(raw);
@@ -932,7 +943,14 @@ sorry mate → 抱歉
     }
 
     const cached = memoGet(text);
-    if (cached) { stats.hits++; show(cached, text); remember(text); return; }
+    if (cached) {
+      stats.hits++;
+      const t0 = performance.now();
+      show(cached, text);
+      measurePaint(t0);
+      remember(text);
+      return;
+    }
 
     if (CFG.progressive) showPending(text);   // 英文先上，中文稍後覆蓋
 
@@ -2255,6 +2273,15 @@ sorry mate → 抱歉
     L.push(`下載/上傳 ：${stats.beDownloaded} / ${stats.beUploaded} 句　錯誤 ${stats.beErrors}`);
     L.push(`待上傳　　：${pendingUpload().n} 句（已上傳過 ${uploadedKeys.size} 句）`);
     L.push(`快取完整度：後端記錄 ${bundleSegCount} 段 / ${bundleLineCount} 句`);
+    // 與擴充功能診斷的「到上畫面」同一套量法，可以直接對照
+    if (paintSamples.length) {
+      const a = paintSamples.slice().sort((x, y) => x - y);
+      L.push(`到上畫面　：中位數 ${a[Math.floor(a.length / 2)].toFixed(1)}ms / `
+        + `p90 ${a[Math.floor(a.length * 0.9)].toFixed(1)}ms / 最大 ${a[a.length - 1].toFixed(1)}ms`
+        + `（${a.length} 筆）`);
+    } else {
+      L.push('到上畫面　：(尚無樣本)');
+    }
     L.push('');
     L.push('──── 前瞻預譯 ────');
     L.push(`收割狀態　：${harvestInFlight ? '進行中' : '閒置'}　世代 ${harvestGen}　已跳過 ${stats.harvestSkipped} 次`);
