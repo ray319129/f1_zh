@@ -35,7 +35,10 @@ const sandbox = {
 };
 sandbox.globalThis = sandbox;
 const ctx = vm.createContext(sandbox);
-vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf, plausibleTranslation, costOf, normKey };', ctx);
+vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
+  + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
+  + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
+  + ' verifyEntitlement, normLicense, MAX_DEVICES };', ctx);
 const A = sandbox.__api;
 
 const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || null } });
@@ -107,7 +110,72 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   const usd = A.costOf({ input_tokens: 1e6, output_tokens: 1e6, cache_read_input_tokens: 1e6 });
   Math.abs(usd - 6.1) < 0.001 ? ok(`成本計算：1M+1M+1M = $${usd.toFixed(2)}`) : fail('成本計算不正確', String(usd));
 
-  // ---- 7. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 7. 授權：必須跟著人走，不能綁裝置 ----
+  // 這是 v2.0 的設計錯誤：付費使用者換一台電腦就失效。
+  const kv = new Map();
+  const lenv = {
+    TOKEN_SECRET: 'test-secret-abc', ADMIN_TOKEN: 'admin-xyz',
+    SUBS: {
+      get: async (k) => (kv.has(k) ? kv.get(k) : null),
+      put: async (k, v) => { kv.set(k, v); },
+    },
+  };
+  const body = (o) => ({ json: async () => o, headers: { get: () => null } });
+  const asInstall = (id) => ({ ok: true, installId: id, legacy: false });
+  const read = async (res) => JSON.parse(res.body);
+
+  let r2 = await read(await A.handleLicenseIssue(body({ email: 'ray@example.com', plan: 'season' }), lenv));
+  const KEY = r2.licenseKey;
+  KEY && KEY.startsWith('PL-') ? ok(`授權：發碼成功 ${KEY}`) : fail('授權：發不出碼');
+
+  // 裝置 A 啟用
+  r2 = await read(await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-A')));
+  r2.ok ? ok('授權：第一台裝置啟用成功') : fail('授權：第一台就啟用失敗', r2.error);
+  const entA = r2.entitlement;
+
+  // **換裝置**：同一組碼在完全不同的安裝上必須能用
+  r2 = await read(await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-B')));
+  r2.ok ? ok('授權：換裝置後同一組碼仍可啟用 ← v2.0 的缺陷已修正')
+        : fail('授權：換裝置就失效 —— 付費使用者會拿不到已購買的功能', r2.error);
+
+  // 通行證綁在各自的安裝上，不可互換
+  let v = await A.verifyEntitlement(lenv, entA);
+  v.ok && v.installId === 'device-A' ? ok('授權：通行證可離線驗證') : fail('授權：通行證驗不過');
+  v = await A.verifyEntitlement(lenv, entA.slice(0, -2) + 'ZZ');
+  !v.ok ? ok('授權：竄改通行證被拒') : fail('授權：通行證可被竄改');
+
+  // 裝置上限
+  r2 = await read(await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-C')));
+  r2.ok ? ok('授權：第三台仍可啟用') : fail('授權：第三台被擋，上限算錯');
+  const over = await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-D'));
+  const overBody = await read(over);
+  over.status === 409 && overBody.needsDeactivate
+    ? ok('授權：第四台被擋，且告知需先解除（不靜默踢掉別台）')
+    : fail('授權：裝置上限沒生效或直接踢掉別台');
+
+  // 解除後可再啟用；解除**不需要**該裝置的權杖（電腦壞了也要能處理）
+  r2 = await read(await A.handleLicenseDeactivate(body({ licenseKey: KEY, installId: 'device-A' }), lenv));
+  r2.removed === 1 ? ok('授權：可從其他裝置解除舊裝置') : fail('授權：解除失敗');
+  r2 = await read(await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-D')));
+  r2.ok ? ok('授權：解除舊裝置後新裝置可啟用') : fail('授權：解除後仍啟用不了', r2.error);
+
+  // 停用（退款／盜用）
+  await A.handleLicenseRevoke(body({ licenseKey: KEY }), lenv);
+  const rev = await A.handleLicenseActivate(body({ licenseKey: KEY }), lenv, asInstall('device-E'));
+  rev.status === 403 ? ok('授權：停用後無法再啟用') : fail('授權：停用沒生效');
+
+  // 不存在的碼
+  const nf = await A.handleLicenseActivate(body({ licenseKey: 'PL-XXXX-XXXX-XXXX' }), lenv, asInstall('device-F'));
+  nf.status === 404 ? ok('授權：不存在的碼回 404') : fail('授權：不存在的碼沒擋');
+
+  // 亂七八糟的輸入不可以炸
+  for (const junk of [null, '', '   ', 'PL-', '???', 'a'.repeat(5000)]) {
+    const res = await A.handleLicenseActivate(body({ licenseKey: junk }), lenv, asInstall('device-G'));
+    if (!res || typeof res.status !== 'number') { fail('授權：異常輸入沒有回應', String(junk).slice(0, 20)); break; }
+  }
+  ok('授權：異常輸入（null／空白／超長／符號）都有正常回應，不會炸');
+
+  // ---- 8. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

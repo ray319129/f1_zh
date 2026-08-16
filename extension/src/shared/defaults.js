@@ -41,6 +41,33 @@
   };
 
   /** 從設定檔裡挑出符合目前網域的那一組 */
+  /**
+   * 清洗設定值。
+   *
+   * 設定會從 chrome.storage 讀回來，而那裡面可能有：舊版留下的欄位、
+   * 使用者用開發者工具塞的值、同步過來的損毀資料。
+   * 不清洗的話 `fontSize: 'big'` 會變成 CSS 的 `NaNpx`——**不會報錯，
+   * 只是字幕整個不見**，而使用者完全不知道發生什麼事。
+   *
+   * 原則：每個欄位都夾在合理範圍內，型別不對就退回預設。寧可忽略也不要壞掉。
+   */
+  function sanitizeSettings(raw) {
+    const s = Object.assign({}, DEFAULT_SETTINGS, (raw && typeof raw === 'object') ? raw : {});
+    const num = (v, lo, hi, dflt) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+    };
+    return {
+      enabled: !!s.enabled,
+      showEnglish: !!s.showEnglish,
+      hideNativeCC: !!s.hideNativeCC,
+      debug: !!s.debug,
+      fontSize: num(s.fontSize, 12, 72, DEFAULT_SETTINGS.fontSize),
+      bottomPct: num(s.bottomPct, 0, 60, DEFAULT_SETTINGS.bottomPct),
+      holdMs: num(s.holdMs, 1000, 30000, DEFAULT_SETTINGS.holdMs),
+    };
+  }
+
   function siteConfigFor(config, hostname) {
     const sites = (config && config.sites) || [];
     return sites.find((s) => hostname.endsWith(s.host)) || null;
@@ -51,4 +78,5 @@
   root.PL.BUILT_IN_CONFIG = BUILT_IN_CONFIG;
   root.PL.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
   root.PL.siteConfigFor = siteConfigFor;
+  root.PL.sanitizeSettings = sanitizeSettings;
 })(typeof self !== 'undefined' ? self : this);

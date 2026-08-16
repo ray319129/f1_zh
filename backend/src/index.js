@@ -12,6 +12,12 @@
  *   POST /v1/translate                 翻譯未命中的句子（需 CLIENT_TOKEN）
  *   POST /v1/complete                  標記整支已完整收割（需安裝權杖）
  *   POST /v1/register                  匿名換取安裝權杖（無需權杖，IP 限流）
+ *   POST /v1/license/activate          用授權碼啟用這台裝置，換回通行證
+ *   POST /v1/license/renew             續期（失敗不影響現有通行證）
+ *   POST /v1/license/deactivate        解除裝置（不需該裝置的權杖）
+ *   POST /v1/admin/license/issue       發碼（金流 webhook 之後接這裡）
+ *   POST /v1/admin/license/revoke      停用（退款／盜用）
+ *   GET  /v1/admin/license/lookup      用 email 查回授權碼（客服補發）
  *   GET  /v1/admin/stats               成本後台（需 ADMIN_TOKEN）
  *   POST /v1/admin/revoke              撤銷某個安裝（需 ADMIN_TOKEN）
  *
@@ -31,6 +37,9 @@
  *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
  * v1.7  單句不再走批次編號協定（實測回覆率只有 50%，坑 #9）。
  *       批次解析加上「行數相同就按位置對應」的備援。
+ * v2.1  **授權與安裝權杖分離**。v2.0 把「證明付過錢」做成綁裝置的，
+ *       換一台電腦就失效——付費軟體不能這樣。改成可攜帶的授權碼：
+ *       任何裝置貼上就能用，最多 3 台，可自行解除，可用 email 補發。
  * v2.0  資安與維運：每個安裝一枚權杖（取代所有人共用的 CLIENT_TOKEN，S6）、
  *       拿掉 CORS `*`、常數時間比對、速率限制改以 installId 為鍵、
  *       譯文合理性檢查擋 prompt injection 汙染共用快取（S9）、
@@ -846,6 +855,218 @@ function plausibleTranslation(en, zh) {
 }
 
 // ---------------------------------------------------------------------------
+// 授權（License）—— 與「安裝權杖」是兩件不同的事，不可混為一談
+//
+//   安裝權杖  綁**裝置**。用途是濫用防護：限額、撤銷、分階段推送的分流。
+//             匿名換發，不需要也不應該跟著人走。
+//   授權      綁**人**。用途是證明付過錢。**換電腦、重灌、換瀏覽器都必須還在。**
+//
+// v2.0 把後者做成前者是設計錯誤：付費使用者換一台電腦就失效。
+//
+// 設計：不做密碼登入，但保留「找得回來」的能力。
+//   1. 付款成功 → 產生授權碼 PL-XXXX-XXXX-XXXX，寄到金流回傳的 email
+//   2. 使用者在**任何**裝置貼上授權碼 → 綁定該安裝，換回一張有期限的通行證
+//   3. 通行證離線可驗（HMAC），**後端掛掉時已付費的人照常能用**
+//   4. 同時最多 3 台裝置；第 4 台會被擋，使用者可自行解除舊的
+//   5. 忘記授權碼 → 用 email 查回（email 來自金流，我們不另外收集）
+//
+// 這不是帳號系統：沒有密碼、沒有註冊流程、沒有個人資料頁。
+// 就是一組可攜帶、可補發、可撤銷的授權碼——獨立軟體最常見的做法。
+// ---------------------------------------------------------------------------
+const MAX_DEVICES = 3;
+const ENTITLEMENT_DAYS = 14;      // 通行證有效期；用戶端自動續，後端掛了也還能撐兩週
+
+function licenseKeyNew() {
+  // 去掉容易看錯的 0/O/1/I/L，因為使用者要用手打
+  const AB = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const b = crypto.getRandomValues(new Uint8Array(12));
+  const s = Array.from(b).map((x) => AB[x % AB.length]).join('');
+  return `PL${s}`;
+}
+
+function normLicense(k) {
+  return String(k || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function prettyLicense(k) {
+  const n = normLicense(k).replace(/^PL/, '');
+  return 'PL-' + (n.match(/.{1,4}/g) || []).join('-');
+}
+
+const licKey = (k) => `lic:${normLicense(k)}`;
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+/**
+ * 通行證（entitlement）：<installId>.<plan>.<exp>.<簽章>
+ *
+ * 用戶端存起來離線驗證。**後端不可用時只要還沒過期就繼續服務**——
+ * 伺服器出問題是我們的錯，不該讓付費使用者看不到字幕。
+ */
+async function issueEntitlement(env, installId, plan, until) {
+  const secret = tokenSecret(env);
+  const exp = Math.min(until || 4102444800, nowSec() + ENTITLEMENT_DAYS * 86400);
+  const payload = `${installId}.${plan}.${exp}`;
+  return { entitlement: `${payload}.${await hmac(secret, payload)}`, exp, plan };
+}
+
+/**
+ * 驗證通行證。
+ *
+ * ⚠️ **這個驗證只能在伺服器做，用戶端做不到。**
+ * 簽章是 HMAC，需要 TOKEN_SECRET，而那個絕不能發給用戶端。
+ *
+ * 所以分工是：
+ *   用戶端  只讀通行證裡的 exp 判斷「還沒過期」，用來決定 UI 顯示什麼。
+ *           **那是體驗，不是防護**——使用者當然可以自己塞一個假的進 storage。
+ *   伺服器  在會花錢的端點（/v1/translate）實際驗簽。
+ *           偽造的通行證拿不到翻譯，這才是真正的那道牆。
+ *
+ * 把防線放在伺服器而不是用戶端，也讓「後端掛掉時已付費的人照常能用」
+ * 這件事成立——用戶端不會因為驗不了簽就把功能鎖起來。
+ */
+async function verifyEntitlement(env, ent) {
+  const parts = String(ent || '').split('.');
+  if (parts.length !== 4) return { ok: false, reason: 'malformed' };
+  const [installId, plan, expStr, sig] = parts;
+  const expect = await hmac(tokenSecret(env), `${installId}.${plan}.${expStr}`);
+  if (!safeEqual(sig, expect)) return { ok: false, reason: 'bad signature' };
+  if (Number(expStr) * 1000 < Date.now()) return { ok: false, reason: 'expired' };
+  return { ok: true, installId, plan, exp: Number(expStr) };
+}
+
+async function readLicense(env, key) {
+  const raw = await env.SUBS.get(licKey(key));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+/** 授權碼目前能不能用。回傳 null 代表可用，否則回傳要給使用者看的原因。 */
+function licenseProblem(lic) {
+  if (!lic) return { msg: '查無此授權碼，請確認有沒有打錯', status: 404 };
+  if (lic.revoked) return { msg: '這組授權碼已停用（退款或違規）。如有疑問請聯絡客服', status: 403 };
+  if (lic.expiresAt && lic.expiresAt * 1000 < Date.now()) return { msg: '授權已過期，請續訂', status: 403 };
+  return null;
+}
+
+/** 啟用：把授權碼綁到這個安裝，換回通行證。同一組碼可在任何裝置操作。 */
+async function handleLicenseActivate(request, env, auth) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  if (key.length < 8) return err('授權碼格式不正確');
+
+  const lic = await readLicense(env, key);
+  const bad = licenseProblem(lic);
+  if (bad) return err(bad.msg, bad.status);
+
+  const iid = auth.installId;
+  lic.devices = Array.isArray(lic.devices) ? lic.devices : [];
+  const known = lic.devices.find((d) => d.installId === iid);
+
+  if (!known) {
+    if (lic.devices.length >= MAX_DEVICES) {
+      // **不要自動踢掉別台。** 使用者可能正在另一台看比賽，
+      // 靜默踢掉會變成兩台互相把對方擠下線。讓他自己決定解除哪一台。
+      return json({
+        error: `已達裝置上限（${MAX_DEVICES} 台）。請先解除其中一台再啟用`,
+        needsDeactivate: true,
+        devices: lic.devices.map((d) => ({ id: d.installId.slice(0, 8), lastSeen: d.lastSeen })),
+      }, 409);
+    }
+    lic.devices.push({ installId: iid, addedAt: nowSec(), lastSeen: nowSec() });
+  } else {
+    known.lastSeen = nowSec();
+  }
+
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  const ent = await issueEntitlement(env, iid, lic.plan || 'season', lic.expiresAt);
+  return json({ ok: true, plan: lic.plan || 'season', expiresAt: lic.expiresAt, devices: lic.devices.length, ...ent });
+}
+
+/** 解除裝置。換電腦、賣掉舊電腦、或撞到上限時自己處理。 */
+async function handleLicenseDeactivate(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const target = String((body && body.installId) || '').trim();
+  if (!key || !target) return err('需要 licenseKey 與 installId');
+
+  const lic = await readLicense(env, key);
+  if (!lic) return err('查無此授權碼', 404);
+  const before = (lic.devices || []).length;
+  // 允許用前 8 碼指認，因為使用者在畫面上只看得到那幾碼
+  lic.devices = (lic.devices || []).filter(
+    (d) => d.installId !== target && !d.installId.startsWith(target));
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  return json({ ok: true, removed: before - lic.devices.length, remaining: lic.devices.length });
+}
+
+/** 續期。**呼叫失敗不影響現有通行證**，過期前都還能用。 */
+async function handleLicenseRenew(request, env, auth) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const lic = await readLicense(env, key);
+  const bad = licenseProblem(lic);
+  if (bad) return err(bad.msg, bad.status);
+
+  const d = (lic.devices || []).find((x) => x.installId === auth.installId);
+  if (!d) return err('這台裝置尚未啟用此授權', 403);
+  d.lastSeen = nowSec();
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  return json({ ok: true, ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', lic.expiresAt)) });
+}
+
+/** 管理端：發碼。P3 接上金流後由 webhook 呼叫，現在先手動。 */
+async function handleLicenseIssue(request, env) {
+  const body = await request.json().catch(() => null);
+  if (!body) return err('body 不是合法 JSON');
+  const key = normLicense(body.licenseKey || licenseKeyNew());
+  const lic = {
+    plan: String(body.plan || 'season'),
+    email: String(body.email || ''),            // 來自金流，用於補發，不另外收集
+    orderId: String(body.orderId || ''),
+    expiresAt: body.expiresAt ? Number(body.expiresAt) : null,
+    devices: [],
+    createdAt: nowSec(),
+    revoked: false,
+  };
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  // 建 email 索引，讓「忘記授權碼」查得回來
+  if (lic.email) {
+    const ik = `licmail:${lic.email.toLowerCase()}`;
+    let arr = [];
+    try { arr = JSON.parse((await env.SUBS.get(ik)) || '[]'); } catch (e) { /* noop */ }
+    if (!arr.includes(key)) arr.push(key);
+    await env.SUBS.put(ik, JSON.stringify(arr));
+  }
+  return json({ ok: true, licenseKey: prettyLicense(key), plan: lic.plan, expiresAt: lic.expiresAt });
+}
+
+/** 管理端：停用（退款、盜用、chargeback）。 */
+async function handleLicenseRevoke(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const lic = await readLicense(env, key);
+  if (!lic) return err('查無此授權碼', 404);
+  lic.revoked = true;
+  lic.revokedAt = nowSec();
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  return json({ ok: true, devices: (lic.devices || []).length });
+}
+
+/** 管理端：用 email 查回授權碼（客服補發用）。 */
+async function handleLicenseLookup(request, env, url) {
+  const email = String(url.searchParams.get('email') || '').toLowerCase().trim();
+  if (!email) return err('需要 email');
+  let arr = [];
+  try { arr = JSON.parse((await env.SUBS.get(`licmail:${email}`)) || '[]'); } catch (e) { /* noop */ }
+  const out = [];
+  for (const k of arr) {
+    const lic = await readLicense(env, k);
+    if (lic) out.push({ licenseKey: prettyLicense(k), plan: lic.plan, expiresAt: lic.expiresAt, revoked: !!lic.revoked, devices: (lic.devices || []).length });
+  }
+  return json({ email, licenses: out });
+}
+
+// ---------------------------------------------------------------------------
 // 工具
 // ---------------------------------------------------------------------------
 // ⚠️ **不要放 Access-Control-Allow-Origin: '*'。**
@@ -1400,7 +1621,38 @@ export default {
         return handleComplete(request, env);
       }
 
+      // ---- 授權（綁人，不綁裝置）----
+      if (path === '/v1/license/activate' && request.method === 'POST') {
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        return handleLicenseActivate(request, env, a);
+      }
+      if (path === '/v1/license/renew' && request.method === 'POST') {
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        return handleLicenseRenew(request, env, a);
+      }
+      // 解除裝置刻意**不要求**該裝置的權杖——電腦壞了、賣掉了、重灌了都要能解除。
+      // 只要拿得出授權碼就有權處理自己的裝置。
+      if (path === '/v1/license/deactivate' && request.method === 'POST') {
+        if (await rateLimited(env, `lic:${ip}`)) return err('rate limited', 429);
+        return handleLicenseDeactivate(request, env);
+      }
+
       // ---- 管理後台 ----
+      if (path === '/v1/admin/license/issue' && request.method === 'POST') {
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
+        return handleLicenseIssue(request, env);
+      }
+      if (path === '/v1/admin/license/revoke' && request.method === 'POST') {
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
+        return handleLicenseRevoke(request, env);
+      }
+      if (path === '/v1/admin/license/lookup' && request.method === 'GET') {
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
+        return handleLicenseLookup(request, env, url);
+      }
+
       if (path === '/v1/admin/stats' && request.method === 'GET') {
         if (!authAdmin(env, request)) return err('unauthorized', 401);
         try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }

@@ -36,7 +36,7 @@ const memCache = {
 // ---------------------------------------------------------------------------
 async function getSettings() {
   const { settings } = await chrome.storage.local.get('settings');
-  return Object.assign({}, self.PL.DEFAULT_SETTINGS, settings || {});
+  return self.PL.sanitizeSettings(settings);
 }
 
 /**

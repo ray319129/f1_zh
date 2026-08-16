@@ -26,7 +26,7 @@
   if (window.__pitlingoBooted) return;
   window.__pitlingoBooted = true;
 
-  const { clean, normKey, siteConfigFor, DEFAULT_SETTINGS } = self.PL;
+  const { clean, normKey, siteConfigFor, sanitizeSettings, DEFAULT_SETTINGS } = self.PL;
 
   // 100ms（原 250ms）。observer 正常時輪詢只是備援，這個間隔不重要；
   // 但 observer 失聯時它就是唯一的偵測手段，而 250ms 直接加在顯示延遲上。
@@ -1289,7 +1289,7 @@
       send({ type: 'getSettings' }),
     ]);
     const config = (cfgRes.ok && cfgRes.config) || self.PL.BUILT_IN_CONFIG;
-    settings = Object.assign({}, DEFAULT_SETTINGS, (setRes.ok && setRes.settings) || {});
+    settings = sanitizeSettings((setRes.ok && setRes.settings) || {});
     debugOn = !!settings.debug;
     site = siteConfigFor(config, location.hostname);
     configVersion = config.version;
@@ -1365,7 +1365,7 @@
     if (area !== 'local') return;
 
     if (changes.settings) {
-      settings = Object.assign({}, DEFAULT_SETTINGS, changes.settings.newValue || {});
+      settings = sanitizeSettings(changes.settings.newValue);
       debugOn = !!settings.debug;
       applyHideNative();
       reposition();
