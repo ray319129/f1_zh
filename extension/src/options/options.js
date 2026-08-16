@@ -15,7 +15,9 @@
   const { sanitizeSettings, DEFAULT_SETTINGS, BACKEND } = self.PL;
   const $ = (id) => document.getElementById(id);
 
-  const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC', 'debug'];
+  // 一般使用者看不到「詳細日誌」——那是開發用的，放出去只會造成困惑。
+// 需要時仍可在 F1TV 分頁的 Console 打 `__pitlingo.debug(true)` 打開。
+const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
   const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
 
   let settings = Object.assign({}, DEFAULT_SETTINGS);
@@ -210,23 +212,56 @@
   // ---------------------------------------------------------------------
   // 疑難排解
   // ---------------------------------------------------------------------
-  $('diag').onclick = async () => {
-    const btn = $('diag');
-    const old = btn.textContent;
-    btn.disabled = true; btn.textContent = '收集中…';
-    const res = await toTab({ type: 'collectDiagnostics' });
+  /**
+   * 傳送診斷給開發者。
+   *
+   * 原本是「複製到剪貼簿再自己貼給我」——那對一般使用者太麻煩，
+   * 而且他們常常貼一半、貼錯地方，或根本不知道要貼去哪裡。
+   *
+   * 改成直接送到後端並回一個工單編號。使用者只要記那組編號，
+   * 客服對得起來就好。
+   */
+  $('rpSend').onclick = async () => {
+    const btn = $('rpSend');
+    const out = $('rpResult');
+    btn.disabled = true;
+    out.hidden = false; out.className = 'rpResult'; out.textContent = '收集中…';
+
+    const got = await toTab({ type: 'collectDiagnostics' });
+    if (got.noTab) {
+      btn.disabled = false;
+      out.className = 'rpResult err';
+      out.textContent = '請先打開 F1TV 的分頁，我們才收集得到運作狀態。';
+      return;
+    }
+    if (!got.ok || !got.report) {
+      btn.disabled = false;
+      out.className = 'rpResult err';
+      out.textContent = '收集失敗。請重新整理 F1TV 的分頁後再試一次。';
+      return;
+    }
+
+    out.textContent = '傳送中…';
+    const res = await sw({
+      type: 'sendReport',
+      report: got.report,
+      note: $('rpNote').value.trim(),
+      contact: $('rpContact').value.trim(),
+      version: chrome.runtime.getManifest().version,
+    });
     btn.disabled = false;
 
-    if (res.noTab) { btn.textContent = '請先打開 F1TV 分頁'; }
-    else if (res.ok && res.report) {
-      try {
-        await navigator.clipboard.writeText(res.report);
-        btn.textContent = '已複製到剪貼簿';
-      } catch (e) { btn.textContent = '複製失敗，請改用 Console'; }
+    if (res.ok && res.result && res.result.ticket) {
+      out.className = 'rpResult ok';
+      out.innerHTML = '已送出，謝謝你的回報。<br>詢問進度時請提供這組編號：'
+        + `<div class="ticket">${res.result.ticket}</div>`;
+      $('rpNote').value = '';
     } else {
-      btn.textContent = '收集失敗，請重整 F1TV 分頁';
+      // 送不出去時要給一條退路，不能讓使用者卡在這裡
+      out.className = 'rpResult err';
+      out.textContent = ((res.result && res.result.error) || res.error || '傳送失敗')
+        + '。可以稍後再試，或到 Console 打 __pitlingo.diag() 自行複製。';
     }
-    setTimeout(() => { btn.textContent = old; }, 2600);
   };
 
   $('reloadCfg').onclick = async () => {

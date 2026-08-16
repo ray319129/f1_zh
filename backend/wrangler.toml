@@ -19,6 +19,15 @@ id = "606ab33223b74d929d4d0ba8f5e1ae69"
 [vars]
 DAILY_USD_CAP = "5"
 
+# 診斷回報一律存進 KV，後台看得到——那層永遠可靠。
+# 填了 REPORT_WEBHOOK 才會額外推一份出去（Email API／Discord／Slack 皆可）。
+#
+# ⚠️ 從 Cloudflare 寄信到 Gmail 需要**已驗證的寄件網域**（SPF/DKIM）。
+#    在 pitlingo.com 設定好之前不要接——送達率會很差甚至直接進垃圾桶，
+#    那比沒有更糟，因為你會以為沒人回報。
+# REPORT_WEBHOOK = "https://..."
+REPORT_TO = "pitlingo.office@gmail.com"
+
 # ⚠️ 上線後**不要用 `wrangler deploy`**——那會 100% 立刻切換，出事沒有回頭路。
 #    改用漸進式部署：
 #      wrangler versions upload

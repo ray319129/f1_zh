@@ -213,11 +213,22 @@ async function markComplete(cid, segCount) {
 // **後端連不上時不要把功能鎖起來**：伺服器出問題是我們的錯，
 // 不該讓已付費的人看不到字幕。
 // ---------------------------------------------------------------------------
-const ENT_RENEW_BEFORE_MS = 3 * 86400 * 1000;      // 到期前 3 天開始續
+// 通行證有效期 14 天是為了**離線容忍度**：後端掛掉時已付費的人還能撐兩週。
+// 但如果只在快到期時才續，停用（退款、盜用、chargeback）最久要 11 天才生效——
+// 那對開發者完全沒有保護。
+//
+// 拆成兩個時間：
+//   RECHECK   每 24 小時主動回報一次。停用後最多一天生效。
+//   有效期    仍是 14 天。後端連不上時**不會**把功能鎖起來，只是續不到而已。
+// 兩者互不衝突：正常情況每天續一次，異常情況靠 14 天的緩衝撐著。
+const ENT_RECHECK_MS = 24 * 3600 * 1000;
 
 async function licenseStatus() {
-  const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
-  if (!st.entitlement || !st.entExp) return { active: false };
+  const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt', 'entCheckedAt']);
+  if (!st.entitlement || !st.entExp) {
+    const { licRevokedReason } = await chrome.storage.local.get('licRevokedReason');
+    return { active: false, reason: licRevokedReason || '' };
+  }
 
   const expMs = st.entExp * 1000;
   if (expMs < Date.now()) {
@@ -228,8 +239,11 @@ async function licenseStatus() {
     return licenseStatus();
   }
 
-  // 快到期就在背景續，不擋使用者
-  if (expMs - Date.now() < ENT_RENEW_BEFORE_MS) licenseRenew().catch(() => {});
+  // 距離上次回報超過 24 小時就在背景續一次，不擋使用者。
+  // 這是停用能生效的唯一途徑，不能省。
+  if (!st.entCheckedAt || Date.now() - st.entCheckedAt > ENT_RECHECK_MS) {
+    licenseRenew().catch(() => {});
+  }
 
   return {
     active: true,
@@ -248,6 +262,7 @@ async function licenseActivate(licenseKey) {
     await chrome.storage.local.set({
       licenseKey: key, entitlement: d.entitlement, entExp: d.exp,
       licPlan: d.plan, licExpiresAt: d.expiresAt || null,
+      entCheckedAt: Date.now(), licRevokedReason: '',
     });
     return d;
   } catch (e) {
@@ -268,9 +283,26 @@ async function licenseRenew() {
   const { licenseKey } = await chrome.storage.local.get('licenseKey');
   if (!licenseKey) return { ok: false };
   try {
-    const d = await api('/v1/license/renew', { method: 'POST', body: JSON.stringify({ licenseKey }) });
-    if (d && d.ok) {
-      await chrome.storage.local.set({ entitlement: d.entitlement, entExp: d.exp, licPlan: d.plan });
+    const res = await fetch(BACKEND + '/v1/license/renew', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-client-token': await getClientToken() },
+      body: JSON.stringify({ licenseKey }),
+    });
+    const d = await res.json().catch(() => ({}));
+
+    // 403 = 已停用或已過期。這是**確定的否定答案**，要立刻清掉本機狀態。
+    // 其他錯誤（500、逾時、斷網）一律不動——那可能只是後端暫時有事，
+    // 把付費使用者的授權清掉才是真正的傷害。
+    if (res.status === 403) {
+      await chrome.storage.local.remove(['entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
+      await chrome.storage.local.set({ entCheckedAt: Date.now(), licRevokedReason: d.error || '授權已停用' });
+      return { ok: false, revoked: true, error: d.error };
+    }
+    if (res.ok && d && d.ok) {
+      await chrome.storage.local.set({
+        entitlement: d.entitlement, entExp: d.exp, licPlan: d.plan,
+        entCheckedAt: Date.now(), licRevokedReason: '',
+      });
     }
     return d || { ok: false };
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
@@ -407,6 +439,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await chrome.storage.local.remove(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
           sendResponse({ ok: true });
           break;
+        case 'sendReport': {
+          try {
+            const d = await api('/v1/report', {
+              method: 'POST',
+              body: JSON.stringify({
+                report: msg.report, note: msg.note, contact: msg.contact, version: msg.version,
+              }),
+            });
+            sendResponse({ ok: true, result: d });
+          } catch (e) {
+            sendResponse({ ok: false, error: '無法連線到伺服器，請檢查網路' });
+          }
+          break;
+        }
         case 'markComplete':
           sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount) });
           break;

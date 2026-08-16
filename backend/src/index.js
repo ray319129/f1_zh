@@ -16,6 +16,10 @@
  *   POST /v1/license/renew             續期（失敗不影響現有通行證）
  *   POST /v1/license/deactivate        解除裝置（不需該裝置的權杖）
  *   POST /v1/license/devices           列出這組授權碼的裝置（純查詢）
+ *   POST /v1/report                    使用者送出診斷，回傳工單編號
+ *   GET  /v1/admin/license/list        授權清單（可搜尋、可分頁）
+ *   POST /v1/admin/license/patch       延期／換方案／解除全部裝置
+ *   GET  /v1/admin/reports             診斷回報清單
  *   POST /v1/admin/license/issue       發碼（金流 webhook 之後接這裡）
  *   POST /v1/admin/license/revoke      停用（退款／盜用）
  *   GET  /v1/admin/license/lookup      用 email 查回授權碼（客服補發）
@@ -38,6 +42,8 @@
  *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
  * v1.7  單句不再走批次編號協定（實測回覆率只有 50%，坑 #9）。
  *       批次解析加上「行數相同就按位置對應」的備援。
+ * v2.3  方案期限由伺服器依方案計算（trial 14 天／season 到隔年 1/31／
+ *       lifetime 無期限）；授權清單、批次修改、診斷回報工單。
  * v2.2  管理端點補回 CORS（後台是本機開的 file://，Origin 是 null，
  *       第一版把自己的後台也擋掉了）。新增 /v1/license/devices。
  * v2.1  **授權與安裝權杖分離**。v2.0 把「證明付過錢」做成綁裝置的，
@@ -877,6 +883,41 @@ function plausibleTranslation(en, zh) {
 // 就是一組可攜帶、可補發、可撤銷的授權碼——獨立軟體最常見的做法。
 // ---------------------------------------------------------------------------
 const MAX_DEVICES = 3;
+
+/**
+ * 方案定義。
+ *
+ * 期限必須由**伺服器**算，不能靠發碼時手填——手填一定會錯，
+ * 而錯的方向通常是「多給」或「少給」，兩邊都是糾紛。
+ *
+ *   trial     14 天。給「想先試試看」的人，或客服補償用。
+ *             不是免費層——免費層是另一回事（每支影片前 N 句），不需要授權碼。
+ *   season    到該賽季結束（隔年 1 月 31 日）。F1 賽季橫跨年底，
+ *             用「12 月 31 日」會讓最後幾場比賽剛好斷掉。
+ *   lifetime  無期限。
+ */
+const PLANS = {
+  trial: { label: '試用', days: 14 },
+  season: { label: '賽季', untilSeasonEnd: true },
+  lifetime: { label: '永久', days: null },
+};
+
+/** 賽季結束時間：隔年 1 月 31 日。今天已過 1/31 就算到明年的 1/31。 */
+function seasonEndSec(from) {
+  const d = new Date((from || Date.now()));
+  const y = d.getUTCFullYear();
+  const thisSeasonEnd = Date.UTC(y, 0, 31, 23, 59, 59);      // 今年 1/31
+  const end = d.getTime() <= thisSeasonEnd ? thisSeasonEnd : Date.UTC(y + 1, 0, 31, 23, 59, 59);
+  return Math.floor(end / 1000);
+}
+
+function planExpiry(plan, from) {
+  const p = PLANS[plan];
+  if (!p) return null;
+  if (p.untilSeasonEnd) return seasonEndSec(from);
+  if (p.days) return Math.floor((from || Date.now()) / 1000) + p.days * 86400;
+  return null;                                               // lifetime
+}
 const ENTITLEMENT_DAYS = 14;      // 通行證有效期；用戶端自動續，後端掛了也還能撐兩週
 
 function licenseKeyNew() {
@@ -1030,16 +1071,85 @@ async function handleLicenseDevices(request, env) {
   });
 }
 
+/**
+ * 管理端：列出所有授權碼。
+ *
+ * 量大之後「一組一組查」是不能用的。這裡直接掃 KV 的 lic: 前綴，
+ * 支援關鍵字過濾（授權碼／email／訂單編號）與狀態過濾。
+ *
+ * KV 的 list 有游標，所以要能分頁——一次撈完在幾百組之後會逾時。
+ */
+async function handleLicenseList(request, env, url) {
+  const q = String(url.searchParams.get('q') || '').toLowerCase().trim();
+  const status = url.searchParams.get('status') || 'all';
+  const cursor = url.searchParams.get('cursor') || undefined;
+
+  const listed = await env.SUBS.list({ prefix: 'lic:', limit: 200, cursor });
+  const rows = [];
+  for (const k of listed.keys) {
+    const raw = await env.SUBS.get(k.name);
+    if (!raw) continue;
+    let lic; try { lic = JSON.parse(raw); } catch (e) { continue; }
+    const key = k.name.slice(4);
+
+    const expired = !!(lic.expiresAt && lic.expiresAt * 1000 < Date.now());
+    const state = lic.revoked ? 'revoked' : expired ? 'expired' : 'active';
+    if (status !== 'all' && status !== state) continue;
+    if (q && ![key, lic.email, lic.orderId].some((v) => String(v || '').toLowerCase().includes(q))) continue;
+
+    rows.push({
+      licenseKey: prettyLicense(key),
+      raw: key,
+      plan: lic.plan,
+      planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+      email: lic.email || '',
+      orderId: lic.orderId || '',
+      createdAt: lic.createdAt || null,
+      expiresAt: lic.expiresAt || null,
+      devices: (lic.devices || []).length,
+      state,
+    });
+  }
+  rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return json({ rows, cursor: listed.list_complete ? null : listed.cursor, complete: listed.list_complete });
+}
+
+/**
+ * 管理端：改一組授權碼（延期、換方案、解除全部裝置）。
+ * 客服最常做的三件事，不做的話每次都要重發一組新碼。
+ */
+async function handleLicensePatch(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const lic = await readLicense(env, key);
+  if (!lic) return err('查無此授權碼', 404);
+
+  if (body.plan && PLANS[body.plan]) {
+    lic.plan = body.plan;
+    if (body.recalcExpiry) lic.expiresAt = planExpiry(body.plan);
+  }
+  if (body.expiresAt !== undefined) lic.expiresAt = body.expiresAt ? Number(body.expiresAt) : null;
+  if (body.extendDays) lic.expiresAt = (lic.expiresAt || nowSec()) + Number(body.extendDays) * 86400;
+  if (body.revoked !== undefined) { lic.revoked = !!body.revoked; lic.revokedAt = body.revoked ? nowSec() : null; }
+  if (body.clearDevices) lic.devices = [];
+  if (body.email !== undefined) lic.email = String(body.email);
+
+  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  return json({ ok: true, licenseKey: prettyLicense(key), plan: lic.plan, expiresAt: lic.expiresAt, revoked: !!lic.revoked, devices: (lic.devices || []).length });
+}
+
 /** 管理端：發碼。P3 接上金流後由 webhook 呼叫，現在先手動。 */
 async function handleLicenseIssue(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return err('body 不是合法 JSON');
   const key = normLicense(body.licenseKey || licenseKeyNew());
+  const plan = PLANS[body.plan] ? String(body.plan) : 'season';
   const lic = {
-    plan: String(body.plan || 'season'),
+    plan,
     email: String(body.email || ''),            // 來自金流，用於補發，不另外收集
     orderId: String(body.orderId || ''),
-    expiresAt: body.expiresAt ? Number(body.expiresAt) : null,
+    // 期限一律由伺服器依方案算。只有明確傳 expiresAt 時才覆寫（客服調整用）。
+    expiresAt: body.expiresAt ? Number(body.expiresAt) : planExpiry(plan),
     devices: [],
     createdAt: nowSec(),
     revoked: false,
@@ -1053,7 +1163,11 @@ async function handleLicenseIssue(request, env) {
     if (!arr.includes(key)) arr.push(key);
     await env.SUBS.put(ik, JSON.stringify(arr));
   }
-  return json({ ok: true, licenseKey: prettyLicense(key), plan: lic.plan, expiresAt: lic.expiresAt });
+  return json({
+    ok: true, licenseKey: prettyLicense(key), plan: lic.plan,
+    planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+    expiresAt: lic.expiresAt,
+  });
 }
 
 /** 管理端：停用（退款、盜用、chargeback）。 */
@@ -1568,6 +1682,9 @@ async function routeAdmin(path, request, env, url) {
   if (path === '/v1/admin/license/issue' && m === 'POST') return handleLicenseIssue(request, env);
   if (path === '/v1/admin/license/revoke' && m === 'POST') return handleLicenseRevoke(request, env);
   if (path === '/v1/admin/license/lookup' && m === 'GET') return handleLicenseLookup(request, env, url);
+  if (path === '/v1/admin/license/list' && m === 'GET') return handleLicenseList(request, env, url);
+  if (path === '/v1/admin/license/patch' && m === 'POST') return handleLicensePatch(request, env);
+  if (path === '/v1/admin/reports' && m === 'GET') return handleReportList(env, url);
 
   if (path === '/v1/admin/stats' && m === 'GET') {
     try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }
@@ -1698,6 +1815,14 @@ export default {
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleLicenseActivate(request, env, a);
       }
+      // 診斷回報。需要安裝權杖，避免被當成匿名投遞箱。
+      if (path === '/v1/report' && request.method === 'POST') {
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        if (await rateLimited(env, `rep:${a.installId}`)) return err('回報太頻繁，請稍後再試', 429);
+        return handleReportSubmit(request, env, a);
+      }
+
       if (path === '/v1/license/devices' && request.method === 'POST') {
         const a = await authClient(env, request);
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);

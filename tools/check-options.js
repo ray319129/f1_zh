@@ -67,7 +67,20 @@ const defKeys = [...defBlock.matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
 
 const wired = [...arrayIds('TOGGLES'), ...arrayIds('RANGES')];
 
-const unwired = defKeys.filter((k) => !wired.includes(k));
+// 刻意不給一般使用者看的設定。放在這裡而不是靠人記得——
+// 少一個 UI 究竟是「故意的」還是「忘了接」，只有寫下來才分得出來。
+const INTENTIONALLY_HIDDEN = {
+  debug: '詳細日誌是開發用的，放進公開 UI 只會造成困惑。'
+       + '需要時在 F1TV 分頁的 Console 打 __pitlingo.debug(true)。',
+};
+
+const unwired = defKeys.filter((k) => !wired.includes(k) && !INTENTIONALLY_HIDDEN[k]);
+Object.keys(INTENTIONALLY_HIDDEN)
+  .filter((k) => defKeys.includes(k))
+  .forEach((k) => console.log(`ℹ️  ${k} 刻意不放進 UI：${INTENTIONALLY_HIDDEN[k]}`));
+const staleHidden = Object.keys(INTENTIONALLY_HIDDEN).filter((k) => !defKeys.includes(k));
+if (staleHidden.length) bad(`白名單裡有已不存在的設定：${staleHidden.join('、')}`);
+
 unwired.length
   ? bad(`這些設定沒有任何 UI 可以調整：${unwired.join('、')}`)
   : ok(`${defKeys.length} 個設定欄位都有對應的 UI`);

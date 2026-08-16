@@ -42,6 +42,15 @@
          display: inline-block; margin: 8px 0; user-select: all; }
   .danger { border-color: #d33; color: #d33; }
   .okmsg { color: #0a7; }
+  .mono { font-family: ui-monospace, monospace; font-size: 13px; }
+  .mail { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ops { white-space: nowrap; }
+  .ops button { padding: 3px 8px; font-size: 12px; margin-right: 4px; }
+  .st-active { color: #0a7; }
+  .st-expired { color: #b8730a; }
+  .st-revoked { color: #d33; }
+  .full { background: rgba(128,128,128,.1); padding: 12px; border-radius: 8px;
+          max-height: 460px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin-top: 14px; }
 </style>
 
 <h1>PitLingo 成本後台</h1>
@@ -57,6 +66,7 @@
 <div class="tabs">
   <button class="tab on" data-t="cost">成本</button>
   <button class="tab" data-t="lic">授權管理</button>
+  <button class="tab" data-t="rep">問題回報</button>
 </div>
 
 <div id="err"></div>
@@ -69,27 +79,41 @@
 <section id="p-lic" hidden>
   <div class="panel">
     <h3>發放授權碼</h3>
-    <p class="hint">付款成功後執行。email 來自金流，只用於「忘記授權碼」時補發。</p>
+    <p class="hint">期限由伺服器依方案自動計算：<b>試用</b> 14 天　·　<b>賽季</b> 到隔年 1/31（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）　·　<b>永久</b> 無期限。</p>
     <div class="bar">
-      <input id="li-mail" size="26" placeholder="買家 email（選填但強烈建議）">
-      <select id="li-plan"><option value="season">賽季</option><option value="lifetime">永久</option><option value="trial">試用</option></select>
-      <input id="li-order" size="16" placeholder="訂單編號（選填）">
+      <input id="li-mail" size="24" placeholder="買家 email（強烈建議填）">
+      <select id="li-plan"><option value="season">賽季</option><option value="lifetime">永久</option><option value="trial">試用 14 天</option></select>
+      <input id="li-order" size="14" placeholder="訂單編號">
       <button id="li-go">發碼</button>
     </div>
     <div id="li-out"></div>
   </div>
 
   <div class="panel">
-    <h3>查詢與停用</h3>
-    <p class="hint">使用者說「我忘記授權碼了」→ 用 email 查。退款或盜用 → 停用。</p>
+    <h3>所有授權碼</h3>
     <div class="bar">
-      <input id="lq-mail" size="26" placeholder="用 email 查回授權碼">
-      <button id="lq-go">查詢</button>
-      <input id="lr-key" size="20" placeholder="PL-XXXX-XXXX-XXXX">
-      <button id="lr-go" class="danger">停用這組</button>
+      <input id="ll-q" size="26" placeholder="搜尋授權碼 / email / 訂單編號">
+      <select id="ll-status">
+        <option value="all">全部狀態</option>
+        <option value="active">有效</option>
+        <option value="expired">已過期</option>
+        <option value="revoked">已停用</option>
+      </select>
+      <button id="ll-go">重新整理</button>
     </div>
-    <div id="lq-out"></div>
+    <div id="ll-out"></div>
   </div>
+</section>
+
+<section id="p-rep" hidden>
+  <div class="panel">
+    <h3>問題回報</h3>
+    <p class="hint">使用者在擴充功能按「傳送診斷」就會出現在這裡，保留 90 天。使用者手上有工單編號，對得起來。</p>
+    <div class="bar"><button id="rp-go">重新整理</button></div>
+    <div id="rp-out"></div>
+  </div>
+</section>
+
 </section>
 
 <script>
@@ -112,6 +136,9 @@ document.querySelectorAll('.tab').forEach((b) => {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
     $('p-cost').hidden = b.dataset.t !== 'cost';
     $('p-lic').hidden = b.dataset.t !== 'lic';
+    $('p-rep').hidden = b.dataset.t !== 'rep';
+    if (b.dataset.t === 'lic' && !llRows.length) loadLicenses();
+    if (b.dataset.t === 'rep') $('rp-go').click();
   };
 });
 
@@ -124,35 +151,114 @@ $('li-go').onclick = async () => {
     });
     $('li-out').innerHTML = `<div class="okmsg">已發放（${d.plan}）。把這組碼寄給買家：</div>
       <div class="key">${d.licenseKey}</div>
-      <div class="hint">使用者在擴充功能的設定頁貼上即可啟用，最多 3 台裝置。</div>`;
+      <div class="hint">${d.expiresAt ? '到期日 ' + new Date(d.expiresAt * 1000).toISOString().slice(0, 10) : '無使用期限'}　·　使用者在擴充功能的設定頁貼上即可啟用，最多 3 台裝置。</div>`;
+    loadLicenses();
   } catch (e) { $('li-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
 };
 
-$('lq-go').onclick = async () => {
-  $('err').textContent = ''; $('lq-out').innerHTML = '查詢中…';
+
+// ---- 授權清單 ----
+// 一組一組查在量大之後完全不能用。這裡直接列出全部，可搜尋、可就地操作。
+let llRows = [];
+
+async function loadLicenses() {
+  $('err').textContent = '';
+  $('ll-out').innerHTML = '載入中…';
   try {
-    const d = await apiCall('/v1/admin/license/lookup?email=' + encodeURIComponent($('lq-mail').value.trim()));
-    $('lq-out').innerHTML = d.licenses.length ? `<table>
-      <tr><th>授權碼</th><th>方案</th><th class="num">裝置</th><th>狀態</th></tr>
-      ${d.licenses.map((l) => `<tr><td class="key" style="font-size:14px;padding:2px 6px;border:0">${l.licenseKey}</td>
-        <td>${l.plan}</td><td class="num">${l.devices}</td>
-        <td>${l.revoked ? '<span style="color:#d33">已停用</span>' : '有效'}</td></tr>`).join('')}
-      </table>` : '<div class="hint">這個 email 沒有任何授權碼。</div>';
-  } catch (e) { $('lq-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
+    const d = await apiCall('/v1/admin/license/list?q=' + encodeURIComponent($('ll-q').value.trim())
+      + '&status=' + $('ll-status').value);
+    llRows = d.rows;
+    renderLicenses(d);
+  } catch (e) { $('ll-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
+}
+
+function fmtDay(sec) { return sec ? new Date(sec * 1000).toISOString().slice(0, 10) : '無期限'; }
+
+const STATE_LABEL = { active: '有效', expired: '已過期', revoked: '已停用' };
+
+function renderLicenses(d) {
+  if (!llRows.length) { $('ll-out').innerHTML = '<div class="hint">沒有符合條件的授權碼。</div>'; return; }
+  $('ll-out').innerHTML = `<table>
+    <tr><th>授權碼</th><th>方案</th><th>到期</th><th class="num">裝置</th><th>email</th><th>狀態</th><th>操作</th></tr>
+    ${llRows.map((r, i) => `<tr>
+      <td class="mono">${r.licenseKey}</td>
+      <td>${r.planLabel}</td>
+      <td>${fmtDay(r.expiresAt)}</td>
+      <td class="num">${r.devices}</td>
+      <td class="mail">${r.email || '—'}</td>
+      <td class="st-${r.state}">${STATE_LABEL[r.state]}</td>
+      <td class="ops">
+        <button data-a="extend" data-i="${i}" class="secondary">+30 天</button>
+        <button data-a="clear" data-i="${i}" class="secondary">清空裝置</button>
+        <button data-a="toggle" data-i="${i}" class="${r.state === 'revoked' ? 'secondary' : 'danger'}">${r.state === 'revoked' ? '恢復' : '停用'}</button>
+      </td></tr>`).join('')}
+    </table>
+    ${d && d.complete === false ? '<div class="hint">資料超過一頁，請用搜尋縮小範圍。</div>' : ''}`;
+
+  $('ll-out').querySelectorAll('button[data-a]').forEach((b) => {
+    b.onclick = () => licenseAction(b.dataset.a, llRows[Number(b.dataset.i)], b);
+  });
+}
+
+async function licenseAction(action, row, btn) {
+  const payload = { licenseKey: row.raw };
+  if (action === 'extend') payload.extendDays = 30;
+  if (action === 'clear') {
+    if (!confirm(`清空 ${row.licenseKey} 的所有裝置？
+使用者需要重新啟用（授權碼本身不受影響）。`)) return;
+    payload.clearDevices = true;
+  }
+  if (action === 'toggle') {
+    const on = row.state !== 'revoked';
+    // 停用會讓使用者在 24 小時內失去存取，一定要再問一次
+    if (on && !confirm(`停用 ${row.licenseKey}？
+使用者會在 24 小時內失去存取權。`)) return;
+    payload.revoked = on;
+  }
+  btn.disabled = true;
+  try {
+    await apiCall('/v1/admin/license/patch', { method: 'POST', body: JSON.stringify(payload) });
+    await loadLicenses();
+  } catch (e) { btn.disabled = false; $('err').textContent = String(e.message || e); }
+}
+
+$('ll-go').onclick = loadLicenses;
+$('ll-q').onkeydown = (e) => { if (e.key === 'Enter') loadLicenses(); };
+$('ll-status').onchange = loadLicenses;
+
+// ---- 問題回報 ----
+$('rp-go').onclick = async () => {
+  $('err').textContent = '';
+  $('rp-out').innerHTML = '載入中…';
+  try {
+    const d = await apiCall('/v1/admin/reports');
+    $('rp-out').innerHTML = d.rows.length ? `<table>
+      <tr><th>工單</th><th>時間</th><th>版本</th><th>使用者說明</th><th>聯絡方式</th><th></th></tr>
+      ${d.rows.map((r) => `<tr>
+        <td class="mono">${r.id}</td>
+        <td>${new Date(r.at * 1000).toLocaleString('zh-TW')}</td>
+        <td>${r.version || '—'}</td>
+        <td>${r.note || '—'}</td>
+        <td class="mail">${r.contact || '—'}</td>
+        <td><button class="secondary" data-rid="${r.id}">看全文</button></td>
+      </tr>`).join('')}
+      </table><pre id="rp-full" class="full" hidden></pre>`
+      : '<div class="hint">目前沒有任何回報。</div>';
+
+    $('rp-out').querySelectorAll('button[data-rid]').forEach((b) => {
+      b.onclick = async () => {
+        const pre = $('rp-full');
+        pre.hidden = false; pre.textContent = '載入中…';
+        try {
+          const full = await apiCall('/v1/admin/reports?id=' + encodeURIComponent(b.dataset.rid));
+          pre.textContent = full.report;
+          pre.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (e) { pre.textContent = String(e.message || e); }
+      };
+    });
+  } catch (e) { $('rp-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
 };
 
-$('lr-go').onclick = async () => {
-  const key = $('lr-key').value.trim();
-  if (!key) { $('err').textContent = '請先填授權碼'; return; }
-  // 停用是不可逆的（使用者會立刻失去存取），一定要再問一次
-  if (!confirm(`確定停用 ${key}？
-使用者會立刻無法使用，且已啟用的裝置全部失效。`)) return;
-  $('err').textContent = '';
-  try {
-    const d = await apiCall('/v1/admin/license/revoke', { method: 'POST', body: JSON.stringify({ licenseKey: key }) });
-    $('lq-out').innerHTML = `<div class="okmsg">已停用，影響 ${d.devices} 台裝置。</div>`;
-  } catch (e) { $('err').textContent = String(e.message || e); }
-};
 const usd = (n) => '$' + Number(n || 0).toFixed(4);
 const pct = (n) => n == null ? '—' : (n * 100).toFixed(1) + '%';
 
