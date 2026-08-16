@@ -38,7 +38,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -144,6 +144,8 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     SUBS: {
       get: async (k) => (kv.has(k) ? kv.get(k) : null),
       put: async (k, v) => { kv.set(k, v); },
+      delete: async (k) => { kv.delete(k); },
+      list: async (o) => ({ keys: [...kv.keys()].filter((k) => k.startsWith((o && o.prefix) || 'lic:')).map((name) => ({ name })), list_complete: true }),
     },
   };
   const body = (o) => ({ json: async () => o, headers: { get: () => null } });
@@ -352,7 +354,28 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
   g = await A.checkEntitlement(genv, asInstall('other-user'), withEnt, 50);
   g.reason !== 'licensed' ? ok('閘門：他人的通行證無效（不是萬用票）') : fail('閘門：通行證可以到處傳');
 
-  // ---- 15. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 15. 早鳥限量不可以賣超 ----
+  // 用獨立計數器會 lost update（兩筆同時付款都讀到 19 → 發出 21 組）。
+  // 改成直接數實際發出去的碼，來源就是事實本身。
+  const eenv = { TOKEN_SECRET: 'test-secret-abc',
+    SUBS: { get: async (k) => (kv2.has(k) ? kv2.get(k) : null), put: async (k, v) => { kv2.set(k, v); },
+            delete: async (k) => { kv2.delete(k); },
+            list: async (o) => ({ keys: [...kv2.keys()].filter((k) => k.startsWith((o && o.prefix) || 'lic:')).map((name) => ({ name })), list_complete: true }) } };
+
+  const before = await A.earlyIssued(eenv);
+  let downgradedAt = -1;
+  for (let i = 0; i < A.EARLY_LIMIT + 3; i++) {
+    const res = await read(await A.handleLicenseIssue(body({ plan: 'season_early', email: `e${i}@x.com` }), eenv));
+    if (res.downgraded && downgradedAt < 0) downgradedAt = i;
+  }
+  const earlyNow = await A.earlyIssued(eenv);
+  earlyNow <= A.EARLY_LIMIT
+    ? ok(`早鳥：發了 ${A.EARLY_LIMIT + 3} 次，實際只給出 ${earlyNow} 組早鳥價（上限 ${A.EARLY_LIMIT}）`)
+    : fail('早鳥：賣超了', `實際 ${earlyNow} 組`);
+  downgradedAt >= 0 ? ok(`早鳥：第 ${downgradedAt + 1} 次起自動降為正式價`) : fail('早鳥：沒有降級');
+  (await A.earlyRemaining(eenv)) === 0 ? ok('早鳥：剩餘名額歸零') : fail('早鳥：剩餘名額算錯');
+
+  // ---- 16. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

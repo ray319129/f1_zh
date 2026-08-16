@@ -955,10 +955,38 @@ function planExpiry(plan, from) {
   return null;
 }
 
-/** 早鳥還剩幾組。用 KV 計數，發碼時遞增。 */
+/**
+ * 早鳥還剩幾組。
+ *
+ * ⚠️ **不用獨立計數器。**
+ * 「讀 count → +1 → 寫回」在 KV 上是 lost update：兩筆同時付款都讀到 19、
+ * 都寫 20 → 發出 21 組早鳥價。20 個名額本來就不多，賣超一組就是食言。
+ * 而且計數器會與實際發出的碼漂移（刪碼、發錯、手動改都會），
+ * 漂了之後沒有任何辦法對得回來。
+ *
+ * 改成**直接數實際發出去的早鳥碼**。名額只有 20，掃描成本可忽略，
+ * 而且來源就是事實本身，不可能漂移。
+ */
+async function earlyIssued(env) {
+  if (!env.SUBS || typeof env.SUBS.list !== 'function') return 0;
+  let n = 0, cursor;
+  do {
+    const page = await env.SUBS.list({ prefix: 'lic:', limit: 1000, cursor });
+    for (const k of page.keys) {
+      const raw = await env.SUBS.get(k.name);
+      if (!raw) continue;
+      try { if (JSON.parse(raw).plan === 'season_early') n++; } catch (e) { /* 壞掉的略過 */ }
+      // 數到上限就夠了——我們只需要知道「還有沒有名額」，不需要精確總數。
+      // 授權碼變多之後，全掃一次是 O(n) 次 KV 讀取，不能每次發碼都做。
+      if (n >= EARLY_LIMIT) return n;
+    }
+    cursor = page.list_complete ? null : page.cursor;
+  } while (cursor);
+  return n;
+}
+
 async function earlyRemaining(env) {
-  const n = parseInt((await env.SUBS.get('early:count')) || '0', 10);
-  return Math.max(0, EARLY_LIMIT - n);
+  return Math.max(0, EARLY_LIMIT - (await earlyIssued(env)));
 }
 
 function licenseKeyNew() {
@@ -1520,11 +1548,8 @@ async function handlePaymentWebhook(request, env) {
   const email = String(p.CustomerEmail || p.email || '').trim();
   let plan = planFromItem(p.ItemName || p.plan);
   // 早鳥賣完就給正式方案。金流那邊可能還在賣舊連結，這裡是最後一道。
-  if (plan === 'season_early') {
-    const used = parseInt((await env.SUBS.get('early:count')) || '0', 10) || 0;
-    if (used >= EARLY_LIMIT) plan = 'season';
-    else await env.SUBS.put('early:count', String(used + 1));
-  }
+  // **寧可少賣一組也不要賣超**——名額只有 20，食言的代價比少賺一筆高得多。
+  if (plan === 'season_early' && (await earlyIssued(env)) >= EARLY_LIMIT) plan = 'season';
   const key = normLicense(licenseKeyNew());
   const lic = {
     plan, email, orderId,
@@ -1706,10 +1731,11 @@ async function handleLicenseIssue(request, env) {
   // 早鳥限量。**不能靠人工盯著改**——賣超了要嘛食言要嘛虧錢，兩個都不該發生。
   // 超過就自動降級成正式價，並在回應裡說明，讓發碼的人知道發生了什麼。
   let downgraded = false;
+  let earlyUsed = -1;
   if (plan === 'season_early') {
-    const used = parseInt((await env.SUBS.get('early:count')) || '0', 10) || 0;
-    if (used >= EARLY_LIMIT) { plan = 'season'; downgraded = true; }
-    else await env.SUBS.put('early:count', String(used + 1));
+    earlyUsed = await earlyIssued(env);
+    if (earlyUsed >= EARLY_LIMIT) { plan = 'season'; downgraded = true; }
+    else earlyUsed += 1;                    // 這一張也算進去
   }
   const lic = {
     plan,
@@ -1735,7 +1761,8 @@ async function handleLicenseIssue(request, env) {
     planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
     expiresAt: lic.expiresAt,
     downgraded,
-    earlyLeft: await earlyRemaining(env),
+    // 只有發早鳥時才知道剩幾組；發正式方案時不為了顯示而多掃一次 KV
+    earlyLeft: earlyUsed < 0 ? null : Math.max(0, EARLY_LIMIT - earlyUsed),
   });
 }
 

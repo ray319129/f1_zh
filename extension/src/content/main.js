@@ -791,6 +791,7 @@
   // 我們只是搭便車，不產生任何額外的網路請求（Imperva 之下這點很重要）。
   // 上限 12 份：換畫質、換影片都會產生新的，只保留最近的即可。
   const MANIFEST_MAX = 12;
+  const MANIFEST_MAX_BYTES = 8e6;   // 總量上限。份數上限擋不住「每份都很大」
   let manifests = [];
 
   async function swFetchText(url) {
@@ -830,13 +831,14 @@
   function findSubtitlePlaylistFromObserved() {
     for (let i = manifests.length - 1; i >= 0; i--) {
       const m = manifests[i];
+      if (!m.body) continue;
       if (/#EXTINF/i.test(m.body) && /\.vtt|\.webvtt/i.test(m.body)) {
         return { url: m.url, body: m.body, lang: 'eng', how: '直接攔到字幕清單' };
       }
     }
     for (let i = manifests.length - 1; i >= 0; i--) {
       const m = manifests[i];
-      if (!/#EXT-X-STREAM-INF/i.test(m.body)) continue;
+      if (!m.body || !/#EXT-X-STREAM-INF/i.test(m.body)) continue;
       const sp = findSubtitlePlaylist(m.body, m.url);
       if (sp) return { url: sp.url, body: null, lang: sp.lang, how: '由 master 解析' };
     }
@@ -1046,9 +1048,18 @@
         return;
       }
       if (d.kind === 'manifest' && typeof d.manifest === 'string') {
-        if (manifests.some((m) => m.url === d.url)) return;   // 同一份會重覆抓
-        manifests.push({ url: d.url || '', body: d.manifest });
-        if (manifests.length > MANIFEST_MAX) manifests.shift();
+          if (manifests.some((m) => m.url === d.url)) return;   // 同一份會重覆抓
+        // 已經拿到字幕清單就不需要再留任何 manifest ——
+        // 它們唯一的用途就是找出那個位址。
+        if (subtitlePlaylistUrl) return;
+        manifests.push({ url: d.url || '', body: d.manifest, bytes: d.manifest.length });
+        // ⚠️ 上限要看**總位元組**，不是份數。
+        //    每份最多 600,000 字元，12 份 = 最壞 14 MB 常駐在頁面裡。
+        //    m3u8 是純文字，8 MB 已經遠超過任何實際情況。
+        let total = manifests.reduce((a, m) => a + m.bytes, 0);
+        while (manifests.length > MANIFEST_MAX || (manifests.length > 1 && total > MANIFEST_MAX_BYTES)) {
+          total -= manifests.shift().bytes;
+        }
         state.manifests = manifests.length;
         return;
       }
@@ -1246,6 +1257,9 @@
       setPhase('讀取字幕清單');
       prefetchHow = sp.how;
       subtitlePlaylistUrl = sp.url;
+      // body 的唯一用途是找出這個位址，找到就放掉。
+      // 診斷仍看得到有幾份與各自多大（bytes 留著）。
+      manifests.forEach((m) => { m.body = ''; });
       // 路徑 1 已經連 body 都攔到了，不用再發一次請求
       const body = sp.body || await swFetchText(sp.url);
       const { segs, isVod } = parseMediaPlaylist(body, sp.url);
@@ -1553,9 +1567,11 @@
     L.push(`收到的 VTT 分段：${state.workerVtt} 份`);
     L.push(`攔到的 manifest：${state.manifests} 份（整軌預抓的入口）`);
     // 分類一下，找不到字幕清單時這行會直接說明卡在哪
-    const mMaster = manifests.filter((m) => /#EXT-X-STREAM-INF/i.test(m.body)).length;
-    const mSubs = manifests.filter((m) => /#EXTINF/i.test(m.body) && /\.vtt|\.webvtt/i.test(m.body)).length;
-    L.push(`  其中 master ${mMaster} 份、字幕清單 ${mSubs} 份`);
+    const mMaster = manifests.filter((m) => /#EXT-X-STREAM-INF/i.test(m.body || '')).length;
+    const mSubs = manifests.filter((m) => /#EXTINF/i.test(m.body || '') && /\.vtt|\.webvtt/i.test(m.body || '')).length;
+    const mBytes = manifests.reduce((a, m) => a + (m.bytes || 0), 0);
+    L.push(`  其中 master ${mMaster} 份、字幕清單 ${mSubs} 份、共 ${(mBytes / 1024).toFixed(0)} KB`
+      + (subtitlePlaylistUrl ? '（已取得清單，內容已釋放）' : ''));
     L.push(`PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）`);
     L.push('');
     L.push('──── 整軌預抓（決定成本與拖進度條會不會漏）────');
@@ -1686,7 +1702,7 @@
     // ---- 內部狀態 ----
     detect: () => detect,                 // 偵測來源統計（observer vs 輪詢）
     batches: () => batchStats,            // 每個批次的句數與耗時
-    manifests: () => manifests.map((m) => ({ url: m.url, bytes: m.body.length })),
+    manifests: () => manifests.map((m) => ({ url: m.url, bytes: m.bytes, held: !!m.body })),
     memo: () => memo,
     pending: () => Array.from(pending.values()),
     settings: () => settings,
