@@ -13,7 +13,7 @@
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.7.2 |
 | `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.4 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.3.5 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.4.0 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -71,7 +71,7 @@
 
 | | userscript | extension |
 |---|---|---|
-| 1 | 整軌預抓（重播） | — |
+| 1 | 整軌預抓 | **整軌預抓**（v0.4.0 補上，入口是 worker 攔到的 m3u8，不是 PLAY API） |
 | 2 | Worker 注入即時攔截 | **Worker 注入**（MAIN world） |
 | 3 | DOM 逐句翻譯 | DOM 逐句翻譯 |
 

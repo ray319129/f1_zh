@@ -52,7 +52,7 @@
   const state = {
     bundleCount: 0, translated: 0, misses: 0, errors: 0,
     playlistSegs: 0, segFetched: 0, segFailed: 0, prefetched: 0,
-    workerPatched: 0, workerVtt: 0, prefetchAnnounced: false,
+    workerPatched: 0, workerVtt: 0, manifests: 0, prefetchAnnounced: false,
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -115,30 +115,6 @@
     } catch (e) { /* 不影響主要功能 */ }
   }
 
-  /**
-   * 找出播放器自己發過的 PLAY 請求網址，原封不動沿用。
-   *
-   * 自己拼參數踩過兩個坑：
-   *   - 少了 channelId → 500 "Failed to evaluate stream rule"
-   *   - 而 F1TV 有 Imperva 機器人防護（reese84 cookie），
-   *     反覆試錯的請求會開始被擋（Failed to fetch）
-   *
-   * 播放器的網址一定是完整且合法的，重放它比猜參數可靠得多，
-   * 也把請求次數壓到最低。
-   */
-  function findPlayApiUrl(cid) {
-    try {
-      const entries = performance.getEntriesByType('resource');
-      let fallback = null;
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const n = entries[i].name;
-        if (!/\/CONTENT\/PLAY\?/i.test(n)) continue;
-        if (cid && n.indexOf('contentId=' + cid) !== -1) return n;   // 正好是這支影片
-        if (!fallback) fallback = n;
-      }
-      return fallback;
-    } catch (e) { return null; }
-  }
 
   function currentContentId() {
     if (site && site.contentIdPattern) {
@@ -433,17 +409,24 @@
   function render(zh, en) { show(zh, en, false); }
 
   // =========================================================================
-  // 預抓 —— 擴充功能能不能跟上語速的關鍵
+  // 預抓 —— 決定「跟不跟得上」與「要花多少錢」
   //
-  // 只讀 DOM 的話提前量是 0：字幕出現在畫面上我們才知道有這句，
-  // 翻譯來回 1~3 秒，而轉播每 3~4 秒一句，永遠追不上。
+  // 兩個層次，不要混為一談：
   //
-  // 但播放器本來就會**提前約 50 秒**下載字幕分段。只要我們也拿得到那些分段，
-  // 就等於拿回同樣的提前量。userscript 是靠注入 Worker 攔截，
-  // 擴充功能不需要——master 網址本來就來自主執行緒的 PLAY API，
-  // 而我們有 host_permissions，可以自己發同一個請求。
+  // 【提前量】只讀 DOM 的話是 0：字幕出現在畫面上我們才知道有這句，翻譯來回
+  //   1~3 秒，而轉播每 3~4 秒一句，永遠追不上。但播放器本來就會**提前約 50 秒**
+  //   下載字幕分段——inject.js 在 worker 內攔到那些分段，提前量就回來了。
+  //   這一層在 v0.3.0 就完成了。
   //
-  //   PLAY API → master m3u8 → 字幕清單 → VTT 分段 → 批次翻譯 → 存進快取
+  // 【整軌覆蓋】worker 只給得到「播放器已經下載的」部分。所以第一個看的人仍要
+  //   為整支影片付翻譯費，而且拖動進度條會跳到還沒攔到的區段。整軌預抓則是
+  //   一次把整支翻完：之後零呼叫、100% 命中，並且把譯文灌滿共用快取。
+  //   這一層是 v0.4.0 補上的。
+  //
+  //   攔到的 manifest → 字幕清單 → 全部 VTT 分段 → 批次翻譯 → 存進共用快取
+  //
+  // 入口不是 PLAY API（八個版本都不通，見 handoff 7.7），而是 worker 本來就會
+  // 抓的 m3u8。搭便車，零額外請求——F1TV 有 Imperva 機器人防護，這點很重要。
   //
   // 重播：一次抓完整支。直播：滑動視窗，定期重抓補新分段。
   // =========================================================================
@@ -451,172 +434,13 @@
   const FETCH_GAP_MS = 60;
   const LIVE_REFRESH_MS = 20000;
 
-  // PLAY API 那條路已停用：header 名稱、權杖、URL 參數全部解決之後，
-  // 即使原封不動重放播放器自己的網址，伺服器仍回 500
-  // "Failed to evaluate stream rule"——還缺無法窮舉的裝置／平台 header。
-  // 改用 MAIN world 的 worker 注入取得提前量（見 inject.js）。
-  // 設為 true 可重新啟用那條路做比對。
-  const USE_PLAY_API = false;
-
   let harvestGen = 0;
   let harvestInFlight = false;
   let subtitlePlaylistUrl = null;
+  let prefetchHow = '';               // 字幕清單是怎麼拿到的，診斷用
   const seenSegments = new Set();     // 已抓過的分段網址，直播重抓時用來去重
   const prefetchSeen = new Set();     // 已排入翻譯的 normKey
   let liveTimer = null;
-
-  // -------------------------------------------------------------------------
-  // 授權權杖
-  //
-  // PLAY API 回：「Missing parameter Ascendon Token or Entitlement Token or
-  // Access Token」——光有 cookies 不夠，還要帶授權 header。
-  //
-  // 關鍵事實：content script 雖然跑在 ISOLATED world，但 localStorage 是依
-  // **來源**隔離的，不是依 world。所以我們讀得到 F1TV 存的登入資訊。
-  //
-  // ⚠️ 權杖值**絕對不可以**寫進診斷報告——那份報告是要貼給別人看的。
-  //    只記錄鍵名與長度。
-  // -------------------------------------------------------------------------
-  // 欄位名優先序：越前面越像我們要的那個
-  const TOKEN_FIELD_HINT = /subscriptionToken|ascendon|entitlement|accessToken|access_token|idToken|\btoken\b|jwt/i;
-
-  // 這些來源只會製造雜訊。ABTastyData 實測有 18,065 字元的 A/B 測試資料，
-  // 裡面一堆長字串會被誤判成權杖，把真正的 cookie 權杖擠出候選清單。
-  const NOISE_KEY = /^(NRBA_|nr@|_ga|_gid|OptanonC|__utm|amplitude|mp_|ajs_|ABTasty|sp_|_sp_|ClearVR|reese84|consent|_rdt|_sfid|_evga|loglevel|isFirstRendering)/i;
-
-  /**
-   * 值必須能當成 HTTP header 送出去。
-   *
-   * 實測踩到兩次：把整包 JSON（`{"data":{…}}`）當 header 值送，
-   * Chrome 直接拒絕整個請求（Failed to fetch）；把還帶 %2F 的
-   * URL-encoded 字串送出去，伺服器解 JWT 失敗回 500。
-   * 兩者都不是認證問題，是格式問題。
-   */
-  function isHeaderSafe(v) {
-    if (typeof v !== 'string' || v.length < 20 || v.length > 8000) return false;
-    if (/^[[{]/.test(v.trim())) return false;              // JSON 物件／陣列
-    if (/%[0-9A-Fa-f]{2}/.test(v)) return false;           // 還沒解碼的 URL-encoding
-    return /^[\x21-\x7E]+$/.test(v);                       // 只允許可列印 ASCII、不含空白
-  }
-
-  /** 來源可信度評分：越高越可能是真正的授權權杖 */
-  function tokenScore(src) {
-    let s = 10;
-    if (/subscriptionToken/i.test(src)) s = 100;
-    else if (/entitlement/i.test(src)) s = 95;
-    else if (/login-session/i.test(src)) s = 90;
-    else if (/ascendon/i.test(src)) s = 85;
-    else if (/^cookie:/i.test(src)) s = 50;
-    else if (/\/token$|\/jwt$/i.test(src)) s = 30;
-    if (/\(decoded\)/i.test(src)) s += 3;                  // 解碼後的版本才是能用的
-    return s;
-  }
-  let authTokenCache = null;
-  let authSources = [];            // 只記錄「來源:鍵名(長度)」，絕不記錄值
-  let authBestHeader = null;       // 伺服器確實讀到的那個 header 名稱
-  let authRejected = 0;            // 因為不能當 header 值而被剔除的候選數
-  let authPlayUrlFound = false;    // 是否找到播放器自己的 PLAY 網址可沿用
-
-  /** JWT 或夠長的無空白字串才可能是權杖 */
-  function looksLikeToken(s) {
-    if (typeof s !== 'string') return false;
-    if (/\s/.test(s)) return false;
-    if (/^ey[A-Za-z0-9_-]+\./.test(s)) return true;    // JWT
-    return s.length >= 40;
-  }
-
-  let srcTag = '?';
-  function harvestStrings(obj, out, depth) {
-    depth = depth || 0;
-    if (depth > 6 || obj == null || out.length > 60) return;
-    if (typeof obj === 'string') {
-      if (looksLikeToken(obj)) out.push({ v: obj, src: srcTag });
-      // 值本身可能又是一層 JSON 或 URL-encoded JSON
-      if (obj.length > 20 && /[{%]/.test(obj)) {
-        try { harvestStrings(JSON.parse(decodeURIComponent(obj)), out, depth + 1); } catch (e) { /* noop */ }
-      }
-      return;
-    }
-    if (typeof obj !== 'object') return;
-    for (const [k, v] of Object.entries(obj)) {
-      // 欄位名命中提示詞的優先排到最前面
-      if (typeof v === 'string' && looksLikeToken(v) && TOKEN_FIELD_HINT.test(k)) {
-        out.unshift({ v, src: srcTag + '/' + k }); continue;
-      }
-      harvestStrings(v, out, depth + 1);
-    }
-  }
-
-  function scanStore(store, label, out) {
-    let keys = [];
-    try { keys = Object.keys(store); } catch (e) { return; }
-    for (const key of keys) {
-      if (NOISE_KEY.test(key)) continue;
-      let raw = '';
-      try { raw = store.getItem(key) || ''; } catch (e) { continue; }
-      if (!raw) continue;
-      authSources.push(`${label}:${key}(${raw.length})`);
-      srcTag = `${label}:${key}`;
-      try { harvestStrings(JSON.parse(raw), out); }
-      catch (e) { harvestStrings(raw, out); }
-    }
-  }
-
-  /**
-   * 從三個來源找授權權杖。
-   *
-   * 上一輪只掃「鍵名含 token/session」的 localStorage，結果一無所獲——
-   * F1TV 把登入資訊放在 **cookie**（慣例是 login-session，內含
-   * URL-encoded JSON 的 subscriptionToken），播放器讀出來再放進 header。
-   * `credentials:'include'` 雖然會送 cookie，但伺服器要的是 header，所以照樣 400。
-   *
-   * 這次不做鍵名過濾，改成掃全部再用「值長得像不像權杖」判斷。
-   * HttpOnly 的 cookie 讀不到，由 SW 用 chrome.cookies 補。
-   */
-  async function findAuthTokens() {
-    if (authTokenCache) return authTokenCache;
-    const out = [];
-    authSources = [];
-
-    // 先掃 cookie —— 真正的授權權杖在這裡，不能被 localStorage 的雜訊擠掉
-    try {
-      for (const part of document.cookie.split(';')) {
-        const i = part.indexOf('=');
-        if (i < 0) continue;
-        const name = part.slice(0, i).trim();
-        const val = part.slice(i + 1).trim();
-        if (!name || !val || NOISE_KEY.test(name)) continue;
-        authSources.push(`CK:${name}(${val.length})`);
-        srcTag = `cookie:${name}`;
-        harvestStrings(decodeURIComponent(val), out);
-      }
-    } catch (e) { /* noop */ }
-
-    // HttpOnly 的 cookie 只有 SW 拿得到
-    const ck = await send({ type: 'getCookieTokens' });
-    if (ck.ok && ck.tokens) {
-      out.push(...ck.tokens);
-      authSources.push(...(ck.names || []).map((n) => `CK*:${n}`));
-    }
-
-    scanStore(localStorage, 'LS', out);
-    scanStore(sessionStorage, 'SS', out);
-
-    // 依來源可信度排序後才截斷。
-    // 之前是「先進先出再 slice(12)」，結果 localStorage 的雜訊佔滿名額
-    // （ABTastyData 一個就 18KB），後掃到的 cookie 權杖全被切掉——
-    // 實測嘗試清單裡一個 cookie 來源都沒有。
-    const seen = new Set();
-    const all = out.filter((t) => (t && t.v && !seen.has(t.v)) ? (seen.add(t.v), true) : false);
-    const usable = all.filter((t) => isHeaderSafe(t.v));
-    authTokenCache = usable
-      .sort((a, b) => tokenScore(b.src || '') - tokenScore(a.src || ''))
-      .slice(0, 12);
-    authRejected = all.length - usable.length;
-    evInfo(`授權權杖探索：掃過 ${authSources.length} 個來源，取得 ${authTokenCache.length} 個可用候選` +
-      (authRejected ? `（另有 ${authRejected} 個因格式不合被剔除）` : ''));
-    return authTokenCache;
-  }
 
   async function swFetchText(url) {
     const res = await send({ type: 'fetchText', url });
@@ -639,6 +463,54 @@
     if (!best) return null;
     try { return { url: new URL(best.uri, masterUrl).href, lang: best.lang }; }
     catch (e) { return null; }
+  }
+
+  /**
+   * 從 worker 攔到的 manifest 找出字幕清單。這是整軌預抓的入口。
+   *
+   * 兩條路徑，順序有意義：
+   *   1. 直接攔到字幕的 media playlist —— 最穩。網址原封不動、body 已經在手上，
+   *      連 fetch 都不用，也沒有相對路徑解析出錯的風險。
+   *   2. 從 master 的 #EXT-X-MEDIA:TYPE=SUBTITLES 解析 —— 備援。
+   *
+   * 兩條都由 userscript 實測驗證過（見 userscript 的 findSubtitlePlaylist）。
+   * 由新到舊掃，因為換畫質／換影片會留下舊的 manifest。
+   */
+  function findSubtitlePlaylistFromObserved() {
+    for (let i = manifests.length - 1; i >= 0; i--) {
+      const m = manifests[i];
+      if (/#EXTINF/i.test(m.body) && /\.vtt|\.webvtt/i.test(m.body)) {
+        return { url: m.url, body: m.body, lang: 'eng', how: '直接攔到字幕清單' };
+      }
+    }
+    for (let i = manifests.length - 1; i >= 0; i--) {
+      const m = manifests[i];
+      if (!/#EXT-X-STREAM-INF/i.test(m.body)) continue;
+      const sp = findSubtitlePlaylist(m.body, m.url);
+      if (sp) return { url: sp.url, body: null, lang: sp.lang, how: '由 master 解析' };
+    }
+    return null;
+  }
+
+  /**
+   * 等 worker 攔到字幕清單。
+   *
+   * 不自己去猜網址、也不打 PLAY API——那條路試過八個版本都不通，而且 F1TV 有
+   * Imperva 機器人防護，送出注定失敗的請求只是在累積風險。
+   * 播放器自己一定會抓，我們等它就好。
+   */
+  function waitForSubtitlePlaylist(myGen) {
+    return new Promise((resolve) => {
+      let tries = 0;
+      const tick = () => {
+        if (myGen !== harvestGen) return resolve(null);
+        const sp = findSubtitlePlaylistFromObserved();
+        if (sp) return resolve(sp);
+        if (++tries >= 45) return resolve(null);      // 最多等 45 秒
+        setTimeout(tick, 1000);
+      };
+      tick();
+    });
   }
 
   function parseMediaPlaylist(body, baseUrl) {
@@ -736,6 +608,14 @@
           setPhase('前瞻預譯中');
           evOk('✅ 從播放器的字幕分段取得提前量，開始批次預譯');
         }
+        return;
+      }
+      if (d.kind === 'manifest' && typeof d.manifest === 'string') {
+        if (manifests.some((m) => m.url === d.url)) return;   // 同一份會重覆抓
+        manifests.push({ url: d.url || '', body: d.manifest });
+        if (manifests.length > MANIFEST_MAX) manifests.shift();
+        state.manifests = manifests.length;
+        return;
       }
     }, false);
   }
@@ -795,83 +675,49 @@
   }
 
   /**
-   * 等播放器自己發出 PLAY 請求。
+   * 整軌預抓。
    *
-   * 之前是啟動後 0.6 秒就去找，那時播放器根本還沒發——找不到就退回
-   * 自己拼的網址，結果三次全部 500（缺 channelId），而且都白白打在
-   * 有 Imperva 機器人防護的 API 上。
+   * 為什麼這件事值得做：worker 攔截給的是「播放器已經下載的」分段，也就是約
+   * 50 秒的提前量——夠跟上語速，但**第一次看的人仍要為整支影片付翻譯費**，
+   * 而且拖動進度條會跳到還沒攔到的區段。整軌預抓則是一次把整支翻完，
+   * 之後零呼叫、100% 命中，並且把譯文灌滿共用快取讓所有後續觀看者受惠。
    *
-   * 寧可多等幾秒，也不要送出一個注定失敗的請求。
+   * 入口從哪來：**不打 PLAY API**（八個版本都不通，見 7.7；而且 F1TV 有
+   * Imperva 機器人防護）。改用 worker 攔到的 manifest——播放器自己一定會抓，
+   * 我們搭便車，零額外請求。
    */
-  function waitForPlayApiUrl(cid, myGen) {
-    return new Promise((resolve) => {
-      let tries = 0;
-      const tick = () => {
-        if (myGen !== harvestGen) return resolve(null);
-        const u = findPlayApiUrl(cid);
-        if (u) return resolve(u);
-        if (++tries >= 40) return resolve(null);        // 最多等 40 秒
-        setTimeout(tick, 1000);
-      };
-      tick();
-    });
-  }
-
-  /**
-   * PLAY API 這條路已停用（見 inject.js 的說明）。
-   * 現在的提前量來自 MAIN world 注入 worker 後轉送回來的 VTT。
-   * 保留這個函式是為了在 CFG.usePlayApi 打開時還能重跑那條路做比對。
-   */
-  async function startPrefetch(cid) {
-    if (!USE_PLAY_API) return;
-    if (harvestInFlight || !cid) return;
-    harvestInFlight = true;
+  async function startPrefetch(cid, attempt) {
+    if (!cid) return;
     const myGen = harvestGen;
-    setPhase('等待播放器取得串流位址');
+
+    // 上一支影片的收割可能還在收尾（等待階段最長 45 秒，切換影片時要等它讀到
+    // 世代已變才會退出）。直接 return 會讓新影片**永遠沒有整軌預抓**，
+    // 所以改成稍後重試。上限是鐵則 #3：任何輪詢裡的重試都要有上限。
+    if (harvestInFlight) {
+      const n = (attempt || 0) + 1;
+      if (n > 30) { evWarn('前一次收割遲遲未釋放，放棄整軌預抓'); return; }
+      setTimeout(() => { if (myGen === harvestGen) startPrefetch(cid, n); }, 1500);
+      return;
+    }
+
+    harvestInFlight = true;
+    setPhase('等待字幕清單');
     try {
-      const playUrl = await waitForPlayApiUrl(cid, myGen);
-      authPlayUrlFound = !!playUrl;
+      const sp = await waitForSubtitlePlaylist(myGen);
       if (myGen !== harvestGen) return;
-      if (!playUrl) {
-        evWarn('等待 40 秒仍未觀察到播放器的 PLAY 請求。'
-          + '不自行拼接網址送出——缺 channelId 必定 500，且會無謂觸發機器人防護。');
-        setPhase('逐句模式');
+      if (!sp) {
+        evWarn('等待 45 秒仍未從播放器攔到字幕清單，略過整軌預抓。'
+          + '仍會用 worker 攔到的分段運作（有提前量，只是沒有整軌覆蓋）。');
+        setPhase('前瞻預譯中');
         return;
       }
-      setPhase('取得串流位址');
-      evInfo('沿用播放器自己的 PLAY 網址（參數完整，不用猜）');
-      const tokens = await findAuthTokens();
-      const pb = (await send({ type: 'resolvePlayback', cid, tokens, playUrl })).playback || {};
-      if (!pb.ok || !pb.master) {
-        const NL = String.fromCharCode(10);
-        evWarn('取不到串流位址（HTTP ' + (pb.status || '?') + '）'
-          + '，已試 ' + (pb.attemptsMade || 0) + ' 種組合（' + (pb.tokensTried || 0) + ' 個候選權杖）'
-          + (pb.tried && pb.tried.length
-              ? NL + '    嘗試過的配對：' + NL + '      ' + pb.tried.join(NL + '      ')
-              : '')
-          + (pb.topKeys && pb.topKeys.length ? NL + '    回應欄位：' + pb.topKeys.join(', ') : '')
-          + (pb.hint ? NL + '    伺服器回應：' + pb.hint : ''));
-        if (pb.best) {
-          authBestHeader = pb.best.headerNames.join(' + ');
-          evWarn(`✔ header 名稱正確：${pb.best.headerNames.join(' + ')}（HTTP ${pb.best.status}）
-` +
-            `    伺服器已讀到權杖但不接受 → 值有問題（可能是舊的，或播放器另外換發）
-` +
-            `    ${pb.best.msg}`);
-        }
-        evWarn('退回逐句即時翻譯（會跟不上語速）。請把診斷報告貼給開發者。');
-        setPhase('逐句模式');
-        return;
-      }
-      evOk(`取得串流位址（授權 header：${pb.usedHeader}）`);
+      evOk(`✅ 取得字幕清單（${sp.how}）`);
 
       setPhase('讀取字幕清單');
-      const masterBody = await swFetchText(pb.master);
-      const sp = findSubtitlePlaylist(masterBody, pb.master);
-      if (!sp) { evWarn('master 裡找不到字幕軌'); setPhase('逐句模式'); return; }
-
+      prefetchHow = sp.how;
       subtitlePlaylistUrl = sp.url;
-      const body = await swFetchText(sp.url);
+      // 路徑 1 已經連 body 都攔到了，不用再發一次請求
+      const body = sp.body || await swFetchText(sp.url);
       const { segs, isVod } = parseMediaPlaylist(body, sp.url);
       state.playlistSegs = segs.length;
       state.isLive = !isVod;
@@ -898,8 +744,10 @@
         liveTimer = setTimeout(() => refreshLive(myGen), LIVE_REFRESH_MS);
       }
     } catch (e) {
-      evErr(`預抓失敗：${e.message}`);
-      setPhase('逐句模式');
+      // 預抓失敗不等於沒字幕——worker 攔截仍在跑，提前量還在。
+      // 只是少了整軌覆蓋（拖進度條會遇到沒翻過的區段）。
+      evErr(`整軌預抓失敗：${e.message}。改用 worker 攔到的分段繼續運作`);
+      setPhase('前瞻預譯中');
     } finally {
       harvestInFlight = false;
     }
@@ -964,6 +812,10 @@
     clearTimeout(liveTimer);
     subtitlePlaylistUrl = null;
     seenSegments.clear(); prefetchSeen.clear();
+    // ⚠️ manifest 一定要清。留著的話新影片會拿上一支的字幕清單去抓，
+    //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
+    manifests = [];
+    state.manifests = 0;
     state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
     state.isLive = false; state.harvestDone = false;
 
@@ -1072,24 +924,21 @@
     L.push(`目前抓到　：${collectCaption() || '(空)'}`);
     L.push(`曾看到字幕：${everSawCaption ? '是' : '否'}`);
     L.push('');
-    L.push('──── 授權（PLAY API 需要）────');
-    L.push(`掃過的來源（LS=localStorage SS=sessionStorage CK=cookie CK*=HttpOnly cookie）：`);
-    L.push(authSources.length ? '  ' + authSources.join('\n  ') : '  (尚未掃描)');
-    L.push(`候選權杖數　：${authTokenCache ? authTokenCache.length : 0}　※ 報告不含任何權杖內容`);
-    L.push(`候選來源（依可信度排序）：${authTokenCache && authTokenCache.length
-      ? authTokenCache.map((t) => t.src).join(' | ') : '(無)'}`);
-    L.push(`格式不合被剔除：${authRejected} 個`);
-    L.push(`觀察到播放器的 PLAY 網址：${authPlayUrlFound ? '是（參數完整，已沿用）' : '否（不送出請求，維持逐句模式）'}`);
-    L.push(`正確的 header：${authBestHeader || '(尚未確認)'}`);
-    L.push('');
     L.push('──── 提前量來源：Worker 注入 ────');
     L.push(`已注入 Worker：${state.workerPatched} 個`);
     L.push(`收到的 VTT 分段：${state.workerVtt} 份`);
-    L.push(`PLAY API 路徑：${USE_PLAY_API ? '啟用' : '已停用（八輪未通，改用 Worker 注入）'}`);
+    L.push(`攔到的 manifest：${state.manifests} 份（整軌預抓的入口）`);
+    // 分類一下，找不到字幕清單時這行會直接說明卡在哪
+    const mMaster = manifests.filter((m) => /#EXT-X-STREAM-INF/i.test(m.body)).length;
+    const mSubs = manifests.filter((m) => /#EXTINF/i.test(m.body) && /\.vtt|\.webvtt/i.test(m.body)).length;
+    L.push(`  其中 master ${mMaster} 份、字幕清單 ${mSubs} 份`);
+    L.push(`PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）`);
     L.push('');
-    L.push('──── 預抓（決定跟不跟得上語速）────');
+    L.push('──── 整軌預抓（決定成本與拖進度條會不會漏）────');
     L.push(`型態　　　：${state.isLive ? '直播（滑動視窗）' : '重播'}`);
-    L.push(`字幕清單　：${subtitlePlaylistUrl ? subtitlePlaylistUrl.slice(0, 120) : '(尚未取得)'}`);
+    L.push(`清單來源　：${prefetchHow || '(尚未取得)'}`);
+    // 網址完整輸出，不截斷——坑 #3 就是截斷造成的，要能一眼看出 token 有沒有被切掉
+    L.push(`字幕清單　：${subtitlePlaylistUrl || '(尚未取得)'}`);
     L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
     L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
     L.push('');

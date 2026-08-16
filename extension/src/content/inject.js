@@ -40,13 +40,21 @@
     function emit(t,u){
       try{
         if(!t || typeof t!=='string') return;
-        if(t.indexOf('-->')!==-1) send({vtt:t, url:String(u||'').slice(0,300)});
+        // ⚠️ 網址絕不截斷。F1TV 的 master m3u8 路徑帶著很長的 base64 授權
+        //    token，切掉之後相對路徑解析會把整段 token 吃掉，抓分段一律 400。
+        //    （userscript 坑 #3，這裡曾經寫成 slice(0,300)）
+        var url=String(u||'');
+        if(t.indexOf('-->')!==-1){ send({vtt:t, url:url}); return; }
+        // m3u8／MPD：整軌預抓的來源。master 裡的 #EXT-X-MEDIA:TYPE=SUBTITLES
+        // 指向字幕清單，那份清單列出整支影片每一個 VTT 分段。
+        // 600000 是踩過坑 #7 之後的值——兩小時正賽的字幕清單有上千段。
+        if(/#EXTM3U|<MPD/i.test(t.slice(0,400))) send({manifest:t.slice(0,600000), url:url});
       }catch(e){}
     }
     // 只碰小的、文字類的回應。絕不 clone 影片分段。
     function interesting(url,ct,len){
       if(/text|vtt/i.test(ct||'')) return true;
-      if(/\\.vtt|\\.webvtt|subtitle|caption|\\bsub\\b/i.test(String(url||''))) return true;
+      if(/\\.vtt|\\.webvtt|\\.m3u8|\\.mpd|subtitle|caption|\\bsub\\b/i.test(String(url||''))) return true;
       var n=parseInt(len||'0',10);
       return n>0 && n<300000;
     }
@@ -131,17 +139,25 @@
   }
 
   /**
-   * worker 用 BroadcastChannel 把 VTT 送回來。
+   * worker 用 BroadcastChannel 把攔到的東西送回來。
    * 這裡（MAIN world）再用 window.postMessage 轉給 ISOLATED world 的主程式——
    * 那邊才有 chrome.* API 可以呼叫 service worker。
+   *
+   * 兩種內容：
+   *   vtt      —— 播放器提前約 50 秒下載的字幕分段，提前量的來源
+   *   manifest —— m3u8／MPD，整軌預抓的來源（見 main.js 的 findSubtitlePlaylist）
    */
   function installRelay() {
     try {
       const bc = new BroadcastChannel(CHANNEL);
       bc.onmessage = (ev) => {
         const d = ev && ev.data;
-        if (!d || typeof d.vtt !== 'string') return;
-        window.postMessage({ [MARK]: true, kind: 'vtt', vtt: d.vtt, url: d.url || '' }, '*');
+        if (!d) return;
+        if (typeof d.vtt === 'string') {
+          window.postMessage({ [MARK]: true, kind: 'vtt', vtt: d.vtt, url: d.url || '' }, '*');
+        } else if (typeof d.manifest === 'string') {
+          window.postMessage({ [MARK]: true, kind: 'manifest', manifest: d.manifest, url: d.url || '' }, '*');
+        }
       };
     } catch (e) { /* noop */ }
   }

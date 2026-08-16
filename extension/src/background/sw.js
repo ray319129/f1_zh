@@ -132,217 +132,20 @@ async function translateLines(cid, lines) {
 // 那正是 userscript 跟得上而擴充功能跟不上的原因。
 // ---------------------------------------------------------------------------
 
-/** 純文字抓取（m3u8 / vtt）。帶上使用者的 session。 */
+/**
+ * 純文字抓取（m3u8 / vtt）。帶上使用者的 session。
+ *
+ * 這是整軌預抓唯一需要的網路能力：字幕清單的位址由 content script 從
+ * worker 攔到的 manifest 取得，這裡只負責把它抓下來（CDN 是跨來源，
+ * content script 自己 fetch 會被 CORS 擋）。
+ *
+ * PLAY API 那整套（權杖掃描、header 組合、cookie 讀取）已於 v0.4.0 移除——
+ * 八個版本都沒通，而且新的預抓入口根本不需要授權。
+ */
 async function fetchText(url) {
   const res = await fetch(url, { credentials: 'include' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
-}
-
-/**
- * 呼叫 F1TV 的播放 API 取得串流網址。
- * 這是播放器自己也會發的同一個請求，用的是使用者已登入的 session。
- *
- * ⚠️ 回應的 JSON 結構我尚未實地確認，所以這裡用「遞迴找出第一個 .m3u8 網址」
- *    的方式解析，而不是寫死欄位名。同時把頂層鍵名記下來供診斷用。
- */
-function deepFindM3u8(obj, depth) {
-  depth = depth || 0;
-  if (depth > 6 || obj == null) return null;
-  if (typeof obj === 'string') return /\.m3u8/i.test(obj) ? obj : null;
-  if (typeof obj !== 'object') return null;
-  for (const v of Array.isArray(obj) ? obj : Object.values(obj)) {
-    const hit = deepFindM3u8(v, depth + 1);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-/**
- * 讀取 f1tv/formula1 網域的 cookie 找授權權杖。
- *
- * 為什麼需要 cookies 權限：F1TV 把登入資訊放在 cookie，而其中最關鍵的那些
- * 通常是 HttpOnly——網頁的 document.cookie 讀不到，只有擴充功能的
- * chrome.cookies API 拿得到。
- *
- * ⚠️ 只回傳權杖字串本身供 API 呼叫使用，以及**鍵名**供診斷。
- *    值永遠不會出現在診斷報告裡。
- */
-function pickTokens(text, out, src) {
-  if (typeof text !== 'string') return;
-  // 記下每個候選的「出處」。伺服器分別驗證 ascendontoken 與 entitlementtoken，
-  // 代表它們是兩個不同的權杖，必須各自配對正確的來源，不能亂試。
-  const push = (s, tag) => {
-    if (typeof s !== 'string' || /\s/.test(s)) return;
-    if (/^ey[A-Za-z0-9_-]+\./.test(s) || s.length >= 40) out.push({ v: s, src: tag || src });
-  };
-  push(text);
-
-  // Cookie 值多半是 URL-encoded。之前只 push 了原始字串，
-  // 而解碼後的版本只在「能 JSON.parse」時才會被處理——
-  // 對 entitlement_token 這種「URL-encoded 的 JWT」來說，
-  // 真正該送出去的解碼後字串從來沒進過候選清單。
-  try {
-    const dec = decodeURIComponent(text);
-    if (dec !== text) push(dec, src + '(decoded)');
-  } catch (e) { /* 不是合法的 encoding */ }
-
-  try {
-    const obj = JSON.parse(decodeURIComponent(text));
-    const walk = (o, d) => {
-      if (d > 6 || o == null) return;
-      if (typeof o === 'string') { push(o); return; }
-      if (typeof o !== 'object') return;
-      for (const [k, v] of Object.entries(o)) {
-        if (typeof v === 'string' && /subscriptionToken|ascendon|entitlement|accessToken|access_token|\btoken\b/i.test(k)) {
-          // 欄位名就是最精確的出處線索，排到最前面
-          if (!/\s/.test(v) && v.length >= 20) out.unshift({ v, src: src + '/' + k });
-          continue;
-        }
-        walk(v, d + 1);
-      }
-    };
-    walk(obj, 0);
-  } catch (e) { /* 不是 JSON 就算了 */ }
-}
-
-async function getCookieTokens() {
-  if (!chrome.cookies || !chrome.cookies.getAll) return { tokens: [], names: [] };
-  const out = [];
-  const names = [];
-  for (const domain of ['f1tv.formula1.com', 'formula1.com', '.formula1.com']) {
-    let cookies = [];
-    try { cookies = await chrome.cookies.getAll({ domain }); } catch (e) { continue; }
-    for (const c of cookies) {
-      if (!c.value || /^(_ga|_gid|OptanonC|__utm|NRBA_|ABTasty|reese84|consent|_rdt|_sfid|_evga|sp_)/i.test(c.name)) continue;
-      const before = out.length;
-      pickTokens(c.value, out, 'cookie:' + c.name);
-      if (out.length > before) names.push(`${c.name}(${c.value.length})`);
-    }
-  }
-  // 依 value 去重，保留第一個（出處最精確的那個）
-  const seen = new Set();
-  const uniq = out.filter((t) => (seen.has(t.v) ? false : (seen.add(t.v), true)));
-  return { tokens: uniq.slice(0, 12), names: Array.from(new Set(names)) };
-}
-
-/**
- * 建立「依出處精準配對」的嘗試清單。
- *
- * 實測發現伺服器**分別**驗證兩個權杖，各自回報自己的錯誤：
- *   ascendontoken     → "AscendonToken signature validation failed"
- *   entitlementtoken  → "EntitlementToken signature validation failed"
- *
- * 代表它們是兩個不同的權杖，各有各的來源：
- *   ascendontoken     ← login-session cookie 裡的 subscriptionToken
- *   entitlementtoken  ← entitlement_token cookie
- *
- * 先前的「合併」變體把**同一個值**塞進兩個 header，那組合注定失敗；
- * 而盲目排列組合又會產生數十次無效請求（實測 60 次、74 秒）。
- * 依出處配對後只剩個位數次嘗試。
- */
-function buildAttempts(tokens) {
-  const pick = (re) => tokens.filter((t) => re.test(t.src || ''));
-  const asc = pick(/subscriptionToken|login-session|ascendon/i);
-  const ent = pick(/entitlement/i);
-  const rest = tokens.filter((t) => !asc.includes(t) && !ent.includes(t));
-  const A = [];
-
-  // 1) 兩個一起送，各用各的來源 —— 最可能正確的組合
-  for (const a of asc.slice(0, 2)) {
-    for (const e of ent.slice(0, 2)) {
-      A.push({
-        headers: { ascendontoken: a.v, entitlementtoken: e.v },
-        label: `ascendon←${a.src} + entitlement←${e.src}`,
-      });
-    }
-  }
-  // 2) 各自單獨送
-  for (const a of asc.slice(0, 2)) A.push({ headers: { ascendontoken: a.v }, label: `ascendontoken←${a.src}` });
-  for (const e of ent.slice(0, 2)) A.push({ headers: { entitlementtoken: e.v }, label: `entitlementtoken←${e.src}` });
-  // 3) 兜底：出處不明的候選
-  for (const t of rest.slice(0, 3)) {
-    A.push({ headers: { ascendontoken: t.v }, label: `ascendontoken←${t.src}` });
-  }
-  // 不再試「不帶 header」——之前的回合已經確認那必定是 400，
-  // 白白多打一次受機器人防護的 API。
-  return A.slice(0, 4);
-}
-
-async function tryPlay(url, headers) {
-  const res = await fetch(url, { credentials: 'include', headers: headers || {} });
-  const text = await res.text();
-  let data = null;
-  try { data = JSON.parse(text); } catch (e) { /* 非 JSON */ }
-  const master = data ? deepFindM3u8(data) : null;
-  return { status: res.status, ok: res.ok && !!master, master, text, data };
-}
-
-async function resolvePlayback(cid, tokens, playUrl) {
-  // 優先沿用播放器自己發過的網址：參數（channelId 等）一定完整。
-  // 自己拼的話少一個 channelId 就會拿到 500 "Failed to evaluate stream rule"。
-  // 只接受播放器自己發過的網址。自行拼接一定缺 channelId（實測必回
-  // 500 "Failed to evaluate stream rule"），而 F1TV 有 Imperva 機器人
-  // 防護，送注定失敗的請求只是在累積風險。
-  if (typeof playUrl !== 'string'
-      || !/^https:\/\/f1tv\.formula1\.com\/[^\s]*\/CONTENT\/PLAY\?/i.test(playUrl)) {
-    return { ok: false, status: 0, noPlayUrl: true, hint: '沒有可用的 PLAY 網址，未送出任何請求' };
-  }
-  const url = playUrl;
-
-  const list = (Array.isArray(tokens) ? tokens : []).filter((t) => t && t.v);
-  const attempts = buildAttempts(list);
-
-  let last = null;
-  let best = null;        // 「最接近成功」的一次
-  const tried = [];       // 只記 label（出處名稱），不含權杖值
-  let n = 0;
-
-  for (const a of attempts) {
-    // F1TV 掛了 Imperva 機器人防護（reese84 cookie）。連續快速的重試會開始
-    // 被擋掉（表現為 Failed to fetch），所以嘗試之間留間隔，也不試太多次。
-    if (n++) await new Promise((r) => setTimeout(r, 700));
-    // 送出前再擋一次：Chrome 對含控制字元／非 ASCII 的 header 值會直接拒絕整個
-    // 請求（Failed to fetch），那不是伺服器的回應，卻很容易被誤讀成認證失敗。
-    const bad = Object.entries(a.headers).find(([, v]) => !/^[\x21-\x7E]+$/.test(String(v)));
-    if (bad) { tried.push(`${a.label} → 略過（${bad[0]} 的值不能當 header）`); continue; }
-
-    let r;
-    try { r = await tryPlay(url, a.headers); }
-    catch (e) {
-      last = { status: 0, text: String(e.message || e) };
-      tried.push(`${a.label} → 網路層失敗（${last.text}）`);
-      continue;
-    }
-    last = r;
-    // 把伺服器訊息一起記下來：500 跟 401 要看內容才知道差在哪
-    const msg = (r.data && r.data.message) ? String(r.data.message).slice(0, 90)
-              : String(r.text || '').slice(0, 90);
-    tried.push(`${a.label} → ${r.status}${msg ? ' ' + msg : ''}`);
-
-    // 錯誤訊息本身就是進度指示：
-    //   400 Missing parameter…                    → header 名稱錯，伺服器沒讀到
-    //   401 signature validation failed / expired → header 名稱對，值被拒
-    const reached = /signature|expired|invalid|ACN_3005/i.test(r.text || '');
-    if (reached && !best) {
-      best = { headerNames: Object.keys(a.headers), status: r.status, msg: String(r.text).slice(0, 160) };
-    }
-
-    if (r.ok) {
-      return { ok: true, status: r.status, master: r.master, usedHeader: a.label };
-    }
-  }
-
-  return {
-    ok: false,
-    status: last ? last.status : 0,
-    tokensTried: list.length,
-    attemptsMade: attempts.length,
-    tried,
-    topKeys: last && last.data ? Object.keys(last.data).slice(0, 20) : [],
-    hint: last ? String(last.text).slice(0, 260) : '無回應',
-    best,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -369,12 +172,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
-          break;
-        case 'getCookieTokens':
-          sendResponse(Object.assign({ ok: true }, await getCookieTokens()));
-          break;
-        case 'resolvePlayback':
-          sendResponse({ ok: true, playback: await resolvePlayback(msg.cid, msg.tokens, msg.playUrl) });
           break;
         case 'fetchText':
           try {
