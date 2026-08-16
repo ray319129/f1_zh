@@ -12,8 +12,8 @@
 | 產物 | 角色 | 版本 |
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.8.0 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.7 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.6.1 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v2.0 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.7.0 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -109,7 +109,7 @@ userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用
 ## 環境
 
 - Windows、PowerShell（Bash 工具也可用）
-- 後端：`cd backend && wrangler deploy`
+- 後端：`cd backend && wrangler deploy`。**上線後改用 `wrangler versions upload` + `wrangler versions deploy`**（按比例切流，回滾秒級）
 - 擴充功能：`chrome://extensions` → 載入未封裝項目 → `extension/`。**改 manifest 後必須按「重新載入」**
 - API key 存在 Cloudflare secrets 與 Tampermonkey `GM_setValue`，**不在程式碼裡**
 - `.gitignore` 已排除機密與 `.wrangler/`

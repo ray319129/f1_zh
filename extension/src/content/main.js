@@ -334,7 +334,7 @@
 
   function pollCaption() {
     checkPollStall();
-    if (!settings.enabled || !site) return;
+    if (!settings.enabled || !site || killed || tooOld) return;
     const cur = collectCaption();
     if (cur === lastSeenCaption) return;
     lastSeenCaption = cur;
@@ -551,7 +551,7 @@
   let hideStyleEl = null;
 
   function applyHideNative() {
-    const want = settings.enabled && settings.hideNativeCC && site && site.hideCss;
+    const want = settings.enabled && !killed && !tooOld && settings.hideNativeCC && site && site.hideCss;
     if (want && !hideStyleEl) {
       hideStyleEl = document.createElement('style');
       // 用 opacity 而非 visibility：visibility:hidden 會讓文字讀不到（坑 #1），
@@ -629,7 +629,7 @@
   }
 
   function show(zhText, enText, isPending) {
-    if (!settings.enabled) return;
+    if (!settings.enabled || killed || tooOld) return;
     clearTimeout(clearTimer);          // 新句子來了，取消待執行的收起
     mount(); reposition();
     zhEl.textContent = zhText;
@@ -799,6 +799,19 @@
    */
   const CONFIG_RECHECK_MS = 60000;
   let configVersion = -1;
+  let killed = false;              // 遠端總開關
+  let tooOld = false;              // 版本低於伺服器要求的下限
+
+  /** 語意化版本比較。回傳 -1 / 0 / 1。 */
+  function cmpVer(a, b) {
+    const pa = String(a).split('.').map(Number);
+    const pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
 
   async function applyRemoteConfig(force) {
     const res = await send({ type: force ? 'refreshConfig' : 'getConfig' });
@@ -812,14 +825,46 @@
     if (!changed) return false;
 
     const prevVersion = configVersion;
+    const prevSite = site;
     configVersion = config.version;
     site = next;
+
+    // ---- 總開關 ----
+    // F1TV 大改版而我們一時修不好時，與其讓使用者看到錯亂的疊字，
+    // 不如乾淨地退回原生英文字幕。這是最後的救命索（P3-PLAN 1.3）。
+    killed = !!config.killSwitch;
+    if (killed) {
+      box.classList.remove('on');
+      if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }   // 讓原生字幕回來
+      evWarn('⛔ 已由遠端停用疊字（killSwitch）。原生英文字幕已恢復顯示。'
+        + '這通常代表 F1TV 剛改版、我們正在修，請稍後再試。');
+      return true;
+    }
+
+    // ---- 版本下限 ----
+    // 舊版用戶端可能因為協定改變而產生壞資料（例如把殘缺的譯文寫進共用快取）。
+    // 與其讓它繼續跑，不如明確要求更新。
+    const myVer = chrome.runtime.getManifest().version;
+    if (config.minClientVersion && cmpVer(myVer, config.minClientVersion) < 0) {
+      tooOld = true;
+      box.classList.remove('on');
+      evErr(`⛔ 這個版本（v${myVer}）已停止支援，最低需要 v${config.minClientVersion}。`
+        + '請到 chrome://extensions 更新 PitLingo。');
+      return true;
+    }
+    tooOld = false;
 
     // 選擇器換了就把觀察者整組重掛，並清掉「已隱藏」的樣式重新套用
     observedNodes = new Set();
     if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }
     applyHideNative();
     lastSeenCaption = ''; lastRaw = '';
+
+    // ---- 自我檢查 ----
+    // 推了壞選擇器時，使用者不該等我們發現。這裡在套用後 30 秒回頭確認
+    // 「還抓得到字幕嗎」，抓不到就自動退回上一版設定（P3-PLAN 1.4）。
+    // 有了它，即使推送出錯，最多也只壞 30 秒。
+    if (prevVersion >= 0 && !killed && !tooOld) scheduleConfigSelfCheck(prevSite, prevVersion);
 
     if (prevVersion >= 0) {
       if (prevVersion === configVersion) {
@@ -832,6 +877,34 @@
       }
     }
     return true;
+  }
+
+  /**
+   * 遠端設定的自我檢查。
+   *
+   * 只在「套用新設定之前本來看得到字幕」時才判定失敗——否則影片剛開場、
+   * 進廣告、或這段本來就沒旁白，都會被誤判成推送失敗而白白回退（坑 #14 的教訓）。
+   */
+  let selfCheckTimer = null;
+  function scheduleConfigSelfCheck(prevSite, prevVersion) {
+    clearTimeout(selfCheckTimer);
+    const wasWorking = everSawCaption;
+    const before = state.hits + state.misses;
+    selfCheckTimer = setTimeout(() => {
+      if (!wasWorking || !prevSite) return;              // 本來就沒在運作，不能判定
+      if (!isActuallyPlaying()) return;                  // 沒在播就沒有判斷依據
+      if (state.hits + state.misses > before) return;    // 這 30 秒有抓到字幕，正常
+      if (collectCaption()) return;                      // 此刻畫面上有字幕，正常
+
+      evErr(`⚠ 套用設定 v${configVersion} 後 30 秒都抓不到字幕，自動退回 v${prevVersion}`);
+      site = prevSite;
+      configVersion = prevVersion;
+      observedNodes = new Set();
+      if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }
+      applyHideNative();
+      lastSeenCaption = ''; lastRaw = '';
+      hookObservers();
+    }, 30000);
   }
 
   const MARK = '__pitlingo_vtt__';
@@ -1417,6 +1490,8 @@
     L.push(`遠端設定版本：v${configVersion}（重讀間隔 ${CONFIG_RECHECK_MS / 1000} 秒；`
       + `含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）`);
     L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
+    L.push(`遠端狀態：${killed ? '⛔ killSwitch 已啟用' : '正常'}`
+      + `${tooOld ? '　⛔ 版本過舊，已停止翻譯' : ''}`);
     L.push('');
     L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 150)} 筆）────`);
     L.push(eventLog.slice(-150).join('\n'));

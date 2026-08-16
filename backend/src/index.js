@@ -10,12 +10,17 @@
  *   GET  /v1/subs?cid=<contentId>      取回整支影片的譯文
  *   POST /v1/subs                      上傳譯文（需 ADMIN_TOKEN）
  *   POST /v1/translate                 翻譯未命中的句子（需 CLIENT_TOKEN）
- *   POST /v1/complete                  標記整支已完整收割（需 CLIENT_TOKEN）
+ *   POST /v1/complete                  標記整支已完整收割（需安裝權杖）
+ *   POST /v1/register                  匿名換取安裝權杖（無需權杖，IP 限流）
+ *   GET  /v1/admin/stats               成本後台（需 ADMIN_TOKEN）
+ *   POST /v1/admin/revoke              撤銷某個安裝（需 ADMIN_TOKEN）
  *
  * 環境變數（wrangler secret put）
  *   ANTHROPIC_API_KEY   Anthropic 金鑰
- *   ADMIN_TOKEN         上傳用的管理權杖
- *   CLIENT_TOKEN        用戶端權杖
+ *   ADMIN_TOKEN         上傳與後台用的管理權杖
+ *   TOKEN_SECRET        簽發安裝權杖用（未設定時由 ADMIN_TOKEN 衍生）
+ *   CLIENT_TOKEN        舊版共用權杖，僅為相容 userscript 而保留
+ *   DAILY_USD_CAP       成本熔斷上限（美元／天，預設 5）
  * KV binding: SUBS
  *
  * v1.4  SYSTEM_PROMPT 與 userscript 同步（34 → 273 條術語）。
@@ -26,6 +31,10 @@
  *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
  * v1.7  單句不再走批次編號協定（實測回覆率只有 50%，坑 #9）。
  *       批次解析加上「行數相同就按位置對應」的備援。
+ * v2.0  資安與維運：每個安裝一枚權杖（取代所有人共用的 CLIENT_TOKEN，S6）、
+ *       拿掉 CORS `*`、常數時間比對、速率限制改以 installId 為鍵、
+ *       譯文合理性檢查擋 prompt injection 汙染共用快取（S9）、
+ *       成本統計與每日熔斷、分階段推送（rollout / killSwitch / minClientVersion）。
  */
 
 const MODEL = 'claude-haiku-4-5';
@@ -564,8 +573,25 @@ sorry mate → 抱歉
 // 遠端設定 —— 改這裡就能熱修所有用戶，不用重新送審擴充功能
 // 選擇器用陣列依序嘗試：F1TV 灰度推送期間新舊版會同時存在
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 遠端設定
+//
+// 除了選擇器，還帶三個**分階段推送**用的欄位（P3-PLAN 第 1 節）：
+//
+//   rollout          0~100。只有這個比例的安裝會套用這一版，其餘沿用上一版。
+//                    分流依 installId 雜湊，同一個人永遠落在同一組，不會忽新忽舊。
+//   killSwitch       true = 所有用戶端停用疊字，乾淨退回原生英文字幕。
+//                    F1TV 大改版而我們一時修不好時，這比讓使用者看錯亂的疊字好。
+//   minClientVersion 低於此版的用戶端顯示「請更新」並停止翻譯。
+//
+// 為什麼需要：`wrangler deploy` 與 `POST /v1/config` 現在都是「一改就全中」。
+// 收費之後，一次失誤 = 所有付費使用者同時故障。
+// ---------------------------------------------------------------------------
 const REMOTE_CONFIG = {
   version: 1,
+  rollout: 100,
+  killSwitch: false,
+  minClientVersion: '0.0.0',
   sites: [
     {
       host: 'f1tv.formula1.com',
@@ -578,10 +604,260 @@ const REMOTE_CONFIG = {
 };
 
 // ---------------------------------------------------------------------------
+// 授權：每個安裝一枚權杖（取代所有人共用的 CLIENT_TOKEN）
+//
+// 為什麼非改不可（SECURITY.md S6）：
+// CLIENT_TOKEN 隨擴充功能發給每一位使用者，任何人解開 .crx 就拿得到——**等於公開**。
+// 搭配 CORS `*`，任何網站都能無限呼叫 /v1/translate 燒掉 Anthropic 額度。
+// 這不是加檢查能解決的，必須讓「每個安裝有自己的身分」。
+//
+// 設計取捨：**不做帳號系統**。使用者不需要註冊、不需要 email，
+// 首次啟動時匿名換一枚權杖就好。這樣：
+//   - 每個安裝可獨立限額、獨立撤銷（濫用或退款時）
+//   - 速率限制終於有意義的鍵（IP 換 proxy 就繞過，installId 不行）
+//   - P3 要接付費時，同一枚權杖加上 plan 欄位即可，不用重做
+//
+// 權杖格式：<installId>.<exp>.<HMAC-SHA256 簽章>
+// 驗證只需要 HMAC，**不必讀 KV**，所以每次請求的成本是零。
+// 撤銷才需要查 KV，而撤銷清單很小且可快取。
+// ---------------------------------------------------------------------------
+const TOKEN_TTL_DAYS = 90;
+
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function hmac(secret, msg) {
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64url(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg)));
+}
+
+/**
+ * 常數時間比對。
+ * 一般的 `!==` 會在第一個不同的位元組就返回，理論上可由回應時間推出正確值。
+ * 跨網路且有速率限制時實務上不可行，但比對密鑰本來就該用常數時間——
+ * 成本是三行，沒有理由不做。（SECURITY.md S11）
+ */
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * 把 installId 穩定地映射到 0~99 的一個桶。
+ * 同一個安裝永遠落在同一個桶，所以推送 10% 時，那 10% 的人不會忽新忽舊。
+ */
+async function bucketOf(installId) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(installId)));
+  return new Uint8Array(buf)[0] % 100;
+}
+
+function tokenSecret(env) {
+  // 沒有專用 secret 時退回 ADMIN_TOKEN 衍生，讓既有部署不會壞。
+  // 正式環境應該 `wrangler secret put TOKEN_SECRET`。
+  return env.TOKEN_SECRET || (env.ADMIN_TOKEN ? env.ADMIN_TOKEN + ':install' : null);
+}
+
+async function issueInstallToken(env) {
+  const secret = tokenSecret(env);
+  if (!secret) throw new Error('伺服器未設定 TOKEN_SECRET');
+  const installId = crypto.randomUUID();
+  const exp = Math.floor(Date.now() / 1000) + TOKEN_TTL_DAYS * 86400;
+  const payload = `${installId}.${exp}`;
+  return { token: `${payload}.${await hmac(secret, payload)}`, installId, exp };
+}
+
+// 撤銷清單。整份放一個 key，因為它應該永遠很小（只有濫用與退款會進來）。
+// 用 isolate 內快取避免每個請求都讀 KV。
+let revCache = { at: 0, set: null };
+async function revokedSet(env) {
+  if (revCache.set && Date.now() - revCache.at < 60000) return revCache.set;
+  let list = [];
+  try { list = JSON.parse((await env.SUBS.get('revoked')) || '[]'); } catch (e) { /* 壞掉當空的 */ }
+  revCache = { at: Date.now(), set: new Set(list) };
+  return revCache.set;
+}
+
+/**
+ * 驗證用戶端權杖。回傳 { ok, installId } 或 { ok:false, reason }。
+ *
+ * 相容性：舊的共用 CLIENT_TOKEN 仍然接受，但會標記成 legacy。
+ * 這是為了讓 userscript（管理員工具）與尚未更新的安裝不會突然壞掉——
+ * **但 legacy 走比較嚴格的限額**，見 handleTranslate。
+ */
+async function authClient(env, request) {
+  const raw = request.headers.get('x-client-token') || '';
+  if (!raw) return { ok: false, reason: 'missing token' };
+
+  const parts = raw.split('.');
+  if (parts.length === 3) {
+    const [installId, expStr, sig] = parts;
+    const secret = tokenSecret(env);
+    if (!secret) return { ok: false, reason: 'server misconfigured' };
+    const expect = await hmac(secret, `${installId}.${expStr}`);
+    if (!safeEqual(sig, expect)) return { ok: false, reason: 'bad signature' };
+    if (Number(expStr) * 1000 < Date.now()) return { ok: false, reason: 'expired' };
+    if ((await revokedSet(env)).has(installId)) return { ok: false, reason: 'revoked' };
+    return { ok: true, installId, legacy: false };
+  }
+
+  // 舊格式：所有人共用的那一枚
+  if (env.CLIENT_TOKEN && safeEqual(raw, env.CLIENT_TOKEN)) {
+    return { ok: true, installId: 'legacy', legacy: true };
+  }
+  return { ok: false, reason: 'invalid token' };
+}
+
+function authAdmin(env, request) {
+  return !!env.ADMIN_TOKEN && safeEqual(request.headers.get('x-admin-token') || '', env.ADMIN_TOKEN);
+}
+
+// ---------------------------------------------------------------------------
+// 成本統計與熔斷
+//
+// 為什麼要自己做：Anthropic 的帳單是事後的，被攻擊時你會在月底才知道。
+// 這裡要能即時回答「今天花了多少」「哪支影片最貴」「快取還有沒有生效」。
+//
+// 為什麼不用 KV 逐筆寫：KV 免費額度 1,000 puts/天，已經撞過一次（坑 #19）。
+// 改成 **isolate 內累積、每 15 分鐘或滿 200 筆才落地一次**，
+// 最壞 96 puts/天。代價是 isolate 被回收時會掉最後一小段——
+// 成本可觀測性容許近似值，額度不容許。
+// ---------------------------------------------------------------------------
+
+// Haiku 4.5 每百萬 token 的美元單價。改模型時要一起改。
+const PRICE = { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 };
+
+const STATS_FLUSH_MS = 15 * 60 * 1000;
+const STATS_FLUSH_N = 200;
+let pending_ = { at: Date.now(), n: 0, rows: {} };
+
+function statsKey(d) {
+  const t = new Date(d || Date.now());
+  return `stats:${t.toISOString().slice(0, 10)}`;      // 一天一個 key
+}
+
+function costOf(u) {
+  return (u.input_tokens || 0) / 1e6 * PRICE.in
+    + (u.output_tokens || 0) / 1e6 * PRICE.out
+    + (u.cache_read_input_tokens || 0) / 1e6 * PRICE.cacheRead
+    + (u.cache_creation_input_tokens || 0) / 1e6 * PRICE.cacheWrite;
+}
+
+function recordUsage(cid, usage, translated, cachedHits) {
+  const r = pending_.rows[cid] || (pending_.rows[cid] = {
+    calls: 0, translated: 0, cached: 0,
+    in: 0, out: 0, cacheRead: 0, cacheWrite: 0,
+  });
+  r.calls++;
+  r.translated += translated || 0;
+  r.cached += cachedHits || 0;
+  r.in += usage.input_tokens || 0;
+  r.out += usage.output_tokens || 0;
+  r.cacheRead += usage.cache_read_input_tokens || 0;
+  r.cacheWrite += usage.cache_creation_input_tokens || 0;
+  pending_.n++;
+}
+
+function shouldFlush() {
+  return pending_.n >= STATS_FLUSH_N || (pending_.n > 0 && Date.now() - pending_.at > STATS_FLUSH_MS);
+}
+
+/** 落地統計。與 bundle 一樣是多寫入者，所以同樣要「重讀再合併」（坑 #24）。 */
+async function flushStats(env) {
+  if (!pending_.n) return;
+  const mine = pending_.rows;
+  pending_ = { at: Date.now(), n: 0, rows: {} };
+  const key = statsKey();
+  let day = {};
+  try { day = JSON.parse((await env.SUBS.get(key)) || '{}'); } catch (e) { /* 壞掉重來 */ }
+  for (const [cid, r] of Object.entries(mine)) {
+    const d = day[cid] || (day[cid] = { calls: 0, translated: 0, cached: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
+    for (const k of Object.keys(r)) d[k] = (d[k] || 0) + r[k];
+  }
+  await env.SUBS.put(key, JSON.stringify(day), { expirationTtl: 400 * 86400 });
+}
+
+/**
+ * 成本熔斷。
+ *
+ * 沒有這個的話，S6 的共用密鑰被濫用時，你會在帳單來的時候才知道。
+ * 超過上限就停掉「會花錢的路徑」（/v1/translate），
+ * **但共用快取的讀取照常** —— 已經翻好的影片仍然完全可用，
+ * 使用者體驗只退化成「新影片暫時不翻」，不是整個壞掉。
+ */
+const DAILY_USD_CAP_DEFAULT = 5;
+
+async function dailyCost(env) {
+  let day = {};
+  try { day = JSON.parse((await env.SUBS.get(statsKey())) || '{}'); } catch (e) { /* noop */ }
+  let usd = 0;
+  for (const r of Object.values(day)) {
+    usd += costOf({
+      input_tokens: r.in, output_tokens: r.out,
+      cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+    });
+  }
+  // 加上還沒落地的部分，否則熔斷會慢 15 分鐘
+  for (const r of Object.values(pending_.rows)) {
+    usd += costOf({
+      input_tokens: r.in, output_tokens: r.out,
+      cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+    });
+  }
+  return usd;
+}
+
+let breakerCache = { at: 0, usd: 0 };
+async function overBudget(env) {
+  const cap = Number(env.DAILY_USD_CAP || DAILY_USD_CAP_DEFAULT);
+  if (!(cap > 0)) return false;
+  if (Date.now() - breakerCache.at > 60000) {
+    breakerCache = { at: Date.now(), usd: await dailyCost(env) };
+  }
+  return breakerCache.usd >= cap;
+}
+
+/**
+ * 譯文合理性檢查（SECURITY.md S9）。
+ *
+ * `/v1/translate` 的輸入直接進模型，攻擊者可以用 prompt injection 讓輸出
+ * 受他控制，再寫進**他指定的 cid**——所有後續觀看者都會拿到被汙染的譯文。
+ *
+ * 完全防不了 injection，但可以讓「被汙染的東西進不了共用快取」：
+ * 不合格的譯文仍然回傳給請求者（他自己愛看什麼是他的事），只是不寫回 bundle。
+ */
+const INJECTION_HINT = /ignore (all |the )?(previous|above)|system prompt|you are now|<\|.*?\|>|assistant:|忽略(上述|先前)|你現在是/i;
+
+function plausibleTranslation(en, zh) {
+  if (typeof zh !== 'string') return false;
+  const t = zh.trim();
+  if (!t) return false;
+  if (t.length > Math.max(120, en.length * 3)) return false;   // 譯文暴長 = 不對勁
+  if (INJECTION_HINT.test(t)) return false;
+  // 正常譯文一定有中文；純英文回來通常代表模型照抄或被帶偏
+  if (!/[\u4e00-\u9fff]/.test(t)) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // 工具
 // ---------------------------------------------------------------------------
+// ⚠️ **不要放 Access-Control-Allow-Origin: '*'。**
+//
+// 原本是 `*`，等於任何網站都能從瀏覽器直接打這個 API。搭配「權杖等同公開」
+// （S6），一個惡意網頁就能無限燒 Anthropic 額度。
+//
+// 而我們**根本不需要 CORS**：
+//   - 擴充功能的請求由 service worker 發出，有 host_permissions，不受 CORS 限制
+//   - userscript 用 GM_xmlhttpRequest，也不受限制
+// 拿掉之後，瀏覽器端的跨站呼叫會被瀏覽器自己擋下來，攻擊面直接消失。
 const CORS = {
-  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   'Access-Control-Allow-Headers': 'content-type,x-client-token,x-admin-token',
   'Access-Control-Max-Age': '86400',
@@ -698,6 +974,15 @@ async function writeBundle(env, cid, bundle) {
  */
 const RL_SAMPLE = 10;
 
+/**
+ * 速率限制。
+ *
+ * 鍵從 IP 換成 installId（SECURITY.md S8）：IP 換個 proxy 就繞過，
+ * 而 installId 要繞過就得不斷重新註冊——而註冊本身另有 IP 限制。
+ *
+ * 仍然用取樣寫入（每 10 次才寫一次 KV），因為每次都寫必定撞爆
+ * 1,000 puts/天 的額度。取樣讓限制變成近似值，但配合成本熔斷已經足夠。
+ */
 async function rateLimited(env, ip) {
   const key = `rl:${ip}:${Math.floor(Date.now() / 60000)}`;
   const n = parseInt((await env.SUBS.get(key)) || '0', 10);
@@ -868,8 +1153,21 @@ async function handlePostSubs(request, env) {
  * 併發時的 read-modify-write 可能掉幾句（多人同時看同一支全新內容），
  * 但那只是那幾句之後會被重翻一次，不影響正確性。
  */
-async function handleTranslate(request, env, ip) {
-  if (await rateLimited(env, ip)) return err('rate limited', 429);
+async function handleTranslate(request, env, ip, auth) {
+  if (await rateLimited(env, auth.installId === 'legacy' ? ip : auth.installId)) {
+    return err('rate limited', 429);
+  }
+
+  // 成本熔斷：超過當日上限就停掉會花錢的路徑。
+  // **共用快取的讀取不受影響**——已翻好的影片完全照常，
+  // 退化的只是「新影片暫時不翻」，不是整個壞掉。
+  if (await overBudget(env)) {
+    return json({
+      lines: {}, translated: 0,
+      error: '今日翻譯額度已用盡，已翻譯過的影片仍可正常觀看',
+      overBudget: true,
+    }, 503);
+  }
 
   const body = await request.json().catch(() => null);
   if (!body) return err('body 不是合法 JSON');
@@ -902,6 +1200,7 @@ async function handleTranslate(request, env, ip) {
 
   // 2) 未命中的才呼叫模型
   let translated = 0;
+  let rejected = 0;                   // 通過模型但沒通過合理性檢查、不寫入快取的數量
   const usageTotals = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
   for (let i = 0; i < missing.length; i += BATCH_MAX) {
     const chunk = missing.slice(i, i + BATCH_MAX);
@@ -910,10 +1209,13 @@ async function handleTranslate(request, env, ip) {
       for (const m of chunk) {
         const zh = out[m.en];
         if (!zh) continue;
-        result[m.k] = zh;
-        bundle.lines[m.k] = zh;       // 本次請求的快取，避免同批重複
-        added[m.k] = zh;              // 寫回時只合併這些，見 mergeWrite
+        result[m.k] = zh;             // 請求者拿得到（他自己愛看什麼是他的事）
         translated++;
+        // 但**不合理的譯文不進共用快取**（S9）。攻擊者能用 prompt injection
+        // 讓輸出受控，再寫進他指定的 cid 汙染所有後續觀看者。
+        if (!plausibleTranslation(m.en, zh)) { rejected++; continue; }
+        bundle.lines[m.k] = zh;
+        added[m.k] = zh;
       }
       usageTotals.input_tokens += usage.input_tokens || 0;
       usageTotals.output_tokens += usage.output_tokens || 0;
@@ -926,7 +1228,10 @@ async function handleTranslate(request, env, ip) {
   }
 
   // 3) 一次請求只寫一次 KV，而且是「重讀後合併」不是直接覆蓋
-  if (translated) await mergeWrite(env, cid, added);
+  if (Object.keys(added).length) await mergeWrite(env, cid, added);
+
+  recordUsage(cid, usageTotals, translated, input.length - missing.length);
+  if (shouldFlush()) { try { await flushStats(env); } catch (e) { /* 統計不該影響主流程 */ } }
 
   return json({
     cid,
@@ -934,7 +1239,66 @@ async function handleTranslate(request, env, ip) {
     requested: input.length,
     cached: input.length - missing.length,
     translated,
+    rejected,
     usage: usageTotals,
+  });
+}
+
+/**
+ * 成本後台。回答四個問題：
+ *   今天花了多少？哪支影片最貴？prompt 快取還有沒有生效？共用快取的命中率？
+ *
+ * 第三個特別重要：prompt cache 命中率掉下來，代表 SYSTEM_PROMPT 又低於
+ * 4,096 tokens 了（坑 #21），那是**每次全額計費卻不報錯**的狀態。
+ */
+async function handleStats(env, url) {
+  const days = Math.min(31, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10)));
+  const out = [];
+  let total = { usd: 0, calls: 0, translated: 0, cached: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    const key = statsKey(d);
+    let day = {};
+    try { day = JSON.parse((await env.SUBS.get(key)) || '{}'); } catch (e) { /* noop */ }
+    const vids = Object.entries(day).map(([cid, r]) => ({
+      cid,
+      usd: +costOf({
+        input_tokens: r.in, output_tokens: r.out,
+        cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+      }).toFixed(4),
+      calls: r.calls, translated: r.translated, cached: r.cached,
+    })).sort((a, b) => b.usd - a.usd);
+
+    const dayUsd = vids.reduce((a, v) => a + v.usd, 0);
+    for (const r of Object.values(day)) {
+      total.calls += r.calls; total.translated += r.translated; total.cached += r.cached;
+      total.in += r.in; total.out += r.out; total.cacheRead += r.cacheRead; total.cacheWrite += r.cacheWrite;
+    }
+    total.usd += dayUsd;
+    out.push({ date: key.slice(6), usd: +dayUsd.toFixed(4), videos: vids.slice(0, 10) });
+  }
+
+  const promptIn = total.in + total.cacheRead;
+  return json({
+    days,
+    total: {
+      usd: +total.usd.toFixed(4),
+      calls: total.calls,
+      translated: total.translated,
+      sharedCacheHits: total.cached,
+      // 共用快取命中率 = 整個商業模式的分母
+      sharedHitRate: (total.cached + total.translated)
+        ? +(total.cached / (total.cached + total.translated)).toFixed(4) : null,
+      // prompt 快取命中率：掉下來就是坑 #21 復發
+      promptCacheHitRate: promptIn ? +(total.cacheRead / promptIn).toFixed(4) : null,
+      usdPerTranslatedLine: total.translated ? +(total.usd / total.translated).toFixed(6) : null,
+    },
+    budget: {
+      dailyCapUsd: Number(env.DAILY_USD_CAP || DAILY_USD_CAP_DEFAULT),
+      todayUsd: +(out[0] ? out[0].usd : 0).toFixed(4),
+    },
+    daily: out,
   });
 }
 
@@ -960,7 +1324,18 @@ export default {
         const raw = await env.SUBS.get('config');
         let cfg = REMOTE_CONFIG;
         if (raw) { try { cfg = JSON.parse(raw); } catch (e) { /* 壞掉就用內建的 */ } }
-        return json(cfg, 200, { 'cache-control': 'public, max-age=60' });
+
+        // 分階段推送：用戶端帶自己的 installId，伺服器決定他該拿哪一版。
+        // 分流在伺服器做而不是用戶端，這樣才能單方面收回一次失敗的推送。
+        const rollout = cfg.rollout === undefined ? 100 : Number(cfg.rollout);
+        const iid = url.searchParams.get('iid') || '';
+        if (rollout < 100 && iid && (await bucketOf(iid)) >= rollout) {
+          const prev = await env.SUBS.get('config:prev');
+          if (prev) { try { cfg = JSON.parse(prev); } catch (e) { /* 用現行的 */ } }
+          else cfg = REMOTE_CONFIG;
+        }
+        // ⚠️ 不可以放 max-age：推送與 killSwitch 要能即時生效（坑 #26 同一類）
+        return json(cfg, 200, { 'cache-control': 'no-store' });
       }
 
       // 熱修入口：改選擇器不用重新部署，也不用等商店審核
@@ -968,8 +1343,19 @@ export default {
         if (request.headers.get('x-admin-token') !== env.ADMIN_TOKEN) return err('unauthorized', 401);
         const body = await request.json().catch(() => null);
         if (!body || !Array.isArray(body.sites)) return err('需要 { version, sites: [...] }');
+        // rollout 必須合法，否則推錯一個數字就等於全站生效或全站失效
+        if (body.rollout !== undefined
+            && !(Number.isFinite(body.rollout) && body.rollout >= 0 && body.rollout <= 100)) {
+          return err('rollout 必須是 0~100');
+        }
+        // 保留上一版，讓不在推送範圍內的安裝有東西可用
+        const prevRaw = await env.SUBS.get('config');
+        if (prevRaw) await env.SUBS.put('config:prev', prevRaw);
         await env.SUBS.put('config', JSON.stringify(body));
-        return json({ ok: true, version: body.version, sites: body.sites.length });
+        return json({
+          ok: true, version: body.version, sites: body.sites.length,
+          rollout: body.rollout === undefined ? 100 : body.rollout,
+        });
       }
 
       // 出事時的還原鍵：刪掉 KV 就回到內建預設
@@ -979,24 +1365,60 @@ export default {
         return json({ ok: true, reverted: true, version: REMOTE_CONFIG.version });
       }
 
+      // 匿名註冊：換一枚屬於這個安裝的權杖。不需要帳號、不收任何個資。
+      // 用 IP 限制頻率，避免有人狂刷權杖來繞過 installId 的限額。
+      if (path === '/v1/register' && request.method === 'POST') {
+        if (await rateLimited(env, `reg:${ip}`)) return err('rate limited', 429);
+        try {
+          const t = await issueInstallToken(env);
+          return json({ ok: true, token: t.token, exp: t.exp });
+        } catch (e) {
+          return err(String(e.message || e), 500);
+        }
+      }
+
       if (path === '/v1/subs' && request.method === 'GET') {
-        if (request.headers.get('x-client-token') !== env.CLIENT_TOKEN) return err('unauthorized', 401);
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleGetSubs(request, env, url);
       }
 
       if (path === '/v1/subs' && request.method === 'POST') {
-        if (request.headers.get('x-admin-token') !== env.ADMIN_TOKEN) return err('unauthorized', 401);
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
         return handlePostSubs(request, env);
       }
 
       if (path === '/v1/translate' && request.method === 'POST') {
-        if (request.headers.get('x-client-token') !== env.CLIENT_TOKEN) return err('unauthorized', 401);
-        return handleTranslate(request, env, ip);
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        return handleTranslate(request, env, ip, a);
       }
 
       if (path === '/v1/complete' && request.method === 'POST') {
-        if (request.headers.get('x-client-token') !== env.CLIENT_TOKEN) return err('unauthorized', 401);
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleComplete(request, env);
+      }
+
+      // ---- 管理後台 ----
+      if (path === '/v1/admin/stats' && request.method === 'GET') {
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
+        try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }
+        return handleStats(env, url);
+      }
+
+      // 撤銷某個安裝（濫用、退款、盜用時用）
+      if (path === '/v1/admin/revoke' && request.method === 'POST') {
+        if (!authAdmin(env, request)) return err('unauthorized', 401);
+        const b = await request.json().catch(() => null);
+        const id = b && String(b.installId || '').trim();
+        if (!id) return err('缺少 installId');
+        let list = [];
+        try { list = JSON.parse((await env.SUBS.get('revoked')) || '[]'); } catch (e) { /* noop */ }
+        if (!list.includes(id)) list.push(id);
+        await env.SUBS.put('revoked', JSON.stringify(list));
+        revCache = { at: 0, set: null };       // 立刻讓快取失效
+        return json({ ok: true, revoked: list.length });
       }
 
       return err('not found', 404);

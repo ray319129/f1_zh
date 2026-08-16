@@ -10,8 +10,20 @@ id = "606ab33223b74d929d4d0ba8f5e1ae69"
 
 # 機密不寫在這裡，用 wrangler secret put 設定：
 #   wrangler secret put ANTHROPIC_API_KEY
-#   wrangler secret put ADMIN_TOKEN
-#   wrangler secret put CLIENT_TOKEN
+#   wrangler secret put ADMIN_TOKEN      上傳與後台
+#   wrangler secret put TOKEN_SECRET     簽發安裝權杖（未設定時由 ADMIN_TOKEN 衍生）
+#   wrangler secret put CLIENT_TOKEN     舊版共用權杖，僅為相容 userscript
+#
+# 成本熔斷上限（美元／天）。不設定時預設 5。
+# 這是 CLIENT_TOKEN 尚未淘汰前唯一的實質防線，務必設定。
+[vars]
+DAILY_USD_CAP = "5"
+
+# ⚠️ 上線後**不要用 `wrangler deploy`**——那會 100% 立刻切換，出事沒有回頭路。
+#    改用漸進式部署：
+#      wrangler versions upload
+#      wrangler versions deploy        # 指定版本與流量比例
+#    回滾就是把比例調回 0，秒級生效。
 
 [observability]
 enabled = true

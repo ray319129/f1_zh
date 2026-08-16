@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PitLingo 成本後台</title>
+<!--
+  單檔後台。刻意不做建置、不用框架、不部署——用瀏覽器直接開這個檔就好。
+
+  ⚠️ ADMIN_TOKEN 只留在這個分頁的記憶體裡，不寫 localStorage。
+     寫進去的話，任何能碰到這台電腦的人都拿得到管理權限。
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 system-ui, "Noto Sans TC", sans-serif; margin: 0; padding: 24px;
+         max-width: 1000px; margin-inline: auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { opacity: .65; margin-bottom: 20px; font-size: 13px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+  input, button, select { font: inherit; padding: 7px 10px; border-radius: 6px;
+                          border: 1px solid rgba(128,128,128,.45); background: transparent; color: inherit; }
+  button { cursor: pointer; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { border: 1px solid rgba(128,128,128,.3); border-radius: 10px; padding: 12px 14px; }
+  .card .k { font-size: 12px; opacity: .65; }
+  .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .card.warn { border-color: #d33; }
+  .card.warn .v { color: #d33; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,.2); }
+  th { font-weight: 600; opacity: .7; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .day { margin-top: 20px; }
+  .day h3 { font-size: 14px; margin: 0 0 6px; }
+  .hint { font-size: 12px; opacity: .65; margin-top: 6px; }
+  #err { color: #d33; white-space: pre-wrap; }
+</style>
+
+<h1>PitLingo 成本後台</h1>
+<div class="sub">資料來自 <code>GET /v1/admin/stats</code>。權杖只留在這個分頁，不會被儲存。</div>
+
+<div class="bar">
+  <input id="base" size="42" value="https://f1zh-api.pitlingo.workers.dev" placeholder="後端網址">
+  <input id="tok" type="password" size="30" placeholder="ADMIN_TOKEN">
+  <select id="days"><option value="7">近 7 天</option><option value="14">近 14 天</option><option value="31">近 31 天</option></select>
+  <button id="go">查詢</button>
+</div>
+
+<div id="err"></div>
+<div id="cards" class="cards"></div>
+<div id="out"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => '$' + Number(n || 0).toFixed(4);
+const pct = (n) => n == null ? '—' : (n * 100).toFixed(1) + '%';
+
+function card(k, v, warn) {
+  return `<div class="card${warn ? ' warn' : ''}"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+}
+
+$('go').onclick = async () => {
+  $('err').textContent = '';
+  $('out').innerHTML = '';
+  $('cards').innerHTML = '查詢中…';
+  try {
+    const url = $('base').value.replace(/\/+$/, '') + '/v1/admin/stats?days=' + $('days').value;
+    const res = await fetch(url, { headers: { 'x-admin-token': $('tok').value } });
+    if (!res.ok) throw new Error('HTTP ' + res.status + '（權杖錯誤或後端未部署 v2.0）');
+    render(await res.json());
+  } catch (e) {
+    $('cards').innerHTML = '';
+    $('err').textContent = String(e.message || e);
+  }
+};
+
+function render(d) {
+  const t = d.total, b = d.budget;
+  const overRatio = b.dailyCapUsd ? b.todayUsd / b.dailyCapUsd : 0;
+
+  $('cards').innerHTML = [
+    card('今日成本', usd(b.todayUsd) + ' / ' + usd(b.dailyCapUsd), overRatio >= 0.8),
+    card(`近 ${d.days} 天成本`, usd(t.usd)),
+    // 這是整個商業模式的分母：命中率越高，每位使用者的邊際成本越接近 0
+    card('共用快取命中率', pct(t.sharedHitRate)),
+    // 掉下來代表 SYSTEM_PROMPT 又低於 4,096 tokens（坑 #21），
+    // 那是「每次全額計費卻完全不報錯」的狀態
+    card('Prompt 快取命中率', pct(t.promptCacheHitRate), t.promptCacheHitRate != null && t.promptCacheHitRate < 0.5),
+    card('每句翻譯成本', t.usdPerTranslatedLine == null ? '—' : '$' + t.usdPerTranslatedLine.toFixed(6)),
+    card('翻譯句數', t.translated.toLocaleString()),
+  ].join('');
+
+  $('out').innerHTML = d.daily.filter((x) => x.videos.length).map((day) => `
+    <div class="day">
+      <h3>${day.date}　${usd(day.usd)}</h3>
+      <table>
+        <tr><th>contentId</th><th class="num">成本</th><th class="num">翻譯</th><th class="num">快取命中</th><th class="num">呼叫</th></tr>
+        ${day.videos.map((v) => `<tr>
+          <td>${v.cid}</td><td class="num">${usd(v.usd)}</td>
+          <td class="num">${v.translated}</td><td class="num">${v.cached}</td><td class="num">${v.calls}</td>
+        </tr>`).join('')}
+      </table>
+    </div>`).join('')
+    || '<div class="hint">這段期間沒有翻譯紀錄。</div>';
+
+  if (t.promptCacheHitRate != null && t.promptCacheHitRate < 0.5) {
+    $('out').insertAdjacentHTML('afterbegin',
+      '<div class="hint" style="color:#d33">⚠ Prompt 快取命中率偏低。'
+      + '請跑 <code>node tools/check-prompt.js</code> 確認 SYSTEM_PROMPT 仍在 4,096 tokens 之上——'
+      + '低於門檻時 cache_control 會靜默失效，每次全額計費。</div>');
+  }
+}
+</script>

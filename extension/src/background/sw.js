@@ -39,9 +39,54 @@ async function getSettings() {
   return Object.assign({}, self.PL.DEFAULT_SETTINGS, settings || {});
 }
 
+/**
+ * 取得這個安裝的權杖。沒有就跟後端換一枚。
+ *
+ * 為什麼不再用使用者手動貼的共用金鑰（SECURITY.md S6）：
+ * 那枚金鑰隨擴充功能發給每一個人，等同公開——任何人都能拿去無限呼叫後端
+ * 燒掉 Anthropic 額度。改成**每個安裝一枚**之後才有辦法個別限額與撤銷。
+ *
+ * 使用者完全無感：不需要註冊、不需要 email、不收任何個資，
+ * 只是啟動時匿名換一枚權杖存在本機。
+ *
+ * `installId` 同時用於分階段推送的分流（同一個安裝永遠落在同一組）。
+ * 它**只送給我們自己的後端**，不做任何跨站追蹤。
+ */
+const TOKEN_RENEW_BEFORE_MS = 7 * 86400 * 1000;     // 到期前 7 天就換新的
+
 async function getClientToken() {
-  const { clientToken } = await chrome.storage.local.get('clientToken');
-  return clientToken || '';
+  const st = await chrome.storage.local.get(['installToken', 'installExp', 'clientToken']);
+
+  // 還在有效期內就用它
+  if (st.installToken && st.installExp && st.installExp * 1000 - Date.now() > TOKEN_RENEW_BEFORE_MS) {
+    return st.installToken;
+  }
+
+  try {
+    const res = await fetch(BACKEND + '/v1/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    if (res.ok) {
+      const d = await res.json();
+      if (d && d.token) {
+        await chrome.storage.local.set({ installToken: d.token, installExp: d.exp });
+        return d.token;
+      }
+    }
+  } catch (e) { /* 換不到就往下退 */ }
+
+  // 換不到新的就先用舊的（過期總比沒有好），再退回使用者手填的金鑰
+  return st.installToken || st.clientToken || '';
+}
+
+/** 分階段推送用的分流識別碼。從權杖裡取，不另外產生。 */
+async function getInstallId() {
+  const { installToken } = await chrome.storage.local.get('installToken');
+  if (!installToken) return '';
+  const first = String(installToken).split('.')[0];
+  return /^[0-9a-f-]{8,}$/i.test(first) ? first : '';
 }
 
 async function api(path, options) {
@@ -69,7 +114,9 @@ async function getConfig() {
   }
 
   try {
-    const data = await api('/v1/config');
+    // 帶上 installId，讓伺服器決定這個安裝該拿哪一版（分階段推送）
+    const iid = await getInstallId();
+    const data = await api('/v1/config' + (iid ? `?iid=${encodeURIComponent(iid)}` : ''));
     const entry = { data, at: now };
     memCache.config = entry;
     await chrome.storage.local.set({ configCache: entry });
