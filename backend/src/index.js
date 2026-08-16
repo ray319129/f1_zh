@@ -17,6 +17,8 @@
  *   POST /v1/license/deactivate        解除裝置（不需該裝置的權杖）
  *   POST /v1/license/devices           列出這組授權碼的裝置（純查詢）
  *   POST /v1/report                    使用者送出診斷，回傳工單編號
+ *   POST /v1/metric                    產品數據（彙總計數，不含個資）
+ *   GET  /v1/admin/metrics             產品數據後台
  *   POST /v1/payment/webhook           金流回呼：驗簽 → 防重放 → 自動發碼
  *   GET  /v1/admin/license/list        授權清單（可搜尋、可分頁）
  *   POST /v1/admin/license/patch       延期／換方案／解除全部裝置
@@ -1138,6 +1140,12 @@ const freeKey = (installId) => `free:${installId}:${new Date().toISOString().sli
  * 這些都不該讓付了錢的人被擋。真正要擋的是「明確沒有授權且已超過免費額度」。
  */
 async function checkEntitlement(env, auth, request, wantLines) {
+  // userscript 是**管理員收割工具**，它的工作就是賽前把整支影片翻完灌進共用快取。
+  // 用免費額度擋它等於把整個共用快取的來源掐死——而且 legacy 全體共用
+  // 一個 installId，第一個人用完 800 句，其他人全部被擋。
+  // 它拿的是 CLIENT_TOKEN（只有你有），本來就不是一般使用者。
+  if (auth.legacy) return { allowed: wantLines, reason: 'legacy', plan: 'admin' };
+
   const ent = request.headers.get('x-entitlement') || '';
 
   if (ent) {
@@ -1170,10 +1178,175 @@ async function checkEntitlement(env, auth, request, wantLines) {
  */
 async function noteFreeUsage(env, installId, n) {
   if (!n) return;
-  if (Math.random() >= n / 5) return;                 // 期望值等於 n/5 次寫入
+
+  // ⚠️ 取樣的數學要對，否則兩邊都錯。
+  //
+  // 原本寫成 `if (Math.random() >= n/5) return;` 然後固定 `+5`：
+  //   n ≥ 5 時機率恆為 1 → **每批都寫一次 KV**，一支影片 100 批就是 100 puts，
+  //   直接把 1,000/天的額度吃掉（坑 #19 的老路）。
+  //   而且固定 +5，n=20 時只記 5 句 → 免費額度被低估 4 倍，等於白送。
+  //
+  // 正解：機率 1/SAMPLE，命中時加 n*SAMPLE。期望值 = n，且寫入次數與 n 無關。
+  const SAMPLE = 10;
+  if (Math.random() >= 1 / SAMPLE) return;
   const k = freeKey(installId);
   const cur = parseInt((await env.SUBS.get(k)) || '0', 10) || 0;
-  await env.SUBS.put(k, String(cur + 5), { expirationTtl: 2 * 86400 });
+  await env.SUBS.put(k, String(cur + n * SAMPLE), { expirationTtl: 2 * 86400 });
+}
+
+// ---------------------------------------------------------------------------
+// 產品數據（彙總，不可識別個人）
+//
+// **只收「能改善產品與定價」的東西，其餘一律不收。**
+//
+// 收：場次類型的使用分布、免費額度用到第幾分鐘、免費 → 付費的轉換、
+//     各版本的錯誤率、共用快取命中率。
+// 不收：看了哪一支影片（cid 不進這裡）、IP、瀏覽紀錄、任何跨站識別碼。
+//
+// 為什麼刻意不收 cid：那等於觀看紀錄。它對「優化商業方案」沒有幫助
+// （我知道「排位賽佔 30%」就夠了，不需要知道「這個人看了摩納哥排位賽」），
+// 卻會讓隱私政策難寫、商店審查難過、資料外洩時的後果嚴重得多。
+//
+// 儲存方式與成本統計相同：isolate 內累積，每 15 分鐘或滿 200 筆才落地，
+// 避開 KV 1,000 puts/天 的天花板。
+// ---------------------------------------------------------------------------
+const METRIC_TTL_DAYS = 400;
+
+let mPending = { at: Date.now(), n: 0, rows: {} };
+
+function metricKey(d) {
+  return `metric:${new Date(d || Date.now()).toISOString().slice(0, 10)}`;
+}
+
+/**
+ * 合法的事件與維度。**白名單制**——用戶端傳什麼我們都不照單全收，
+ * 否則哪天多送了一個欄位，個資就從那裡漏出去了。
+ */
+const METRIC_EVENTS = {
+  session_start: ['sessionType', 'licensed', 'version'],
+  free_exhausted: ['sessionType', 'minutes', 'version'],
+  license_activated: ['plan', 'version'],
+  playback_error: ['kind', 'version'],
+};
+
+const SESSION_TYPES = ['practice', 'qualifying', 'sprint', 'race', 'other'];
+const PLAN_NAMES = ['season_early', 'season', 'comp', 'trial'];
+
+/** 把用戶端送來的值收斂成有限集合，避免變成自由文字而夾帶內容。 */
+function normDim(key, v) {
+  if (key === 'sessionType') return SESSION_TYPES.includes(v) ? v : 'other';
+  if (key === 'plan') return PLAN_NAMES.includes(v) ? v : 'other';
+  if (key === 'licensed') return v ? 'yes' : 'no';
+  if (key === 'version') return /^\d+\.\d+\.\d+$/.test(String(v)) ? String(v) : 'unknown';
+  if (key === 'minutes') {
+    // 分桶而不是原值——原值精確到秒等於一條時間軸，分桶才是統計
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'unknown';
+    return n < 5 ? '0-5' : n < 10 ? '5-10' : n < 15 ? '10-15' : '15+';
+  }
+  if (key === 'kind') {
+    const K = ['no_caption', 'prefetch_failed', 'backend_error', 'poll_stall'];
+    return K.includes(v) ? v : 'other';
+  }
+  return 'other';
+}
+
+function recordMetric(event, dims) {
+  const allowed = METRIC_EVENTS[event];
+  if (!allowed) return;                     // 不認識的事件直接丟掉
+  const parts = [event];
+  for (const k of allowed) parts.push(`${k}=${normDim(k, dims && dims[k])}`);
+  const key = parts.join('|');
+  mPending.rows[key] = (mPending.rows[key] || 0) + 1;
+  mPending.n++;
+}
+
+function metricsShouldFlush() {
+  return mPending.n >= 200 || (mPending.n > 0 && Date.now() - mPending.at > 15 * 60 * 1000);
+}
+
+async function flushMetrics(env) {
+  if (!mPending.n) return;
+  const mine = mPending.rows;
+  mPending = { at: Date.now(), n: 0, rows: {} };
+  const key = metricKey();
+  let day = {};
+  try { day = JSON.parse((await env.SUBS.get(key)) || '{}'); } catch (e) { /* 壞掉重來 */ }
+  // 與 bundle 一樣是多寫入者，同樣要重讀後合併（坑 #24）
+  for (const [k, v] of Object.entries(mine)) day[k] = (day[k] || 0) + v;
+  await env.SUBS.put(key, JSON.stringify(day), { expirationTtl: METRIC_TTL_DAYS * 86400 });
+}
+
+/** 用戶端回報事件。刻意不需要授權以外的任何資訊。 */
+async function handleMetric(request, env, auth) {
+  const body = await request.json().catch(() => null);
+  if (!body) return err('body 不是合法 JSON');
+  const events = Array.isArray(body.events) ? body.events.slice(0, 20) : [];
+  for (const e of events) {
+    if (e && typeof e.event === 'string') recordMetric(e.event, e.dims || {});
+  }
+  if (metricsShouldFlush()) { try { await flushMetrics(env); } catch (e2) { /* 統計不擋主流程 */ } }
+  return json({ ok: true, accepted: events.length });
+}
+
+/**
+ * 管理端：讀統計。整理成「能拿來做決定」的形狀，不是丟一堆原始計數。
+ */
+async function handleMetrics(env, url) {
+  const days = Math.min(90, Math.max(1, parseInt(url.searchParams.get('days') || '30', 10)));
+  const agg = {};
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    let day = {};
+    try { day = JSON.parse((await env.SUBS.get(metricKey(d))) || '{}'); } catch (e) { /* noop */ }
+    for (const [k, v] of Object.entries(day)) agg[k] = (agg[k] || 0) + v;
+  }
+
+  const pick = (prefix) => Object.entries(agg)
+    .filter(([k]) => k.startsWith(prefix))
+    .map(([k, v]) => [k.split('|').slice(1), v]);
+
+  // 場次類型分布 —— 回答「該不該把免費層擴大到別的內容」
+  const bySession = {};
+  for (const [dims, v] of pick('session_start|')) {
+    const t = (dims.find((d) => d.startsWith('sessionType=')) || '').slice(12);
+    bySession[t] = (bySession[t] || 0) + v;
+  }
+
+  // 免費額度用到第幾分鐘就走 —— 回答「15 分鐘夠不夠」
+  const freeDropoff = {};
+  for (const [dims, v] of pick('free_exhausted|')) {
+    const m = (dims.find((d) => d.startsWith('minutes=')) || '').slice(8);
+    freeDropoff[m] = (freeDropoff[m] || 0) + v;
+  }
+
+  // 轉換率 —— 回答「定價對不對」
+  let freeStarts = 0, paidStarts = 0;
+  for (const [dims, v] of pick('session_start|')) {
+    const lic = (dims.find((d) => d.startsWith('licensed=')) || '').slice(9);
+    if (lic === 'yes') paidStarts += v; else freeStarts += v;
+  }
+  const activations = pick('license_activated|').reduce((a, [, v]) => a + v, 0);
+
+  // 各版本的錯誤 —— 回答「這次推送是不是推壞了」
+  const errorsByVersion = {};
+  for (const [dims, v] of pick('playback_error|')) {
+    const ver = (dims.find((d) => d.startsWith('version=')) || '').slice(8);
+    const kind = (dims.find((d) => d.startsWith('kind=')) || '').slice(5);
+    errorsByVersion[ver] = errorsByVersion[ver] || {};
+    errorsByVersion[ver][kind] = (errorsByVersion[ver][kind] || 0) + v;
+  }
+
+  return json({
+    days,
+    sessionTypes: bySession,
+    freeDropoffMinutes: freeDropoff,
+    sessions: { free: freeStarts, licensed: paidStarts },
+    activations,
+    conversionHint: freeStarts ? +(activations / freeStarts).toFixed(4) : null,
+    errorsByVersion,
+    note: '所有數據皆為彙總計數，不含 contentId、IP 或任何可識別個人的資訊。',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,7 +1518,13 @@ async function handlePaymentWebhook(request, env) {
 
   // --- 發碼 ---
   const email = String(p.CustomerEmail || p.email || '').trim();
-  const plan = planFromItem(p.ItemName || p.plan);
+  let plan = planFromItem(p.ItemName || p.plan);
+  // 早鳥賣完就給正式方案。金流那邊可能還在賣舊連結，這裡是最後一道。
+  if (plan === 'season_early') {
+    const used = parseInt((await env.SUBS.get('early:count')) || '0', 10) || 0;
+    if (used >= EARLY_LIMIT) plan = 'season';
+    else await env.SUBS.put('early:count', String(used + 1));
+  }
   const key = normLicense(licenseKeyNew());
   const lic = {
     plan, email, orderId,
@@ -1522,7 +1701,16 @@ async function handleLicenseIssue(request, env) {
   const body = await request.json().catch(() => null);
   if (!body) return err('body 不是合法 JSON');
   const key = normLicense(body.licenseKey || licenseKeyNew());
-  const plan = PLANS[body.plan] ? String(body.plan) : 'season';
+  let plan = PLANS[body.plan] ? String(body.plan) : 'season';
+
+  // 早鳥限量。**不能靠人工盯著改**——賣超了要嘛食言要嘛虧錢，兩個都不該發生。
+  // 超過就自動降級成正式價，並在回應裡說明，讓發碼的人知道發生了什麼。
+  let downgraded = false;
+  if (plan === 'season_early') {
+    const used = parseInt((await env.SUBS.get('early:count')) || '0', 10) || 0;
+    if (used >= EARLY_LIMIT) { plan = 'season'; downgraded = true; }
+    else await env.SUBS.put('early:count', String(used + 1));
+  }
   const lic = {
     plan,
     email: String(body.email || ''),            // 來自金流，用於補發，不另外收集
@@ -1546,6 +1734,8 @@ async function handleLicenseIssue(request, env) {
     ok: true, licenseKey: prettyLicense(key), plan: lic.plan,
     planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
     expiresAt: lic.expiresAt,
+    downgraded,
+    earlyLeft: await earlyRemaining(env),
   });
 }
 
@@ -2086,6 +2276,10 @@ async function routeAdmin(path, request, env, url) {
   if (path === '/v1/admin/license/delete' && m === 'POST') return handleLicenseDelete(request, env);
   if (path === '/v1/admin/reports/patch' && m === 'POST') return handleReportPatch(request, env);
   if (path === '/v1/admin/reports' && m === 'GET') return handleReportList(env, url);
+  if (path === '/v1/admin/metrics' && m === 'GET') {
+    try { await flushMetrics(env); } catch (e) { /* 先落地再讀 */ }
+    return handleMetrics(env, url);
+  }
 
   if (path === '/v1/admin/stats' && m === 'GET') {
     try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }
@@ -2219,6 +2413,13 @@ export default {
       // 金流回呼。**不需要用戶端權杖**（金流平台不會帶），改用簽章驗證。
       if (path === '/v1/payment/webhook' && request.method === 'POST') {
         return handlePaymentWebhook(request, env);
+      }
+
+      // 產品數據。彙總計數，不含任何可識別個人的資訊。
+      if (path === '/v1/metric' && request.method === 'POST') {
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        return handleMetric(request, env, a);
       }
 
       // 診斷回報。需要安裝權杖，避免被當成匿名投遞箱。

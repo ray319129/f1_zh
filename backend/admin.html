@@ -51,6 +51,11 @@
   .st-revoked { color: #d33; }
   tr.done { opacity: .55; }
   .planSel { padding: 2px 6px; font-size: 12px; margin-right: 4px; }
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 13px; }
+  .mk { width: 140px; flex: none; opacity: .8; }
+  .mbar { flex: 1; height: 8px; background: rgba(128,128,128,.15); border-radius: 4px; overflow: hidden; }
+  .mbar i { display: block; height: 100%; background: #e10600; }
+  .mv { width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
   .full { background: rgba(128,128,128,.1); padding: 12px; border-radius: 8px;
           max-height: 460px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin-top: 14px; }
 </style>
@@ -69,6 +74,7 @@
   <button class="tab on" data-t="cost">成本</button>
   <button class="tab" data-t="lic">授權管理</button>
   <button class="tab" data-t="rep">問題回報</button>
+  <button class="tab" data-t="met">產品數據</button>
 </div>
 
 <div id="err"></div>
@@ -122,6 +128,21 @@
   </div>
 </section>
 
+<section id="p-met" hidden>
+  <div class="panel">
+    <h3>產品數據</h3>
+    <p class="hint">
+      全部是<b>彙總計數</b>——不含 contentId、不含 IP、不含任何可識別個人的資訊。
+      能回答的問題：免費層該不該擴大、15 分鐘夠不夠、定價對不對、哪個版本推壞了。
+    </p>
+    <div class="bar">
+      <select id="mt-days"><option value="30">近 30 天</option><option value="7">近 7 天</option><option value="90">近 90 天</option></select>
+      <button id="mt-go">查詢</button>
+    </div>
+    <div id="mt-out"></div>
+  </div>
+</section>
+
 <section id="p-rep" hidden>
   <div class="panel">
     <h3>問題回報</h3>
@@ -160,6 +181,8 @@ document.querySelectorAll('.tab').forEach((b) => {
     $('p-cost').hidden = b.dataset.t !== 'cost';
     $('p-lic').hidden = b.dataset.t !== 'lic';
     $('p-rep').hidden = b.dataset.t !== 'rep';
+    $('p-met').hidden = b.dataset.t !== 'met';
+    if (b.dataset.t === 'met') $('mt-go').click();
     if (b.dataset.t === 'lic' && !llRows.length) loadLicenses();
     if (b.dataset.t === 'rep') $('rp-go').click();
   };
@@ -302,6 +325,38 @@ $('bl-go').onclick = async () => {
     $('bl-out').innerHTML = `<div class="okmsg">已封鎖，目前共 ${d.revoked} 個安裝在封鎖清單中。</div>`;
     $('bl-id').value = '';
   } catch (e) { $('err').textContent = String(e.message || e); }
+};
+
+// ---- 產品數據 ----
+$('mt-go').onclick = async () => {
+  $('err').textContent = '';
+  $('mt-out').innerHTML = '載入中…';
+  try {
+    const d = await apiCall('/v1/admin/metrics?days=' + $('mt-days').value);
+    const bar = (obj, label) => {
+      const rows = Object.entries(obj).sort((a, b) => b[1] - a[1]);
+      const max = rows.reduce((m, r) => Math.max(m, r[1]), 0) || 1;
+      return `<div class="panel"><h3>${label}</h3>` + (rows.length ? rows.map(([k, v]) =>
+        `<div class="mrow"><span class="mk">${k}</span>`
+        + `<span class="mbar"><i style="width:${(v / max * 100).toFixed(1)}%"></i></span>`
+        + `<span class="mv">${v.toLocaleString()}</span></div>`).join('')
+        : '<div class="hint">尚無資料。</div>') + '</div>';
+    };
+
+    const conv = d.conversionHint == null ? '—' : (d.conversionHint * 100).toFixed(2) + '%';
+    $('mt-out').innerHTML =
+`<div class="cards">
+          <div class="card"><div class="k">免費場次</div><div class="v">${d.sessions.free.toLocaleString()}</div></div>
+          <div class="card"><div class="k">已授權場次</div><div class="v">${d.sessions.licensed.toLocaleString()}</div></div>
+          <div class="card"><div class="k">啟用授權</div><div class="v">${d.activations.toLocaleString()}</div></div>
+          <div class="card"><div class="k">轉換率</div><div class="v">${conv}</div></div>
+        </div>`
+      + bar(d.sessionTypes, '場次類型分布　—— 免費層要不要擴大到其他內容？')
+      + bar(d.freeDropoffMinutes, '免費額度用完時的分鐘數　—— 15 分鐘夠不夠？')
+      + Object.entries(d.errorsByVersion).map(([ver, kinds]) =>
+          bar(kinds, `錯誤：v${ver}　—— 這次推送有沒有推壞？`)).join('')
+      + `<p class="hint">${d.note}</p>`;
+  } catch (e) { $('mt-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
 };
 
 $('ll-go').onclick = loadLicenses;

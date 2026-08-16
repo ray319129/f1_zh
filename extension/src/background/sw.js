@@ -475,6 +475,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await chrome.storage.local.remove(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
           sendResponse({ ok: true });
           break;
+        // 產品數據。**失敗一律吞掉**——統計不該影響使用者的任何體驗。
+        case 'metric':
+          sendResponse({ ok: true });
+          try { await api('/v1/metric', { method: 'POST', body: JSON.stringify({ events: msg.events }) }); }
+          catch (e) { /* noop */ }
+          break;
         case 'sendReport': {
           try {
             const d = await api('/v1/report', {

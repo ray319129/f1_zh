@@ -291,6 +291,7 @@
 
     const haveData = state.workerVtt > 0 || state.segFetched > 0 || memo.size > 0;
     if (haveData) {
+      metric('playback_error', { kind: 'no_caption' });
       evWarn('這支影片有字幕資料，但畫面上從未出現字幕 — 播放器的 CC 應該是關著的');
       show('⚠ 請在播放器設定開啟英文字幕 (CC)', '');
     } else {
@@ -400,7 +401,10 @@
   function freeSecondsLeft() {
     if (licensed) return Infinity;
     if (!freeSession) return 0;
-    const limit = (site && site.freeTier && site.freeTier.seconds) || 900;
+    // ⚠️ freeTier 掛在**設定的根層**，不是 sites[i] 底下。
+    //    原本寫 `site.freeTier` 永遠是 undefined，於是一直用內建值——
+    //    遠端推的免費層設定完全不會生效，而且不報錯（這個專案的招牌錯法）。
+    const limit = (freeTierCfg && freeTierCfg.seconds) || 900;
     const v = document.querySelector('video');
     // 重播：用播放位置判定「前 15 分鐘」，暫停或重看都不會多扣。
     // 直播：沒有可靠的起點，改用實際觀看秒數累計。
@@ -425,11 +429,52 @@
   function showTrialEnded() {
     if (trialEndedShown) return;
     trialEndedShown = true;
+    metric('free_exhausted', {
+      sessionType: sessionType(),
+      minutes: (((site && freeTierCfg && freeTierCfg.seconds) || 900) / 60),
+    });
     box.classList.remove('on');
     if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }   // 把原生英文字幕還給使用者
     evWarn(freeSession
       ? '⏳ 免費試看的 15 分鐘已結束。原生英文字幕已恢復顯示，購買 Season 可解除限制。'
       : '🔒 這支影片不在免費範圍內（免費只涵蓋練習賽／衝刺賽／排位賽／正賽的前 15 分鐘）。');
+  }
+
+  // =========================================================================
+  // 產品數據
+  //
+  // **只送彙總得出來的維度，不送 contentId、不送任何識別碼。**
+  // 我們要回答的是「排位賽佔多少」「15 分鐘夠不夠」「哪個版本錯最多」，
+  // 不是「這個人看了什麼」——後者對優化沒幫助，卻讓隱私政策難寫、
+  // 審查難過、外洩時後果嚴重得多。
+  //
+  // 攢著批次送，不要每個事件都打一次網路。
+  // =========================================================================
+  const metricQueue = [];
+  let metricTimer = null;
+
+  /** 從網址推出場次類型。與免費層用同一份規則，但這裡只要粗分類。 */
+  function sessionType() {
+    const p = location.pathname.toLowerCase();
+    if (!self.PL.isFreeSession(p, freeTierCfg)) return 'other';
+    if (/practice/.test(p)) return 'practice';
+    if (/qualifying/.test(p)) return 'qualifying';
+    if (/sprint/.test(p)) return 'sprint';
+    return 'race';
+  }
+
+  function metric(event, dims) {
+    metricQueue.push({ event, dims: Object.assign({ version: chrome.runtime.getManifest().version }, dims || {}) });
+    if (metricQueue.length > 40) metricQueue.shift();
+    clearTimeout(metricTimer);
+    // 30 秒攢一次。事件很少，不值得為它增加請求數。
+    metricTimer = setTimeout(flushMetrics, 30000);
+  }
+
+  function flushMetrics() {
+    if (!metricQueue.length) return;
+    const events = metricQueue.splice(0, metricQueue.length);
+    send({ type: 'metric', events }).catch(() => {});
   }
 
   async function refreshLicensed() {
@@ -865,6 +910,7 @@
   const CONFIG_RECHECK_MS = 60000;
   let configVersion = -1;
   let killed = false;              // 遠端總開關
+  let freeTierCfg = null;          // 免費層設定（在遠端設定的**根層**，不在 sites 底下）
   let tooOld = false;              // 版本低於伺服器要求的下限
 
   /** 語意化版本比較。回傳 -1 / 0 / 1。 */
@@ -893,6 +939,7 @@
     const prevSite = site;
     configVersion = config.version;
     site = next;
+    freeTierCfg = config.freeTier || (self.PL.BUILT_IN_CONFIG.freeTier);
 
     // ---- 總開關 ----
     // F1TV 大改版而我們一時修不好時，與其讓使用者看到錯亂的疊字，
@@ -1334,7 +1381,7 @@
     manifests = [];
     sessionKeys = new Set();
     // 每支影片各自判定免費資格
-    freeSession = self.PL.isFreeSession(location.pathname, site && site.freeTier);
+    freeSession = self.PL.isFreeSession(location.pathname, freeTierCfg);
     freeSpent = 0; lastTickAt = 0; trialEndedShown = false;
     bundleSegCount = 0;
     state.manifests = 0;
@@ -1345,6 +1392,7 @@
     state.isLive = false; state.harvestDone = false;
 
     if (prev) { setPhase('切換影片'); evInfo(`影片切換 ${prev} → ${cid}`); }
+    metric('session_start', { sessionType: sessionType(), licensed });
     loadBundle(cid).then(() => startPrefetch(cid));
   }
 
@@ -1360,6 +1408,7 @@
     settings = sanitizeSettings((setRes.ok && setRes.settings) || {});
     debugOn = !!settings.debug;
     site = siteConfigFor(config, location.hostname);
+    freeTierCfg = config.freeTier || self.PL.BUILT_IN_CONFIG.freeTier;
     configVersion = config.version;
 
     if (!site) { evWarn('這個網域沒有對應的設定，不啟用'); return; }
@@ -1371,7 +1420,7 @@
     // 授權狀態決定免費層的閘門。取不到就當未授權——
     // **但那不會鎖住功能**，只是套用免費額度（15 分鐘）。
     await refreshLicensed();
-    freeSession = self.PL.isFreeSession(location.pathname, site && site.freeTier);
+    freeSession = self.PL.isFreeSession(location.pathname, freeTierCfg);
 
     applyHideNative();
     mount();
@@ -1418,6 +1467,7 @@
      * 只是要讓伺服器把它翻出來存進共用快取，嘉惠下一個人。
      */
     window.addEventListener('pagehide', () => {
+      flushMetrics();
       if (!pending.size || !contentId) return;
       const lines = Array.from(pending.values()).slice(0, 200);
       send({ type: 'translateKeepalive', cid: contentId, lines });
@@ -1568,7 +1618,9 @@
     L.push(`選擇器：${JSON.stringify(site && { root: site.captionRoot, label: site.captionLabel })}`);
     L.push(`授權狀態：${licensed ? '已授權' : '免費模式'}`
       + `　場次${freeSession ? '在' : '不在'}免費範圍`
-      + (licensed ? '' : `　剩餘 ${Math.round(freeSecondsLeft())} 秒`));
+      + (licensed ? '' : `　剩餘 ${Math.round(freeSecondsLeft())} 秒`)
+      + `　免費層 ${(freeTierCfg && freeTierCfg.seconds) || '?'} 秒`
+      + `（${freeTierCfg === self.PL.BUILT_IN_CONFIG.freeTier ? '內建' : '遠端'}）`);
     L.push(`遠端狀態：${killed ? '⛔ killSwitch 已啟用' : '正常'}`
       + `${tooOld ? '　⛔ 版本過舊，已停止翻譯' : ''}`);
     L.push('');
