@@ -1502,6 +1502,18 @@
 
   // 選項頁按「匯出診斷」時會來要這份報告
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // 設定頁的狀態卡要知道「這個分頁現在如何」
+    if (msg && msg.type === 'quickStatus') {
+      sendResponse({
+        ok: true,
+        state: {
+          everSawCaption, memo: memo.size, contentId,
+          harvestSkipped: state.harvestSkipped,
+          killed, tooOld, phase,
+        },
+      });
+      return true;
+    }
     if (msg && msg.type === 'collectDiagnostics') {
       sendResponse({ ok: true, report: buildDiagnostics() });
       return true;

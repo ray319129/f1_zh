@@ -2,88 +2,140 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
-  <title>PitLingo 設定</title>
+  <title>PitLingo</title>
   <!--
     MV3 的 CSP 禁止行內 script 與行內 style，所以樣式與邏輯都必須是獨立檔案。
     這是上架審核最常見的失敗原因之一。
+
+    這個檔案同時是「工具列彈出視窗」與「設定頁」。
+    彈出時使用者最想知道的是**現在是什麼狀況**，不是調字級——
+    所以狀態放最上面，設定收在下面。
   -->
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <header>
+
+<header>
+  <img src="../../icons/icon48.png" alt="" width="32" height="32">
+  <div>
     <h1>PitLingo</h1>
     <p class="sub">F1TV 英文 CC → 即時繁體中文字幕</p>
-  </header>
+  </div>
+</header>
 
-  <section>
-    <h2>連線</h2>
-    <label class="field">
-      <span>存取金鑰</span>
-      <input id="clientToken" type="password" placeholder="貼上你的存取金鑰" autocomplete="off">
-    </label>
-    <p class="hint">目前為測試階段，金鑰由開發者提供。正式版會改為帳號登入。</p>
-    <div class="row">
-      <button id="test" class="secondary">測試連線</button>
-      <span id="testResult" class="result"></span>
+<!-- ========== 狀態：打開就看得到，不用點任何東西 ========== -->
+<section id="statusCard" class="status">
+  <div class="statusHead">
+    <span id="dot" class="dot"></span>
+    <strong id="statusText">檢查中…</strong>
+  </div>
+  <div id="statusDetail" class="statusDetail"></div>
+  <div id="statusAction" class="statusAction" hidden></div>
+</section>
+
+<!-- ========== 首次使用引導 ========== -->
+<section id="onboard" class="onboard" hidden>
+  <h2>開始使用（兩個步驟）</h2>
+  <ol class="steps">
+    <li>
+      <strong>在 F1TV 播放器開啟英文字幕（CC）</strong>
+      <p class="hint">播放器右下角齒輪 → Subtitles → English。<b>沒開 CC 就什麼都不會出現</b>，這是最常見的卡關點。</p>
+    </li>
+    <li>
+      <strong>打開任一支影片</strong>
+      <p class="hint">其餘全自動。第一次看某支影片會邊看邊翻，之後所有人看同一支都是即時顯示。</p>
+    </li>
+  </ol>
+  <button id="onboardDone" class="secondary">我知道了</button>
+</section>
+
+<!-- ========== 授權 ========== -->
+<section>
+  <h2>授權</h2>
+
+  <div id="licActive" hidden>
+    <div class="licRow">
+      <span class="badge ok">已啟用</span>
+      <span id="licPlan"></span>
     </div>
-  </section>
-
-  <section>
-    <h2>顯示</h2>
-    <label class="toggle">
-      <input id="enabled" type="checkbox">
-      <span>啟用字幕翻譯</span>
-    </label>
-    <label class="toggle">
-      <input id="showEnglish" type="checkbox">
-      <span>同時顯示英文原文（建議開啟）</span>
-    </label>
-    <label class="toggle">
-      <input id="hideNativeCC" type="checkbox">
-      <span>隱藏 F1TV 原本的英文字幕</span>
-    </label>
-    <label class="toggle">
-      <input id="debug" type="checkbox">
-      <span>詳細日誌（測試用，會在 Console 印出每一句字幕與每個批次）</span>
-    </label>
-
-    <label class="field">
-      <span>字級 <output id="fontSizeOut"></output></span>
-      <input id="fontSize" type="range" min="14" max="48" step="1">
-    </label>
-
-    <label class="field">
-      <span>距離畫面底部 <output id="bottomPctOut"></output></span>
-      <input id="bottomPct" type="range" min="0" max="30" step="1">
-    </label>
-
-    <label class="field">
-      <span>字幕停留時間 <output id="holdMsOut"></output></span>
-      <input id="holdMs" type="range" min="3000" max="12000" step="500">
-    </label>
-  </section>
-
-  <section>
-    <h2>狀態</h2>
-    <pre id="status">讀取中…</pre>
+    <p class="hint" id="licExp"></p>
+    <p class="hint">授權碼跟著<b>你</b>走，不綁這台電腦。換電腦、重灌、換瀏覽器都能用同一組碼啟用（最多 3 台）。</p>
     <div class="row">
-      <button id="diag">匯出診斷（複製到剪貼簿）</button>
-      <span id="diagResult" class="result"></span>
+      <button id="licDevices" class="secondary">管理裝置</button>
+      <button id="licRemove" class="secondary">在這台停用</button>
     </div>
+    <div id="licDeviceList" class="deviceList" hidden></div>
+  </div>
+
+  <div id="licInactive">
+    <label class="field">
+      <span>授權碼</span>
+      <input id="licKey" placeholder="PL-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    </label>
+    <p class="hint">購買後會寄到你的 email。忘記了可以用購買時的 email 向客服查回。</p>
     <div class="row">
-      <button id="reloadCfg" class="secondary">立即重新載入設定</button>
-      <span id="reloadCfgResult" class="result"></span>
+      <button id="licActivate">啟用</button>
+      <span id="licMsg" class="result"></span>
     </div>
-    <p class="hint">回報問題時請按這個，把內容整段貼給開發者。需要先開著 F1TV 的分頁。</p>
-  </section>
+  </div>
+</section>
 
-  <footer>
-    <p>
-      PitLingo 是第三方獨立工具，與 Formula 1、F1TV 無任何隸屬或合作關係，亦未獲其背書。
-      使用本工具需要你自備有效的 F1TV 訂閱。
-    </p>
-  </footer>
+<!-- ========== 顯示設定 ========== -->
+<section>
+  <h2>顯示</h2>
 
-  <script src="options.js"></script>
+  <label class="toggle">
+    <input id="enabled" type="checkbox">
+    <span>啟用字幕翻譯</span>
+  </label>
+  <label class="toggle">
+    <input id="showEnglish" type="checkbox">
+    <span>同時顯示英文原文<em>字幕延遲時能靠英文關鍵字對上畫面</em></span>
+  </label>
+  <label class="toggle">
+    <input id="hideNativeCC" type="checkbox">
+    <span>隱藏 F1TV 原本的英文字幕<em>關掉的話兩層字幕會重疊</em></span>
+  </label>
+
+  <label class="field">
+    <span>字級 <output id="fontSizeOut"></output></span>
+    <input id="fontSize" type="range" min="14" max="48" step="1">
+  </label>
+  <label class="field">
+    <span>距離底部 <output id="bottomPctOut"></output></span>
+    <input id="bottomPct" type="range" min="0" max="30" step="1">
+  </label>
+</section>
+
+<!-- ========== 進階 ========== -->
+<details class="adv">
+  <summary>進階</summary>
+
+  <label class="field">
+    <span>字幕停留上限 <output id="holdMsOut"></output></span>
+    <input id="holdMs" type="range" min="2000" max="15000" step="500">
+  </label>
+  <p class="hint">正常情況下字幕會跟著 F1TV 原本的字幕一起消失，這個值只是保險——輪詢真的停擺時才會用到。</p>
+
+  <label class="toggle">
+    <input id="debug" type="checkbox">
+    <span>詳細日誌<em>在 Console 印出每一句字幕與每個批次，回報問題時很有用</em></span>
+  </label>
+</details>
+
+<!-- ========== 疑難排解 ========== -->
+<details class="adv">
+  <summary>疑難排解</summary>
+  <div class="row wrap">
+    <button id="diag" class="secondary">匯出診斷（複製到剪貼簿）</button>
+    <button id="reloadCfg" class="secondary">立即重新載入設定</button>
+  </div>
+  <p class="hint">回報問題時請按「匯出診斷」，把內容整段貼給開發者。<b>報告不含你的授權碼或任何權杖。</b>需要先開著 F1TV 的分頁。</p>
+  <p class="hint" id="ver"></p>
+</details>
+
+<script src="../shared/normalize.js"></script>
+<script src="../shared/defaults.js"></script>
+<script src="options.js"></script>
 </body>
 </html>

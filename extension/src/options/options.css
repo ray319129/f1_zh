@@ -1,125 +1,158 @@
+/*
+  這個檔案同時服務「工具列彈出視窗」與「設定分頁」。
+  彈出時寬度受限，所以版面一律單欄、不用格線。
+*/
+
 :root {
-  --bg: #12151a;
-  --panel: #1a1e26;
-  --line: #2a3038;
-  --text: #e8eaed;
-  --muted: #9aa3ad;
-  --accent: #e10600;
-  --ok: #3ddc84;
-  --err: #ff6b6b;
+  color-scheme: light dark;
+  --line: rgba(128, 128, 128, .28);
+  --dim: rgba(128, 128, 128, .85);
+  --accent: #e10600;          /* F1 紅 */
+  --ok: #0a7c4a;
+  --warn: #b8730a;
+  --err: #d33;
 }
 
 * { box-sizing: border-box; }
 
 body {
+  font: 14px/1.6 system-ui, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
   margin: 0;
-  padding: 24px;
-  min-width: 380px;
-  max-width: 620px;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.6 "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  padding: 16px;
+  min-width: 340px;
+  max-width: 560px;
 }
 
-header { margin-bottom: 24px; }
-
-h1 {
-  margin: 0;
-  font-size: 22px;
-  letter-spacing: 0.5px;
-}
-h1::before {
-  content: "";
-  display: inline-block;
-  width: 4px; height: 18px;
-  background: var(--accent);
-  margin-right: 10px;
-  vertical-align: -2px;
-  border-radius: 2px;
+/* 設定分頁（options_ui 開新分頁）時置中，彈出視窗時維持靠左 */
+@media (min-width: 600px) {
+  body { margin-inline: auto; padding: 28px; }
 }
 
-.sub { margin: 4px 0 0 14px; color: var(--muted); font-size: 13px; }
-
-section {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 16px 18px;
-  margin-bottom: 16px;
-}
-
-h2 {
-  margin: 0 0 14px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.field { display: block; margin-bottom: 16px; }
-.field > span {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-.field output { color: var(--muted); font-variant-numeric: tabular-nums; }
-
-input[type="password"],
-input[type="text"] {
-  width: 100%;
-  padding: 9px 12px;
-  background: #0e1116;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-}
-input[type="password"]:focus,
-input[type="text"]:focus { outline: none; border-color: var(--accent); }
-
-input[type="range"] { width: 100%; accent-color: var(--accent); }
-
-.toggle {
+header {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 0;
-  cursor: pointer;
+  margin-bottom: 16px;
 }
-.toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+header h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+header .sub { margin: 0; font-size: 12px; color: var(--dim); }
 
-.row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+h2 {
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: .5px;
+  color: var(--dim);
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+section { padding: 14px 0; border-top: 1px solid var(--line); }
+section:first-of-type { border-top: 0; padding-top: 0; }
+
+/* ---------- 狀態卡 ---------- */
+.status {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 4px;
+}
+.statusHead { display: flex; align-items: center; gap: 8px; }
+.statusHead strong { font-size: 15px; }
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--dim); flex: none;
+}
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--err); }
+.statusDetail { font-size: 12px; color: var(--dim); margin-top: 4px; }
+.statusAction { margin-top: 10px; font-size: 13px; }
+.statusAction b { color: inherit; }
+
+/* ---------- 引導 ---------- */
+.onboard { border-top: 0; }
+.steps { margin: 0; padding-left: 20px; }
+.steps li { margin-bottom: 10px; }
+.steps strong { font-weight: 600; }
+.steps p { margin: 2px 0 0; }
+
+/* ---------- 表單 ---------- */
+.field { display: block; margin-bottom: 12px; }
+.field > span {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 13px; margin-bottom: 4px;
+}
+.field output { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+input[type="text"], input[type="password"], input:not([type]) {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+input:not([type]) { font-family: ui-monospace, "SF Mono", monospace; letter-spacing: .5px; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+.toggle {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin-bottom: 10px; cursor: pointer;
+}
+.toggle input { margin-top: 3px; accent-color: var(--accent); flex: none; }
+.toggle span { font-size: 13px; }
+/* 說明文字附在選項下面，不另外開一段 hint —— 選項多的時候比較好掃 */
+.toggle em {
+  display: block; font-style: normal; font-size: 11.5px;
+  color: var(--dim); margin-top: 1px;
+}
+
+.row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.row.wrap { flex-wrap: wrap; }
 
 button {
-  padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: #232833;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
+  font: inherit; font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #fff;
   cursor: pointer;
 }
-button:hover { border-color: var(--accent); }
+button:hover { filter: brightness(1.08); }
+button:disabled { opacity: .5; cursor: default; filter: none; }
+button.secondary { background: transparent; color: inherit; border-color: var(--line); }
 
-.hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
-.result { font-size: 13px; color: var(--muted); }
+.hint { font-size: 12px; color: var(--dim); margin: 6px 0 0; }
+.hint b { color: inherit; font-weight: 600; }
+
+.result { font-size: 12.5px; }
 .result.ok { color: var(--ok); }
 .result.err { color: var(--err); }
 
-pre {
-  margin: 0;
-  padding: 12px;
-  background: #0e1116;
-  border-radius: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
+/* ---------- 授權 ---------- */
+.licRow { display: flex; align-items: center; gap: 8px; }
+.badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 20px;
+  border: 1px solid var(--line);
 }
+.badge.ok { color: var(--ok); border-color: currentColor; }
+.deviceList { margin-top: 10px; font-size: 12.5px; }
+.deviceList .dev {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; border-top: 1px solid var(--line);
+}
+.deviceList .dev.me { font-weight: 600; }
+.deviceList button { padding: 3px 9px; font-size: 12px; }
 
-footer { color: var(--muted); font-size: 11px; line-height: 1.7; }
-footer p { margin: 0; }
+/* ---------- 摺疊區 ---------- */
+.adv { border-top: 1px solid var(--line); padding: 12px 0; }
+.adv > summary {
+  cursor: pointer; font-size: 12px; color: var(--dim);
+  font-weight: 600; list-style: none;
+}
+.adv > summary::-webkit-details-marker { display: none; }
+.adv > summary::before { content: "▸ "; }
+.adv[open] > summary::before { content: "▾ "; }
+.adv > *:not(summary) { margin-top: 10px; }

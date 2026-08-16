@@ -30,7 +30,18 @@
   .day { margin-top: 20px; }
   .day h3 { font-size: 14px; margin: 0 0 6px; }
   .hint { font-size: 12px; opacity: .65; margin-top: 6px; }
-  #err { color: #d33; white-space: pre-wrap; }
+  #err { color: #d33; white-space: pre-wrap; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 18px; border-bottom: 1px solid rgba(128,128,128,.3); }
+  .tab { border: 0; background: transparent; padding: 8px 14px; border-radius: 6px 6px 0 0;
+         opacity: .55; border-bottom: 2px solid transparent; }
+  .tab.on { opacity: 1; font-weight: 600; border-bottom-color: currentColor; }
+  .panel { border: 1px solid rgba(128,128,128,.3); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  .panel h3 { margin: 0 0 4px; font-size: 15px; }
+  .key { font-family: ui-monospace, monospace; font-size: 20px; letter-spacing: 1px;
+         padding: 10px 14px; border-radius: 8px; border: 1px dashed rgba(128,128,128,.5);
+         display: inline-block; margin: 8px 0; user-select: all; }
+  .danger { border-color: #d33; color: #d33; }
+  .okmsg { color: #0a7; }
 </style>
 
 <h1>PitLingo 成本後台</h1>
@@ -43,12 +54,105 @@
   <button id="go">查詢</button>
 </div>
 
+<div class="tabs">
+  <button class="tab on" data-t="cost">成本</button>
+  <button class="tab" data-t="lic">授權管理</button>
+</div>
+
 <div id="err"></div>
-<div id="cards" class="cards"></div>
-<div id="out"></div>
+
+<section id="p-cost">
+  <div id="cards" class="cards"></div>
+  <div id="out"></div>
+</section>
+
+<section id="p-lic" hidden>
+  <div class="panel">
+    <h3>發放授權碼</h3>
+    <p class="hint">付款成功後執行。email 來自金流，只用於「忘記授權碼」時補發。</p>
+    <div class="bar">
+      <input id="li-mail" size="26" placeholder="買家 email（選填但強烈建議）">
+      <select id="li-plan"><option value="season">賽季</option><option value="lifetime">永久</option><option value="trial">試用</option></select>
+      <input id="li-order" size="16" placeholder="訂單編號（選填）">
+      <button id="li-go">發碼</button>
+    </div>
+    <div id="li-out"></div>
+  </div>
+
+  <div class="panel">
+    <h3>查詢與停用</h3>
+    <p class="hint">使用者說「我忘記授權碼了」→ 用 email 查。退款或盜用 → 停用。</p>
+    <div class="bar">
+      <input id="lq-mail" size="26" placeholder="用 email 查回授權碼">
+      <button id="lq-go">查詢</button>
+      <input id="lr-key" size="20" placeholder="PL-XXXX-XXXX-XXXX">
+      <button id="lr-go" class="danger">停用這組</button>
+    </div>
+    <div id="lq-out"></div>
+  </div>
+</section>
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// ADMIN_TOKEN 只留在這個分頁的記憶體。不寫 localStorage——
+// 寫進去的話，任何能碰到這台電腦的人都拿得到管理權限。
+async function apiCall(path, opts) {
+  const base = $('base').value.replace(/\/+$/, '');
+  const res = await fetch(base + path, Object.assign({
+    headers: { 'content-type': 'application/json', 'x-admin-token': $('tok').value },
+  }, opts || {}));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+document.querySelectorAll('.tab').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
+    $('p-cost').hidden = b.dataset.t !== 'cost';
+    $('p-lic').hidden = b.dataset.t !== 'lic';
+  };
+});
+
+$('li-go').onclick = async () => {
+  $('err').textContent = ''; $('li-out').innerHTML = '發放中…';
+  try {
+    const d = await apiCall('/v1/admin/license/issue', {
+      method: 'POST',
+      body: JSON.stringify({ email: $('li-mail').value.trim(), plan: $('li-plan').value, orderId: $('li-order').value.trim() }),
+    });
+    $('li-out').innerHTML = `<div class="okmsg">已發放（${d.plan}）。把這組碼寄給買家：</div>
+      <div class="key">${d.licenseKey}</div>
+      <div class="hint">使用者在擴充功能的設定頁貼上即可啟用，最多 3 台裝置。</div>`;
+  } catch (e) { $('li-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
+};
+
+$('lq-go').onclick = async () => {
+  $('err').textContent = ''; $('lq-out').innerHTML = '查詢中…';
+  try {
+    const d = await apiCall('/v1/admin/license/lookup?email=' + encodeURIComponent($('lq-mail').value.trim()));
+    $('lq-out').innerHTML = d.licenses.length ? `<table>
+      <tr><th>授權碼</th><th>方案</th><th class="num">裝置</th><th>狀態</th></tr>
+      ${d.licenses.map((l) => `<tr><td class="key" style="font-size:14px;padding:2px 6px;border:0">${l.licenseKey}</td>
+        <td>${l.plan}</td><td class="num">${l.devices}</td>
+        <td>${l.revoked ? '<span style="color:#d33">已停用</span>' : '有效'}</td></tr>`).join('')}
+      </table>` : '<div class="hint">這個 email 沒有任何授權碼。</div>';
+  } catch (e) { $('lq-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
+};
+
+$('lr-go').onclick = async () => {
+  const key = $('lr-key').value.trim();
+  if (!key) { $('err').textContent = '請先填授權碼'; return; }
+  // 停用是不可逆的（使用者會立刻失去存取），一定要再問一次
+  if (!confirm(`確定停用 ${key}？
+使用者會立刻無法使用，且已啟用的裝置全部失效。`)) return;
+  $('err').textContent = '';
+  try {
+    const d = await apiCall('/v1/admin/license/revoke', { method: 'POST', body: JSON.stringify({ licenseKey: key }) });
+    $('lq-out').innerHTML = `<div class="okmsg">已停用，影響 ${d.devices} 台裝置。</div>`;
+  } catch (e) { $('err').textContent = String(e.message || e); }
+};
 const usd = (n) => '$' + Number(n || 0).toFixed(4);
 const pct = (n) => n == null ? '—' : (n * 100).toFixed(1) + '%';
 
@@ -61,10 +165,7 @@ $('go').onclick = async () => {
   $('out').innerHTML = '';
   $('cards').innerHTML = '查詢中…';
   try {
-    const url = $('base').value.replace(/\/+$/, '') + '/v1/admin/stats?days=' + $('days').value;
-    const res = await fetch(url, { headers: { 'x-admin-token': $('tok').value } });
-    if (!res.ok) throw new Error('HTTP ' + res.status + '（權杖錯誤或後端未部署 v2.0）');
-    render(await res.json());
+    render(await apiCall('/v1/admin/stats?days=' + $('days').value));
   } catch (e) {
     $('cards').innerHTML = '';
     $('err').textContent = String(e.message || e);

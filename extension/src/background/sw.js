@@ -204,6 +204,98 @@ async function markComplete(cid, segCount) {
 }
 
 // ---------------------------------------------------------------------------
+// 授權
+//
+// **授權碼綁人，安裝權杖綁裝置。** 兩者不可混用——
+// 用安裝權杖當付費憑證的話，使用者換一台電腦就失效。
+//
+// 通行證（entitlement）存在本機，過期前都算有效。
+// **後端連不上時不要把功能鎖起來**：伺服器出問題是我們的錯，
+// 不該讓已付費的人看不到字幕。
+// ---------------------------------------------------------------------------
+const ENT_RENEW_BEFORE_MS = 3 * 86400 * 1000;      // 到期前 3 天開始續
+
+async function licenseStatus() {
+  const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
+  if (!st.entitlement || !st.entExp) return { active: false };
+
+  const expMs = st.entExp * 1000;
+  if (expMs < Date.now()) {
+    // 過期了，試著續一次。續不到也先回報未啟用，但**不刪掉授權碼**——
+    // 可能只是後端暫時掛掉，網路恢復後還要能自動續回來。
+    const r = await licenseRenew();
+    if (!r.ok) return { active: false, expired: true, licenseKey: st.licenseKey };
+    return licenseStatus();
+  }
+
+  // 快到期就在背景續，不擋使用者
+  if (expMs - Date.now() < ENT_RENEW_BEFORE_MS) licenseRenew().catch(() => {});
+
+  return {
+    active: true,
+    plan: st.licPlan || 'season',
+    expiresAt: st.licExpiresAt || null,
+    licenseKey: st.licenseKey || '',
+  };
+}
+
+async function licenseActivate(licenseKey) {
+  const key = String(licenseKey || '').trim();
+  if (!key) return { ok: false, error: '請輸入授權碼' };
+  try {
+    const d = await api('/v1/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey: key }) });
+    if (!d || !d.ok) return d || { ok: false, error: '啟用失敗' };
+    await chrome.storage.local.set({
+      licenseKey: key, entitlement: d.entitlement, entExp: d.exp,
+      licPlan: d.plan, licExpiresAt: d.expiresAt || null,
+    });
+    return d;
+  } catch (e) {
+    // api() 只丟 HTTP 狀態，訊息在 body 裡，所以這裡重打一次拿細節。
+    // 錯誤訊息是使用者唯一的線索，不能只回「失敗」。
+    try {
+      const res = await fetch(BACKEND + '/v1/license/activate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-client-token': await getClientToken() },
+        body: JSON.stringify({ licenseKey: key }),
+      });
+      return await res.json();
+    } catch (e2) { return { ok: false, error: '無法連線到伺服器，請檢查網路' }; }
+  }
+}
+
+async function licenseRenew() {
+  const { licenseKey } = await chrome.storage.local.get('licenseKey');
+  if (!licenseKey) return { ok: false };
+  try {
+    const d = await api('/v1/license/renew', { method: 'POST', body: JSON.stringify({ licenseKey }) });
+    if (d && d.ok) {
+      await chrome.storage.local.set({ entitlement: d.entitlement, entExp: d.exp, licPlan: d.plan });
+    }
+    return d || { ok: false };
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+}
+
+async function licenseDeactivate(licenseKey, installId) {
+  const { licenseKey: stored } = await chrome.storage.local.get('licenseKey');
+  const key = String(licenseKey || stored || '').trim();
+  if (!key || !installId) return { ok: false, error: '缺少授權碼或裝置編號' };
+  try {
+    return await api('/v1/license/deactivate', { method: 'POST', body: JSON.stringify({ licenseKey: key, installId }) });
+  } catch (e) { return { ok: false, error: '無法連線到伺服器' }; }
+}
+
+/** 目前這組授權碼底下有哪些裝置。純查詢，不會動到綁定狀態。 */
+async function licenseDevices() {
+  const { licenseKey } = await chrome.storage.local.get('licenseKey');
+  if (!licenseKey) return [];
+  try {
+    const d = await api('/v1/license/devices', { method: 'POST', body: JSON.stringify({ licenseKey }) });
+    return (d && d.devices) || [];
+  } catch (e) { return []; }
+}
+
+// ---------------------------------------------------------------------------
 // F1TV 串流資源
 //
 // 為什麼要在這裡發請求，而不是在 content script：
@@ -290,6 +382,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               body: JSON.stringify({ cid: msg.cid || 'misc', lines: msg.lines || [] }),
             }).catch(() => {});
           } catch (e) { /* 離開途中，不做任何事 */ }
+          break;
+        // ---- 狀態與授權（設定頁用）----
+        case 'status': {
+          try {
+            const h = await fetch(BACKEND + '/v1/health').then((r) => r.json());
+            sendResponse({ ok: true, health: h });
+          } catch (e) { sendResponse({ ok: false, error: '後端無法連線' }); }
+          break;
+        }
+        case 'licenseStatus':
+          sendResponse({ ok: true, license: await licenseStatus() });
+          break;
+        case 'licenseActivate':
+          sendResponse({ ok: true, result: await licenseActivate(msg.licenseKey) });
+          break;
+        case 'licenseDeactivate':
+          sendResponse({ ok: true, result: await licenseDeactivate(msg.licenseKey, msg.installId) });
+          break;
+        case 'licenseDevices':
+          sendResponse({ ok: true, devices: await licenseDevices() });
+          break;
+        case 'licenseClear':
+          await chrome.storage.local.remove(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
+          sendResponse({ ok: true });
           break;
         case 'markComplete':
           sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount) });

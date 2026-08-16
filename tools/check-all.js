@@ -28,6 +28,7 @@ const CHECKS = [
   ['擴充功能可實際執行（抓 --check 抓不到的）', 'tools/smoke-extension.js'],
   ['後端資安與維運邏輯（權杖／分流／汙染防護／成本）', 'tools/check-backend.js'],
   ['亂操作防呆（14 個情境，不可有未捕捉的例外）', 'tools/chaos-extension.js'],
+  ['設定頁的 HTML／CSS／JS 一致性', 'tools/check-options.js'],
 ];
 
 let failed = 0;

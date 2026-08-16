@@ -15,6 +15,7 @@
  *   POST /v1/license/activate          用授權碼啟用這台裝置，換回通行證
  *   POST /v1/license/renew             續期（失敗不影響現有通行證）
  *   POST /v1/license/deactivate        解除裝置（不需該裝置的權杖）
+ *   POST /v1/license/devices           列出這組授權碼的裝置（純查詢）
  *   POST /v1/admin/license/issue       發碼（金流 webhook 之後接這裡）
  *   POST /v1/admin/license/revoke      停用（退款／盜用）
  *   GET  /v1/admin/license/lookup      用 email 查回授權碼（客服補發）
@@ -37,6 +38,8 @@
  *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
  * v1.7  單句不再走批次編號協定（實測回覆率只有 50%，坑 #9）。
  *       批次解析加上「行數相同就按位置對應」的備援。
+ * v2.2  管理端點補回 CORS（後台是本機開的 file://，Origin 是 null，
+ *       第一版把自己的後台也擋掉了）。新增 /v1/license/devices。
  * v2.1  **授權與安裝權杖分離**。v2.0 把「證明付過錢」做成綁裝置的，
  *       換一台電腦就失效——付費軟體不能這樣。改成可攜帶的授權碼：
  *       任何裝置貼上就能用，最多 3 台，可自行解除，可用 email 補發。
@@ -1014,6 +1017,19 @@ async function handleLicenseRenew(request, env, auth) {
   return json({ ok: true, ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', lic.expiresAt)) });
 }
 
+/** 列出這組授權碼底下的裝置。純查詢，不會改動任何東西。 */
+async function handleLicenseDevices(request, env) {
+  const body = await request.json().catch(() => null);
+  const key = normLicense(body && body.licenseKey);
+  const lic = await readLicense(env, key);
+  if (!lic) return err('查無此授權碼', 404);
+  return json({
+    ok: true,
+    max: MAX_DEVICES,
+    devices: (lic.devices || []).map((d) => ({ id: d.installId.slice(0, 8), lastSeen: d.lastSeen })),
+  });
+}
+
 /** 管理端：發碼。P3 接上金流後由 webhook 呼叫，現在先手動。 */
 async function handleLicenseIssue(request, env) {
   const body = await request.json().catch(() => null);
@@ -1084,10 +1100,31 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
+/**
+ * 管理端點需要 CORS，一般端點不需要。
+ *
+ * 一般端點拿掉 CORS 是對的（用戶端都不受 CORS 限制，開著只是徒增攻擊面）。
+ * 但**後台是本機開的 HTML 檔**，`file://` 的 Origin 是 `null`，
+ * 沒有 CORS 就完全打不到 API——第一版把自己的後台也擋掉了。
+ *
+ * 這裡放寬是安全的：管理端點一律要 `x-admin-token`，而那個權杖
+ * **不在任何發佈出去的程式碼裡**（不像 CLIENT_TOKEN 隨擴充功能發給所有人）。
+ * 沒有權杖的跨站請求照樣是 401。
+ */
+const ADMIN_CORS = { ...CORS, 'Access-Control-Allow-Origin': '*' };
+
 function json(data, status = 200, extra = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8', ...CORS, ...extra },
+  });
+}
+
+/** 管理端點專用的回應（帶 CORS） */
+function adminJson(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8', ...ADMIN_CORS },
   });
 }
 
@@ -1523,15 +1560,49 @@ async function handleStats(env, url) {
   });
 }
 
+
+/** 管理端路由。權限已在外層驗過，這裡只管分派。 */
+async function routeAdmin(path, request, env, url) {
+  const m = request.method;
+
+  if (path === '/v1/admin/license/issue' && m === 'POST') return handleLicenseIssue(request, env);
+  if (path === '/v1/admin/license/revoke' && m === 'POST') return handleLicenseRevoke(request, env);
+  if (path === '/v1/admin/license/lookup' && m === 'GET') return handleLicenseLookup(request, env, url);
+
+  if (path === '/v1/admin/stats' && m === 'GET') {
+    try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }
+    return handleStats(env, url);
+  }
+
+  // 撤銷某個安裝（濫用、盜用時用；退款請用 license/revoke）
+  if (path === '/v1/admin/revoke' && m === 'POST') {
+    const b = await request.json().catch(() => null);
+    const id = b && String(b.installId || '').trim();
+    if (!id) return err('缺少 installId');
+    let list = [];
+    try { list = JSON.parse((await env.SUBS.get('revoked')) || '[]'); } catch (e) { /* noop */ }
+    if (!list.includes(id)) list.push(id);
+    await env.SUBS.put('revoked', JSON.stringify(list));
+    revCache = { at: 0, set: null };       // 立刻讓快取失效
+    return json({ ok: true, revoked: list.length });
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 export default {
   async fetch(request, env) {
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-
     const url = new URL(request.url);
     const path = url.pathname;
+    const isAdmin = path.startsWith('/v1/admin/');
+
+    // 預檢。管理端點要帶 CORS，否則本機開的後台連問都問不到。
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: isAdmin ? ADMIN_CORS : CORS });
+    }
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
 
     try {
@@ -1627,6 +1698,11 @@ export default {
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);
         return handleLicenseActivate(request, env, a);
       }
+      if (path === '/v1/license/devices' && request.method === 'POST') {
+        const a = await authClient(env, request);
+        if (!a.ok) return err('unauthorized: ' + a.reason, 401);
+        return handleLicenseDevices(request, env);
+      }
       if (path === '/v1/license/renew' && request.method === 'POST') {
         const a = await authClient(env, request);
         if (!a.ok) return err('unauthorized: ' + a.reason, 401);
@@ -1640,37 +1716,13 @@ export default {
       }
 
       // ---- 管理後台 ----
-      if (path === '/v1/admin/license/issue' && request.method === 'POST') {
-        if (!authAdmin(env, request)) return err('unauthorized', 401);
-        return handleLicenseIssue(request, env);
-      }
-      if (path === '/v1/admin/license/revoke' && request.method === 'POST') {
-        if (!authAdmin(env, request)) return err('unauthorized', 401);
-        return handleLicenseRevoke(request, env);
-      }
-      if (path === '/v1/admin/license/lookup' && request.method === 'GET') {
-        if (!authAdmin(env, request)) return err('unauthorized', 401);
-        return handleLicenseLookup(request, env, url);
-      }
-
-      if (path === '/v1/admin/stats' && request.method === 'GET') {
-        if (!authAdmin(env, request)) return err('unauthorized', 401);
-        try { await flushStats(env); } catch (e) { /* 先落地再讀，讀不到也不擋 */ }
-        return handleStats(env, url);
-      }
-
-      // 撤銷某個安裝（濫用、退款、盜用時用）
-      if (path === '/v1/admin/revoke' && request.method === 'POST') {
-        if (!authAdmin(env, request)) return err('unauthorized', 401);
-        const b = await request.json().catch(() => null);
-        const id = b && String(b.installId || '').trim();
-        if (!id) return err('缺少 installId');
-        let list = [];
-        try { list = JSON.parse((await env.SUBS.get('revoked')) || '[]'); } catch (e) { /* noop */ }
-        if (!list.includes(id)) list.push(id);
-        await env.SUBS.put('revoked', JSON.stringify(list));
-        revCache = { at: 0, set: null };       // 立刻讓快取失效
-        return json({ ok: true, revoked: list.length });
+      // 權限在這裡驗一次，回應一律補 CORS —— 後台是本機開的 file:// 網頁，
+      // Origin 是 null，沒有 CORS 連問都問不到（第一版把自己的後台擋掉了）。
+      if (isAdmin) {
+        if (!authAdmin(env, request)) return adminJson({ error: 'unauthorized' }, 401);
+        const res = await routeAdmin(path, request, env, url);
+        if (!res) return adminJson({ error: 'not found' }, 404);
+        return new Response(await res.text(), { status: res.status || 200, headers: ADMIN_CORS });
       }
 
       return err('not found', 404);

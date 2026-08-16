@@ -1,153 +1,265 @@
-/**
- * 選項頁
+/*
+ * 設定頁／彈出視窗。
  *
- * 所有設定寫進 chrome.storage.local。content script 有掛 storage.onChanged，
- * 所以調整字級或開關會**立刻反映在正在播放的頁面上**，不用重新整理。
+ * 設計原則：
+ *   1. **打開就看得到現在是什麼狀況。** 使用者按圖示多半是因為「怎麼沒字幕」，
+ *      不是想調字級。所以狀態放最上面，而且每個錯誤都要說「現在能做什麼」。
+ *   2. **每個非同步動作都要有失敗的樣子。** 後端掛掉、沒開 F1TV、權杖過期，
+ *      都不能只是靜靜地沒反應。
+ *   3. **授權跟著人走。** 這裡要讓使用者清楚知道換電腦不會失效，
+ *      並且能自己管理裝置——不要讓他寫信問客服。
  */
+(function () {
+  'use strict';
 
-const DEFAULTS = {
-  enabled: true,
-  showEnglish: true,
-  fontSize: 26,
-  bottomPct: 8,
-  holdMs: 7000,
-  hideNativeCC: true,
-  debug: false,
-};
+  const { sanitizeSettings, DEFAULT_SETTINGS, BACKEND } = self.PL;
+  const $ = (id) => document.getElementById(id);
 
-const $ = (id) => document.getElementById(id);
-const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC', 'debug'];
-const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
+  const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC', 'debug'];
+  const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
 
-function renderOutputs(s) {
-  $('fontSizeOut').textContent = s.fontSize + ' px';
-  $('bottomPctOut').textContent = s.bottomPct + ' %';
-  $('holdMsOut').textContent = (s.holdMs / 1000).toFixed(1) + ' 秒';
-}
+  let settings = Object.assign({}, DEFAULT_SETTINGS);
 
-async function load() {
-  const { settings, clientToken } = await chrome.storage.local.get(['settings', 'clientToken']);
-  const s = Object.assign({}, DEFAULTS, settings || {});
-  TOGGLES.forEach((k) => { $(k).checked = !!s[k]; });
-  RANGES.forEach((k) => { $(k).value = s[k]; });
-  $('clientToken').value = clientToken || '';
-  renderOutputs(s);
-  return s;
-}
-
-async function save() {
-  const s = {};
-  TOGGLES.forEach((k) => { s[k] = $(k).checked; });
-  RANGES.forEach((k) => { s[k] = Number($(k).value); });
-  renderOutputs(s);
-  await chrome.storage.local.set({ settings: s });
-}
-
-TOGGLES.concat(RANGES).forEach((k) => {
-  $(k).addEventListener('input', save);
-  $(k).addEventListener('change', save);
-});
-
-$('clientToken').addEventListener('change', async () => {
-  await chrome.storage.local.set({ clientToken: $('clientToken').value.trim() });
-  $('testResult').textContent = '金鑰已儲存，建議按一次「測試連線」';
-  $('testResult').className = 'result';
-});
-
-$('test').addEventListener('click', async () => {
-  const out = $('testResult');
-  out.textContent = '測試中…';
-  out.className = 'result';
-  const res = await chrome.runtime.sendMessage({ type: 'health' });
-  if (res && res.ok) {
-    out.textContent = `✅ 連線正常（模型 ${res.health.model}）`;
-    out.className = 'result ok';
-  } else {
-    out.textContent = `❌ 連線失敗：${(res && res.error) || '未知錯誤'}`;
-    out.className = 'result err';
+  // ---------------------------------------------------------------------
+  // 與 service worker / content script 通訊
+  // ---------------------------------------------------------------------
+  function sw(msg) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(msg, (res) => {
+          resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : (res || { ok: false, error: '沒有回應' }));
+        });
+      } catch (e) { resolve({ ok: false, error: String(e.message || e) }); }
+    });
   }
-});
 
-/**
- * 向 F1TV 分頁的 content script 要一份完整診斷報告並複製到剪貼簿。
- * 報告涵蓋預抓狀態、命中率、事件時間軸——回報問題時貼這一份就夠。
- */
-$('diag').addEventListener('click', async () => {
-  const out = $('diagResult');
-  out.textContent = '收集中…';
-  out.className = 'result';
-  try {
-    const tabs = await chrome.tabs.query({ url: 'https://f1tv.formula1.com/*' });
-    if (!tabs.length) {
-      out.textContent = '❌ 找不到 F1TV 分頁，請先開啟並播放影片';
-      out.className = 'result err';
+  /** 對目前的 F1TV 分頁說話。沒有那個分頁時要明確講，不要靜靜失敗。 */
+  function toTab(msg) {
+    return new Promise((resolve) => {
+      chrome.tabs.query({ url: 'https://f1tv.formula1.com/*' }, (tabs) => {
+        if (!tabs || !tabs.length) return resolve({ ok: false, noTab: true });
+        chrome.tabs.sendMessage(tabs[0].id, msg, (res) => {
+          resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : (res || { ok: false }));
+        });
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // 狀態卡
+  // ---------------------------------------------------------------------
+  function setStatus(level, text, detail, actionHtml) {
+    $('dot').className = 'dot ' + level;
+    $('statusText').textContent = text;
+    $('statusDetail').textContent = detail || '';
+    const a = $('statusAction');
+    if (actionHtml) { a.innerHTML = actionHtml; a.hidden = false; } else { a.hidden = true; }
+  }
+
+  async function refreshStatus() {
+    if (!settings.enabled) {
+      return setStatus('', '翻譯已關閉', '在下方「顯示」把它打開即可。收割仍會在背景進行。');
+    }
+
+    const st = await sw({ type: 'status' });
+    if (!st.ok) {
+      return setStatus('err', '無法連線到服務',
+        st.error || '', '字幕功能暫時無法使用。請稍後再試，或按下方的「匯出診斷」回報。');
+    }
+
+    // 有沒有開著 F1TV 分頁
+    const tab = await toTab({ type: 'quickStatus' });
+    if (tab.noTab) {
+      return setStatus('', '待命中', '打開 F1TV 的影片頁面就會自動開始。');
+    }
+    if (!tab.ok) {
+      return setStatus('warn', '尚未在這個分頁啟動',
+        '', '請重新整理 F1TV 的分頁。剛安裝或剛更新時需要重整一次。');
+    }
+
+    const s = tab.state || {};
+    if (!s.everSawCaption) {
+      return setStatus('warn', '尚未偵測到字幕', '',
+        '請確認 F1TV 播放器的 <b>英文字幕（CC）已開啟</b>：播放器右下角齒輪 → Subtitles → English。');
+    }
+    const cached = (s.memo || 0).toLocaleString();
+    setStatus('ok', '運作中',
+      `本機已有 ${cached} 句譯文` + (s.harvestSkipped ? '　·　這支影片已完整翻譯，不會再花錢' : ''));
+  }
+
+  // ---------------------------------------------------------------------
+  // 授權
+  // ---------------------------------------------------------------------
+  let licState = null;
+
+  function fmtDate(sec) {
+    if (!sec) return '無期限';
+    return new Date(sec * 1000).toLocaleDateString('zh-TW');
+  }
+
+  async function refreshLicense() {
+    const res = await sw({ type: 'licenseStatus' });
+    licState = (res.ok && res.license) || null;
+    const active = !!(licState && licState.active);
+
+    $('licActive').hidden = !active;
+    $('licInactive').hidden = active;
+    if (!active) return;
+
+    $('licPlan').textContent = ({ season: '賽季方案', lifetime: '永久授權', trial: '試用' })[licState.plan] || licState.plan;
+    $('licExp').textContent = licState.expiresAt
+      ? `有效期至 ${fmtDate(licState.expiresAt)}`
+      : '無使用期限';
+  }
+
+  $('licActivate').onclick = async () => {
+    const key = $('licKey').value.trim();
+    const msg = $('licMsg');
+    if (!key) { msg.className = 'result err'; msg.textContent = '請先貼上授權碼'; return; }
+
+    $('licActivate').disabled = true;
+    msg.className = 'result'; msg.textContent = '啟用中…';
+    const res = await sw({ type: 'licenseActivate', licenseKey: key });
+    $('licActivate').disabled = false;
+
+    if (res.ok && res.result && res.result.ok) {
+      msg.className = 'result ok'; msg.textContent = '啟用成功';
+      $('licKey').value = '';
+      await refreshLicense();
       return;
     }
-    const res = await chrome.tabs.sendMessage(tabs[0].id, { type: 'collectDiagnostics' });
-    if (!res || !res.ok) throw new Error((res && res.error) || '沒有回應');
-    await navigator.clipboard.writeText(res.report);
-    out.textContent = `✅ 已複製 ${res.report.length} 字元`;
-    out.className = 'result ok';
-    console.log(res.report);
-  } catch (e) {
-    out.textContent = `❌ ${String(e.message || e)}（請重新整理 F1TV 分頁再試）`;
-    out.className = 'result err';
+    const r = (res.result || {});
+    // 裝置上限是最需要好好講的錯誤——使用者要知道「現在能做什麼」
+    if (r.needsDeactivate) {
+      msg.className = 'result err';
+      msg.textContent = r.error || '已達裝置上限';
+      showDevices(r.devices || [], key);
+      return;
+    }
+    msg.className = 'result err';
+    msg.textContent = r.error || res.error || '啟用失敗，請確認授權碼是否正確';
+  };
+
+  function showDevices(devices, key) {
+    const box = $('licDeviceList');
+    box.hidden = false;
+    box.innerHTML = devices.length
+      ? devices.map((d) => `<div class="dev"><span>裝置 ${d.id}　<span class="hint">最後使用 ${d.lastSeen ? fmtDate(d.lastSeen) : '—'}</span></span>`
+        + `<button class="secondary" data-dev="${d.id}">解除</button></div>`).join('')
+      : '<div class="hint">沒有已啟用的裝置。</div>';
+
+    box.querySelectorAll('button[data-dev]').forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        const res = await sw({ type: 'licenseDeactivate', licenseKey: key || $('licKey').value.trim(), installId: b.dataset.dev });
+        if (res.ok && res.result && res.result.ok) {
+          b.closest('.dev').remove();
+          $('licMsg').className = 'result ok';
+          $('licMsg').textContent = '已解除，可以再按一次「啟用」';
+        } else {
+          b.disabled = false;
+          $('licMsg').className = 'result err';
+          $('licMsg').textContent = (res.result && res.result.error) || '解除失敗';
+        }
+      };
+    });
   }
-});
 
-/**
- * 立刻丟掉設定快取並重抓，然後叫 F1TV 分頁就地套用。
- *
- * 沒有這顆按鈕的話，改了後端設定要等「SW 快取 TTL + content script 重讀間隔」，
- * 最壞約三分鐘——驗證熱修流程時很難確認到底生效了沒。
- * 緊急狀況下自己也用得到。
- */
-$('reloadCfg').addEventListener('click', async () => {
-  const out = $('reloadCfgResult');
-  out.textContent = '重新載入中…';
-  out.className = 'result';
-  try {
-    const res = await chrome.runtime.sendMessage({ type: 'refreshConfig' });
-    if (!res || !res.ok) throw new Error((res && res.error) || '沒有回應');
-    const v = res.config && res.config.version;
+  $('licDevices').onclick = async () => {
+    const box = $('licDeviceList');
+    if (!box.hidden) { box.hidden = true; return; }
+    const res = await sw({ type: 'licenseDevices' });
+    showDevices((res.ok && res.devices) || [], licState && licState.licenseKey);
+  };
 
-    // 通知所有 F1TV 分頁就地套用，不用等下一次輪詢
-    let applied = 0;
-    const tabs = await chrome.tabs.query({ url: 'https://f1tv.formula1.com/*' });
-    for (const t of tabs) {
+  $('licRemove').onclick = async () => {
+    // 停用是使用者主動放棄這台的存取權，要再問一次
+    if (!confirm('在這台電腦停用授權？\n授權碼不會失效，之後可以再啟用回來。')) return;
+    await sw({ type: 'licenseClear' });
+    await refreshLicense();
+    await refreshStatus();
+  };
+
+  // ---------------------------------------------------------------------
+  // 設定
+  // ---------------------------------------------------------------------
+  function renderOutputs() {
+    $('fontSizeOut').textContent = settings.fontSize + ' px';
+    $('bottomPctOut').textContent = settings.bottomPct + ' %';
+    $('holdMsOut').textContent = (settings.holdMs / 1000).toFixed(1) + ' 秒';
+  }
+
+  function paint() {
+    TOGGLES.forEach((k) => { $(k).checked = !!settings[k]; });
+    RANGES.forEach((k) => { $(k).value = settings[k]; });
+    renderOutputs();
+  }
+
+  let saveTimer = null;
+  function save() {
+    settings = sanitizeSettings(settings);
+    renderOutputs();
+    // 拉滑桿會連續觸發，節流一下避免狂寫 storage
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => chrome.storage.local.set({ settings }), 120);
+  }
+
+  TOGGLES.forEach((k) => { $(k).onchange = () => { settings[k] = $(k).checked; save(); refreshStatus(); }; });
+  RANGES.forEach((k) => { $(k).oninput = () => { settings[k] = Number($(k).value); save(); }; });
+
+  // ---------------------------------------------------------------------
+  // 疑難排解
+  // ---------------------------------------------------------------------
+  $('diag').onclick = async () => {
+    const btn = $('diag');
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '收集中…';
+    const res = await toTab({ type: 'collectDiagnostics' });
+    btn.disabled = false;
+
+    if (res.noTab) { btn.textContent = '請先打開 F1TV 分頁'; }
+    else if (res.ok && res.report) {
       try {
-        const r = await chrome.tabs.sendMessage(t.id, { type: 'applyConfigNow' });
-        if (r && r.ok) applied++;
-      } catch (e) { /* 該分頁還沒載入 content script */ }
-    }
-    out.textContent = `✅ 設定版本 v${v}，已通知 ${applied} 個 F1TV 分頁套用`;
-    out.className = 'result ok';
-    refreshStatus();
-  } catch (e) {
-    out.textContent = `❌ ${String(e.message || e)}`;
-    out.className = 'result err';
-  }
-});
-
-/** 顯示目前分頁的即時狀態，方便自己與使用者排查 */
-async function refreshStatus() {
-  const lines = [];
-  try {
-    const cfg = await chrome.runtime.sendMessage({ type: 'getConfig' });
-    const v = cfg && cfg.ok ? cfg.config.version : '?';
-    lines.push(`遠端設定版本：${v}${v === 0 ? '（內建預設，尚未取得遠端設定）' : ''}`);
-  } catch (e) { lines.push('遠端設定：讀取失敗'); }
-
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && /f1tv\.formula1\.com/.test(tab.url || '')) {
-      lines.push(`目前分頁：${tab.url.slice(0, 80)}`);
+        await navigator.clipboard.writeText(res.report);
+        btn.textContent = '已複製到剪貼簿';
+      } catch (e) { btn.textContent = '複製失敗，請改用 Console'; }
     } else {
-      lines.push('目前分頁不是 F1TV。請開啟 F1TV 播放頁後再看狀態。');
+      btn.textContent = '收集失敗，請重整 F1TV 分頁';
     }
-  } catch (e) { /* popup 以外的情境可能沒有 tabs 權限，忽略 */ }
+    setTimeout(() => { btn.textContent = old; }, 2600);
+  };
 
-  $('status').textContent = lines.join('\n');
-}
+  $('reloadCfg').onclick = async () => {
+    const btn = $('reloadCfg');
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '重新載入中…';
+    const res = await toTab({ type: 'applyConfigNow' });
+    btn.disabled = false;
+    btn.textContent = res.noTab ? '請先打開 F1TV 分頁'
+      : res.ok ? (res.changed ? `已更新到 v${res.version}` : '已是最新設定')
+      : '載入失敗';
+    setTimeout(() => { btn.textContent = old; }, 2600);
+  };
 
-load().then(refreshStatus);
+  $('onboardDone').onclick = () => {
+    $('onboard').hidden = true;
+    chrome.storage.local.set({ onboarded: true });
+  };
+
+  // ---------------------------------------------------------------------
+  // 啟動
+  // ---------------------------------------------------------------------
+  (async () => {
+    const st = await chrome.storage.local.get(['settings', 'onboarded']);
+    settings = sanitizeSettings(st.settings);
+    paint();
+
+    $('onboard').hidden = !!st.onboarded;
+    $('ver').textContent = `版本 ${chrome.runtime.getManifest().version}　·　後端 ${BACKEND.replace(/^https:\/\//, '')}`;
+
+    await refreshLicense();
+    await refreshStatus();
+    // 彈出視窗開著的期間持續更新，使用者才看得到收割進度變化
+    setInterval(refreshStatus, 3000);
+  })();
+})();
