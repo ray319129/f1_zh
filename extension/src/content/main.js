@@ -20,6 +20,12 @@
 (function () {
   'use strict';
 
+  // 注入兩次的話會有兩組計時器、兩份狀態，症狀是各種東西「莫名其妙跑兩遍」。
+  // MV3 正常不會這樣，但 SPA 導覽、擴充功能重載、開發時手動注入都可能造成，
+  // 而且完全不報錯。擋掉的成本是一行。
+  if (window.__pitlingoBooted) return;
+  window.__pitlingoBooted = true;
+
   const { clean, normKey, siteConfigFor, DEFAULT_SETTINGS } = self.PL;
 
   // 100ms（原 250ms）。observer 正常時輪詢只是備援，這個間隔不重要；
@@ -74,7 +80,24 @@
   // 沒有這個就只能靠翻 Console 猜，而 SW 的 log 又在另一個視窗。
   const eventLog = [];
   let phase = '啟動中';
+  /**
+   * 相同訊息連續出現時折疊成計數，不要各佔一行。
+   *
+   * 為什麼一定要有：實測跑三小時後，事件時間軸 400 筆裡有 150 筆是同一行
+   * 「⚙ 遠端設定已更新 v1 → v1」，把真正重要的紀錄全部擠掉。
+   * **診斷報告是這個專案唯一的回報管道**——被洗版就等於瞎了，
+   * 而洗版的原因有很多種，一個一個修永遠追不完。
+   * 在這裡擋一次，之後任何來源的重複訊息都傷不到報告。
+   */
+  let lastLogMsg = '', lastLogCount = 0;
   function logEvent(level, msg) {
+    if (msg === lastLogMsg && eventLog.length) {
+      lastLogCount++;
+      eventLog[eventLog.length - 1] =
+        `${eventLog[eventLog.length - 1].replace(/　×\d+$/, '')}　×${lastLogCount + 1}`;
+      return;                                  // Console 也不再重複印
+    }
+    lastLogMsg = msg; lastLogCount = 0;
     eventLog.push(`[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`);
     if (eventLog.length > 400) eventLog.shift();
     const style = level === 'err' ? 'color:#e10600;font-weight:bold'
@@ -763,8 +786,14 @@
     lastSeenCaption = ''; lastRaw = '';
 
     if (prevVersion >= 0) {
-      evOk(`⚙ 遠端設定已更新 v${prevVersion} → v${configVersion}，選擇器已就地套用`
-        + `（root: ${(site.captionRoot || []).join(', ')}）`);
+      if (prevVersion === configVersion) {
+        // 版本號一樣卻判定有變 → 是內容漂移，不是真的推了新設定。
+        // 這種情況使用者不需要知道，降到詳細日誌就好。
+        dbg(`遠端設定內容有異動但版本仍為 v${configVersion}，已就地套用`);
+      } else {
+        evOk(`⚙ 遠端設定已更新 v${prevVersion} → v${configVersion}，選擇器已就地套用`
+          + `（root: ${(site.captionRoot || []).join(', ')}）`);
+      }
     }
     return true;
   }

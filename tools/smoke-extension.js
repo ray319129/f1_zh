@@ -18,6 +18,17 @@ const path = require('path');
 const vm = require('vm');
 const root = path.join(__dirname, '..');
 
+const FAKE_CONFIG = {
+  version: 1,
+  sites: [{
+    host: 'f1tv.formula1.com',
+    captionRoot: ['.tm-subtitle-region-container'],
+    captionLabel: ['.tm-ui-subtitle-label'],
+    contentIdPattern: '/detail/(\d+)',
+    hideCss: '.tm-subtitle-region-container{opacity:0 !important}',
+  }],
+};
+
 const errors = [];
 const calls = { sendMessage: [], listeners: {} };
 
@@ -97,8 +108,11 @@ const sandbox = {
       getManifest: () => ({ version: '0.0.0-test' }),
       sendMessage(msg, cb) {
         calls.sendMessage.push(msg && msg.type);
-        // 回一個「什麼都成功但沒資料」的回應，讓各條路徑都走得下去
-        if (cb) cb({ ok: true, config: null, settings: {}, bundle: { lines: {} }, result: {}, text: '' });
+        // 每次都回「內容相同但物件是新的」——這正是真實情況：
+        // SW 每次回應都會經過訊息序列化，content script 拿到的永遠是新物件。
+        // 設定的比對邏輯必須靠內容判斷，不能靠參考。
+        const config = JSON.parse(JSON.stringify(FAKE_CONFIG));
+        if (cb) cb({ ok: true, config, settings: {}, bundle: { lines: {} }, result: {}, text: '' });
       },
       onMessage: { addListener() {} },
     },
@@ -132,7 +146,10 @@ for (const f of FILES) {
 // --- 主動觸發實際路徑 ---------------------------------------------------
 // 這些是 v0.4.0 真正炸掉的地方：訊息橋接與影片切換。
 function run(label, fn) {
-  try { fn(); } catch (e) { errors.push(`${label}：${e.message}`); }
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') r.catch((e) => errors.push(`${label}：${e.message}`));
+  } catch (e) { errors.push(`${label}：${e.message}`); }
 }
 
 // boot() 是 async，要讓 microtask 佇列跑完，橋接與監聽器才裝得上
@@ -226,6 +243,19 @@ run('視窗事件（focus / resize）', () => {
   for (const t of ['focus', 'visibilitychange', 'resize', 'scroll']) {
     (windowListeners[t] || []).forEach((h) => h({ type: t }));
   }
+});
+
+// 5b) 遠端設定必須是冪等的。
+//     實測踩到：內容完全沒變，卻每 60 秒判定「已更新 v1 → v1」並整組重掛
+//     觀察者、清空去重狀態。三小時下來事件時間軸 150 筆全是同一行，
+//     真正重要的紀錄全被擠掉——診斷報告是這個專案唯一的回報管道，
+//     被洗版等於瞎了。（handoff 坑 #28）
+run('遠端設定冪等性', async () => {
+  if (!api.t || typeof api.t.reloadConfig !== 'function') throw new Error('t.reloadConfig 不存在');
+  await api.t.reloadConfig();                 // 第一次：可能真的有變
+  await settle();
+  const changed = await api.t.reloadConfig(); // 第二次：內容一樣，必須回 false
+  if (changed) throw new Error('設定內容沒變，applyRemoteConfig 卻回報「已更新」——會每 60 秒重掛一次');
 });
 
 // 6) 正式版保留的入口

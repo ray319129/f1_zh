@@ -1,0 +1,202 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-16T07:43:30.110Z
+版本　　　：0.5.2
+目前階段　：前瞻預譯中
+網址　　　：https://f1tv.formula1.com/detail/1000010271/2026-barcelona-gp-practice-1?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010271（網址 1000010271 / 觀察 1000010271）
+video　　　：暫停 111.6s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：82 字
+目前抓到　：So you know I know we've been talking about Kimi and George having this difference
+曾看到字幕：是
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：18 份
+攔到的 manifest：8 份（整軌預抓的入口）
+  其中 master 1 份、字幕清單 1 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
+
+──── 整軌預抓（決定成本與拖進度條會不會漏）────
+型態　　　：重播
+清單來源　：由 master 解析
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMjJiZWQ5MmY4NzE1NGZiYjlmZDBjZjdhYTE2NmUxNzMlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4NjkzMDU3NHx0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTA0M0NONzE0UlRFNjFZUFhGV0RRUjJNX1BST3xzdGFydDp8ZW5kOnx0b2tlbjpvS1hwT2ZTbzNmdmpVTVVQQ0V4QkJlaVZQLXU4Sm1UYkdlb3lqQXFiZFlZXw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/22bed92f87154fbb9fd0cf7aa166e173/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/0631004207b04ba08728ced5de5294be/f74fb10563564130a4702743d64112a3/index_14_0.m3u8
+分段　　　：清單 1055 / 已抓 0（失敗 0）
+收割完成　：false　進行中：false　世代 1
+後端完整度：記錄 1055 段　→ 本次已跳過整軌預抓
+
+──── 顯示延遲的歸因 ────
+偵測來源　：observer 28 次 / 輪詢 299 次（observer 佔 9%，輪詢間隔 100ms）
+JS 耗時　　：中位數 0.3ms / p90 0.5ms / 最大 2.1ms（200 筆）
+到上畫面　：中位數 7.1ms / p90 11.8ms / 最大 12.6ms（200 筆）　← 這個才是使用者看到的
+※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。
+
+──── 翻譯 ────
+共用快取取得：2336 句
+後端回寫查核：(尚未查核)
+本機快取　：2336 句
+命中 / 未命中：327 / 0
+即時翻譯　：0 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":24,"bottomPct":4,"holdMs":3000,"hideNativeCC":true,"debug":false}
+遠端設定版本：v1（重讀間隔 60 秒；含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 150 筆）────
+[04:41:09.415] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:42:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:44:09.649] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:45:08.948] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:47:09.402] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:48:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:49:09.571] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:50:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:51:09.673] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:52:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:53:09.392] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:54:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:56:09.576] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:57:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:58:09.655] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[04:59:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:01:09.431] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:02:08.951] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:03:09.563] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:04:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:05:09.703] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:06:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:08:09.392] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:09:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:10:09.607] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:11:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:13:09.575] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:14:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:16:09.401] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:17:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:18:09.568] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:19:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:20:09.649] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:21:08.942] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:23:09.415] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:24:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:26:09.764] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:27:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:28:09.415] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:29:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:30:09.413] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:31:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:33:09.660] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:34:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:36:09.398] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:37:08.950] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:38:09.553] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:39:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:41:09.617] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:42:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:44:09.390] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:45:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:46:09.568] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:47:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:49:09.742] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:50:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:51:09.410] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:52:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:53:09.405] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:54:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:56:09.627] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:57:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:58:09.391] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[05:59:08.946] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:01:09.566] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:02:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:03:09.771] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:04:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:05:09.420] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:06:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:08:09.563] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:09:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:10:09.668] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:11:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:12:09.433] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:13:08.946] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:15:09.569] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:16:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:17:09.699] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:18:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:19:09.423] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:20:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:21:09.403] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:22:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:23:09.662] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:24:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:25:09.409] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:26:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:27:09.408] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:28:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:29:10.111] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:30:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:32:09.407] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:33:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:35:09.676] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:36:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:37:09.423] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:38:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:39:09.429] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:40:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:41:09.628] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:42:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:43:09.401] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:44:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:46:09.600] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:47:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:48:09.759] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:49:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:51:09.420] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:52:08.942] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:54:09.737] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:55:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:56:09.390] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:57:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:58:09.416] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[06:59:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:01:09.625] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:02:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:03:09.397] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:04:08.946] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:05:09.402] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:06:08.946] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:07:09.644] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:08:08.951] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:10:09.402] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:11:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:13:09.625] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:14:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:15:09.394] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:16:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:18:09.565] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:19:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:21:09.616] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:22:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:23:09.403] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:24:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:26:09.554] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:27:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:29:09.639] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:30:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:31:09.430] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:32:08.946] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:34:09.564] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:35:08.950] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:36:09.626] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:37:08.943] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:38:09.400] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:39:08.944] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:41:09.576] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+[07:42:08.945] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+
+════════ 報告結束 ════════
