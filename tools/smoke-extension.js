@@ -215,8 +215,8 @@ run('詳細日誌模式', () => {
 //    的那條路徑（含 manifests = []）由 prefetch 入口一併覆蓋。
 run('切換影片 → 整軌預抓入口', () => {
   sandbox.location.pathname = '/detail/1000010243/post-race-show-miami';
-  if (typeof api.prefetch !== 'function') throw new Error('__pitlingo.prefetch 不存在');
-  api.prefetch();
+  if (!api.t || typeof api.t.prefetch !== 'function') throw new Error('__pitlingo.t.prefetch 不存在');
+  api.t.prefetch();
 });
 
 run('視窗事件（focus / resize）', () => {
@@ -225,13 +225,25 @@ run('視窗事件（focus / resize）', () => {
   }
 });
 
-// 6) 其他公開入口
-for (const name of ['peek', 'site', 'events', 'state']) {
+// 6) 正式版保留的入口
+for (const name of ['peek', 'events', 'state']) {
   run(`__pitlingo.${name}`, () => {
     const v = api[name];
     if (typeof v === 'function') v();
   });
 }
+
+// 7) 測試工具全部跑一遍。上線前這整組會被刪掉，但在那之前它們必須是活的——
+//    測試指令自己壞了卻沒人發現，等於測試階段少了一半的眼睛。
+run('測試工具 __pitlingo.t.*', () => {
+  const t = api.t;
+  if (!t) throw new Error('__pitlingo.t 不存在');
+  t.help();
+  t.detect(); t.batches(); t.manifests(); t.memo(); t.pending();
+  t.settings(); t.site();
+  t.feed('Box box box, Max.');
+  t.stall();
+});
 
 // --- 結果 --------------------------------------------------------------
 await settle();

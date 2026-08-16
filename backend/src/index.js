@@ -22,6 +22,8 @@
  *       同時讓 prompt 跨過 4096 token 門檻，cache_control 才真的生效。
  * v1.5  修 /v1/translate 的讀改寫競爭（並行請求互相覆蓋，實測只有 41%
  *       的譯文存活）。新增 /v1/complete 讓用戶端標記整支已收割完整。
+ * v1.6  /v1/subs 拿掉 max-age=60。bundle 現在是多寫入者，HTTP 快取
+ *       是用戶端清不掉的一層，會讓剛寫進去的 segCount 完全看不到。
  */
 
 const MODEL = 'claude-haiku-4-5';
@@ -766,7 +768,19 @@ async function handleGetSubs(request, env, url) {
     segCount: bundle.segCount || 0,
     updatedAt: bundle.updatedAt,
     lines: bundle.lines,
-  }, 200, { 'cache-control': 'public, max-age=60' });
+    // ⚠️ 絕對不要在這裡放 max-age。
+    //
+    // 原本是 `public, max-age=60`。v1.2 那時 bundle 只有管理員會寫，一分鐘的
+    // 陳舊無所謂。現在每個使用者的 /v1/translate 與 /v1/complete 都會改它，
+    // 而瀏覽器的 HTTP 快取是**我們清不掉的一層**——用戶端把自己的記憶體快取
+    // 作廢也沒用，fetch 仍然回舊的 body。
+    //
+    // 實測：01:03:06 查核（存進 HTTP 快取，segCount=0）→ 01:03:11 標記完整
+    // → 01:03:48 重開，42 秒還在快取內，於是拿到 segCount=0，跳過判斷永遠
+    // 不成立，整支又重抓 383 段。（handoff 坑 #26）
+    //
+    // 重複請求由用戶端 SW 的 90 秒記憶體快取吸收，這層不需要也不該再快取。
+  }, 200, { 'cache-control': 'no-store' });
 }
 
 async function handlePostSubs(request, env) {

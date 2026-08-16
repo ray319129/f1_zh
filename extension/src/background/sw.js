@@ -105,7 +105,10 @@ async function getBundle(cid, force) {
   if (cached && !force && Date.now() - cached.at < BUNDLE_TTL_MS) return cached;
 
   try {
-    const d = await api(`/v1/subs?cid=${encodeURIComponent(cid)}`);
+    // cache: 'no-store' 是第二道保險。後端 v1.6 起已改成 no-store，但使用者的
+    // 後端可能還沒部署，而舊回應帶著 max-age=60——那層 HTTP 快取我們清不掉，
+    // 會讓剛寫進去的 segCount 整整一分鐘看不到（坑 #26）。
+    const d = await api(`/v1/subs?cid=${encodeURIComponent(cid)}`, { cache: 'no-store' });
     const entry = { lines: d.lines || {}, count: d.count || 0, segCount: d.segCount || 0, at: Date.now() };
     memCache.bundles.set(cid, entry);
     // 只留最近 3 支，避免 SW 記憶體無限成長

@@ -12,8 +12,8 @@
 | 產物 | 角色 | 版本 |
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.7.2 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.5 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.4.3 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.6 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.5.0 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -51,7 +51,7 @@
 | 8 | `URL.createObjectURL` 的 patch 必須用 `instanceof Blob` 過濾，**絕不能碰到 MediaSource**（那是影片本身） |
 | 9 | **非同步結果回來時世界已經變了**——補顯示前要當場重讀 DOM 比對，不能只信變數 |
 | 10 | **KV 寫入是 Cloudflare 免費方案的天花板**（1,000/天），任何「每筆資料寫一次」的設計都要先估算 |
-| 11 | **傳播延遲是所有快取層的總和**，不是最短那層 |
+| 11 | **傳播延遲是所有快取層的總和**，不是最短那層。**已在此跌倒三次**（遠端設定 6 小時／SW bundle 無 TTL／HTTP `max-age=60`）——加快取前先把該路徑上所有層列出來 |
 | 12 | **prompt 低於 4,096 tokens 時 `cache_control` 靜默失效**——不報錯，只是每次全額計費 |
 | 13 | **在某個檔案學到的規則，要主動確認它在別的檔案成不成立**。坑 #21 就是規則只套用在 userscript、後端漏掉 |
 | 14 | **驗證強度要配得上改動性質**。批次刪除後 `node --check` 不夠，少一個宣告在語法上完全合法（坑 #22） |
@@ -110,6 +110,17 @@ userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用
 - 擴充功能：`chrome://extensions` → 載入未封裝項目 → `extension/`。**改 manifest 後必須按「重新載入」**
 - API key 存在 Cloudflare secrets 與 Tampermonkey `GM_setValue`，**不在程式碼裡**
 - `.gitignore` 已排除機密與 `.wrangler/`
+
+## 測試工具（v0.5.0 起，**上線前必須移除**）
+
+擴充功能的 `main.js` 有一段標著 `TESTING` 的區塊，掛在 `__pitlingo.t.*`。
+Console 打 `__pitlingo.help()` 會列出全部。
+
+**移除方式**：刪掉 `TESTING` 常數整段，以及 `window.__pitlingo` 裡的 `t:` 與 `help:` 兩行。
+判斷依據：**`help()` 列在「上線前移除」那半邊的東西，正式版一律不該存在**——
+它們會繞過防護（強制預抓）或洩漏內部狀態。
+
+`diag()` / `events()` / `state` / `peek()` / `debug()` 要保留，那是回報問題的唯一管道。
 
 ## 診斷（回報問題的標準流程）
 

@@ -340,9 +340,28 @@
     scheduleFlush();
   }
 
+  /**
+   * 收割期間不要讓計時器把批次切碎（userscript 坑 #10）。
+   *
+   * 整軌預抓時 383 個分段會在一分多鐘內陸續到齊，每段只帶 2~3 句新的。
+   * 300ms 的 flush 計時器一到就把那零星幾句送出去，於是批次平均只有 4.8 句——
+   * userscript 同樣的片子是 14.9 句。批次小三倍，API 呼叫就多三倍。
+   *
+   * 收割期間改成「湊滿 BATCH_MAX 才送」，收割結束時再把剩下的一次倒出去。
+   * 這不影響即時性：收割中的句子本來就是未來 40 分鐘才會用到的。
+   */
   function scheduleFlush() {
     if (pendingTimer) return;
+    if (harvestInFlight && pending.size < BATCH_MAX) return;   // 等湊滿
     pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS);
+  }
+
+  /** 收割結束時把佇列倒乾淨——不然最後不滿一批的句子會卡住 */
+  function drainAfterHarvest() {
+    if (!pending.size) return;
+    dbg(`收割結束，倒出剩餘 ${pending.size} 句`);
+    clearTimeout(pendingTimer); pendingTimer = null;
+    flushPending();
   }
 
   async function flushPending() {
@@ -713,10 +732,30 @@
     return added;
   }
 
+  /**
+   * 收割該不該停（userscript 坑 #15）。
+   *
+   * 只看 contentId 不夠：點播放器左上角的返回鍵時**網址不會變**，
+   * 播放器已經被拆掉了，收割卻繼續跑完上千個請求。
+   * 以「video 元素消失超過 5 秒」為訊號——5 秒是為了避開播放器重建時的短暫消失。
+   */
+  let videoMissingSince = 0;
+  function harvestShouldStop(myGen) {
+    if (myGen !== harvestGen) return '影片切換';
+    if (!settings.enabled) return '翻譯已關閉';
+    const v = document.querySelector('video');
+    if (v) { videoMissingSince = 0; return null; }
+    if (!videoMissingSince) { videoMissingSince = Date.now(); return null; }
+    if (Date.now() - videoMissingSince > 5000) return '播放器已關閉';
+    return null;
+  }
+
   async function fetchSegments(list, myGen) {
-    let idx = 0, lastPct = -1;
+    let idx = 0, lastPct = -1, stopReason = null;
     const worker = async () => {
-      while (idx < list.length && myGen === harvestGen && settings.enabled) {
+      while (idx < list.length) {
+        const stop = harvestShouldStop(myGen);
+        if (stop) { stopReason = stop; return; }
         const s = list[idx++];
         if (seenSegments.has(s.url)) continue;
         seenSegments.add(s.url);
@@ -734,6 +773,8 @@
       }
     };
     await Promise.all(new Array(FETCH_CONCURRENCY).fill(0).map(worker));
+    if (stopReason) evWarn(`收割已中止（${stopReason}），已抓 ${state.segFetched}/${list.length} 段`);
+    return stopReason;
   }
 
   /** 直播：字幕清單是滑動視窗，定期重抓才能持續拿到 live edge 的新分段 */
@@ -873,8 +914,13 @@
           if (acc + segs[i].dur > cur) { start = i; break; }
           acc += segs[i].dur;
         }
-        await fetchSegments(segs.slice(start).concat(segs.slice(0, start)), myGen);
+        const stopped = await fetchSegments(segs.slice(start).concat(segs.slice(0, start)), myGen);
         if (myGen !== harvestGen) { evInfo('預抓已中止（影片切換）'); return; }
+        // harvestInFlight 還是 true，scheduleFlush 會繼續等湊滿一批。
+        // 這裡先放開再倒佇列，否則最後不滿 BATCH_MAX 的句子會卡著不送。
+        harvestInFlight = false;
+        drainAfterHarvest();
+        if (stopped) { setPhase('前瞻預譯中'); return; }   // 中止就不標記完整
         state.harvestDone = state.segFailed === 0;
         evOk(`預抓完成：${state.segFetched} 段成功、${state.segFailed} 段失敗，待翻 ${pending.size} 句`);
         // 只有全部成功才敢標記完整——少抓幾段就標記，會害後續使用者跳過預抓
@@ -885,6 +931,8 @@
         setPhase('直播預抓中');
         evInfo(`偵測到直播（無 EXT-X-ENDLIST），改用滑動視窗持續補抓`);
         await fetchSegments(segs, myGen);
+        harvestInFlight = false;
+        drainAfterHarvest();
         liveTimer = setTimeout(() => refreshLive(myGen), LIVE_REFRESH_MS);
       }
     } catch (e) {
@@ -1156,25 +1204,87 @@
   });
 
   // 給偵錯用：在 Console 打 window.__pitlingo 可以看目前狀態
+  // =========================================================================
+  // 測試工具
+  //
+  // ⚠️ 上線前整段刪掉，並把 manifest 的 `TESTING` 標記一併移除。
+  //    位置刻意集中在這裡，就是為了「刪一段就乾淨」。
+  //    判斷依據：`__pitlingo.help()` 列得出來的東西，正式版一律不該存在。
+  //
+  // 保留哪些、刪哪些的原則：
+  //   保留 — diag / events：**回報問題的唯一管道**，正式版必須留著
+  //   刪除 — 其餘全部：會繞過防護（強制預抓）、洩漏內部狀態、或只有開發時有用
+  // =========================================================================
+  const TESTING = {
+    // ---- 強制觸發 ----
+    prefetch: () => startPrefetch(contentId, 0, true),   // 強制重抓整支，繞過跳過判斷
+    reloadConfig: () => applyRemoteConfig(true),          // 立刻重讀遠端設定，不等 60 秒
+    markComplete: () => send({ type: 'markComplete', cid: contentId, segCount: state.playlistSegs }),
+    refreshBundle: async () => {
+      const r = await send({ type: 'getBundle', cid: contentId, force: true });
+      const b = (r.ok && r.bundle) || {};
+      console.log(`後端：${Object.keys(b.lines || {}).length} 句，segCount ${b.segCount || 0}`);
+      return b;
+    },
+
+    // ---- 內部狀態 ----
+    detect: () => detect,                 // 偵測來源統計（observer vs 輪詢）
+    batches: () => batchStats,            // 每個批次的句數與耗時
+    manifests: () => manifests.map((m) => ({ url: m.url, bytes: m.body.length })),
+    memo: () => memo,
+    pending: () => Array.from(pending.values()),
+    settings: () => settings,
+    site: () => site,
+
+    // ---- 模擬 ----
+    // 假裝畫面出現這句字幕，用來單獨測翻譯與顯示路徑，不用等影片播到
+    feed: (en) => { handleCaption(String(en || '')); return '已送入：' + en; },
+    // 假裝分頁被節流過，驗證停擺偵測會不會正確重掛
+    stall: () => { lastPollAt = Date.now() - STALL_MS - 1000; return checkPollStall(); },
+
+    help: () => {
+      console.log([
+        '【正式版保留】',
+        '  __pitlingo.diag()            匯出完整診斷（回報問題用這個）',
+        '  __pitlingo.events()          事件時間軸',
+        '  __pitlingo.state             目前狀態',
+        '  __pitlingo.peek()            現在畫面上抓到什麼英文',
+        '  __pitlingo.debug(true)       開關詳細日誌',
+        '',
+        '【上線前移除 —— __pitlingo.t.*】',
+        '  t.prefetch()                 強制重抓整支（繞過跳過判斷）',
+        '  t.reloadConfig()             立刻重讀遠端設定',
+        '  t.markComplete()             手動標記完整收割',
+        '  t.refreshBundle()            強制重讀後端 bundle 並印出句數與 segCount',
+        '  t.detect()                   偵測來源統計',
+        '  t.batches()                  每個批次的句數與耗時',
+        '  t.manifests()                攔到的 manifest 清單',
+        '  t.memo() / t.pending()       本機快取 / 待翻佇列',
+        '  t.feed("Box box box")        假裝畫面出現這句，測翻譯與顯示',
+        '  t.stall()                    假裝被節流，測停擺偵測',
+      ].join('\n'));
+      return '見上方';
+    },
+  };
+
   window.__pitlingo = {
+    // ---- 正式版也要保留 ----
     diag: () => { const r = buildDiagnostics(); console.log(r); return r; },
-    reloadConfig: () => applyRemoteConfig(true),   // 立刻重讀遠端設定，不等 60 秒
     events: () => { console.log(eventLog.join('\n')); return eventLog.length; },
-    // 手動觸發一律強制，繞過「已完整」的跳過判斷（與 userscript 行為一致）
-    prefetch: () => startPrefetch(contentId, 0, true),
+    peek: () => collectCaption(),
+    debug: (on) => { debugOn = on !== false; console.log('[PitLingo] 詳細日誌：' + (debugOn ? '開啟' : '關閉')); return debugOn; },
     get state() {
       return Object.assign({
         contentId, memo: memo.size, pending: pending.size,
         requested: requested.size, inflight, everSawCaption,
       }, state);
     },
-    peek: () => collectCaption(),
-    // 立即開關詳細日誌，不用進設定頁也不用重整
-    debug: (on) => { debugOn = on !== false; console.log('[PitLingo] 詳細日誌：' + (debugOn ? '開啟' : '關閉')); return debugOn; },
-    detect: () => detect,
-    settings: () => settings,
-    site: () => site,
+
+    // ---- 測試工具（上線前刪掉這兩行與上面的 TESTING 區塊）----
+    t: TESTING,
+    help: TESTING.help,
   };
+  evInfo('測試版：Console 打 `__pitlingo.help()` 看可用指令');
 
   boot();
 })();
