@@ -85,11 +85,24 @@ async function getConfig() {
  * 取得整支影片的譯文。
  * 這是「共用快取」的讀取端——同一支影片全世界只翻一次，其他人直接下載。
  */
-async function getBundle(cid) {
+/**
+ * ⚠️ 這個快取一定要有 TTL。
+ *
+ * 原本是 `if (cached) return cached;`——存了 `at` 卻從來不檢查，等於永久快取。
+ * 實測症狀：同一支影片預抓完 836 句後重整頁面，共用快取仍然只回報 87 句，
+ * 整支又重翻一次。因為 SW 在重整之間沒有被回收，回的是開場那份舊 bundle。
+ * 使用者完全看不出來，只會覺得「怎麼又在翻」。（handoff 坑 #23）
+ *
+ * 90 秒是折衷：夠短，讓重整或別人剛灌進去的譯文很快被看到；
+ * 夠長，不會讓正常觀看途中反覆打後端。
+ */
+const BUNDLE_TTL_MS = 90 * 1000;
+
+async function getBundle(cid, force) {
   if (!cid) return { lines: {}, count: 0, segCount: 0 };
 
   const cached = memCache.bundles.get(cid);
-  if (cached) return cached;
+  if (cached && !force && Date.now() - cached.at < BUNDLE_TTL_MS) return cached;
 
   try {
     const d = await api(`/v1/subs?cid=${encodeURIComponent(cid)}`);
@@ -168,7 +181,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, settings: await getSettings() });
           break;
         case 'getBundle':
-          sendResponse({ ok: true, bundle: await getBundle(msg.cid) });
+          sendResponse({ ok: true, bundle: await getBundle(msg.cid, msg.force) });
           break;
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });

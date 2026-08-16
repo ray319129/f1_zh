@@ -1,0 +1,65 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-16T00:36:05.296Z
+版本　　　：0.4.1
+目前階段　：預抓中
+網址　　　：https://f1tv.formula1.com/detail/1000010267/post-race-show-monaco?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010267（網址 1000010267 / 觀察 1000010267）
+video　　　：播放中 102.7s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：35 字
+目前抓到　：so many of Lewis Hamilton P2 today.
+曾看到字幕：是
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：24 份
+攔到的 manifest：8 份（整軌預抓的入口）
+  其中 master 1 份、字幕清單 1 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
+
+──── 整軌預抓（決定成本與拖進度條會不會漏）────
+型態　　　：重播
+清單來源　：由 master 解析
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMTc4MDIzMTJmODBhNDkzNTgxZGQ0MTRlNmI0ODJiNzIlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4NjkyNjg1NHx0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTAzWlY0VEFHNkVNVjc3NVowTTJBSloxX1BST3xzdGFydDp8ZW5kOnx0b2tlbjp4RG5YaHJDeC12dzlaUXR0eEZkMHRmYmRjM3U2ckRJRVJ6SnVxVThxN0Z3Xw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/17802312f80a493581dd414e6b482b72/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/e53ec6289e034ae58ebfe4dfd3783331/f74fb10563564130a4702743d64112a3/index_13_0.m3u8
+分段　　　：清單 383 / 已抓 383（失敗 0）
+收割完成　：true　進行中：false　世代 1
+
+──── 翻譯 ────
+共用快取取得：87 句
+本機快取　：923 句
+命中 / 未命中：50 / 0
+即時翻譯　：836 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":24,"bottomPct":4,"holdMs":3000,"hideNativeCC":true}
+遠端設定版本：v1（重讀間隔 60 秒；含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 21 筆）────
+[00:34:10.297] INFO ▶ 等待播放
+[00:34:10.298] OK   PitLingo v0.4.1 已啟動　|　設定版本 1　|　翻譯：開啟
+[00:34:10.298] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[00:34:10.649] OK   ☁ 從共用快取取得 87 句譯文（cid 1000010267），這些不會再花錢
+[00:34:10.649] INFO ▶ 等待字幕清單
+[00:34:12.555] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[00:34:14.668] OK   ✅ 取得字幕清單（由 master 解析）
+[00:34:14.668] INFO ▶ 讀取字幕清單
+[00:34:15.826] INFO ▶ 預抓中 — 383 段
+[00:34:15.827] INFO 字幕分段共 383 個（重播，一次抓完）
+[00:34:24.663] INFO 預抓進度 10%（39/383 段，待翻 0 句）
+[00:34:27.032] INFO 已偵測到第一句字幕，CC 運作正常
+[00:34:33.010] INFO 預抓進度 20%（77/383 段，待翻 7 句）
+[00:34:41.309] INFO 預抓進度 30%（115/383 段，待翻 6 句）
+[00:34:49.737] INFO 預抓進度 40%（154/383 段，待翻 13 句）
+[00:34:58.256] INFO 預抓進度 50%（192/383 段，待翻 13 句）
+[00:35:06.846] INFO 預抓進度 60%（230/383 段，待翻 2 句）
+[00:35:15.245] INFO 預抓進度 70%（269/383 段，待翻 2 句）
+[00:35:23.508] INFO 預抓進度 80%（307/383 段，待翻 7 句）
+[00:35:31.291] INFO 預抓進度 90%（345/383 段，待翻 17 句）
+[00:35:39.394] OK   預抓完成：383 段成功、0 段失敗，待翻 1 句
+
+════════ 報告結束 ════════

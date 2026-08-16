@@ -12,10 +12,11 @@ const DEFAULTS = {
   bottomPct: 8,
   holdMs: 7000,
   hideNativeCC: true,
+  debug: false,
 };
 
 const $ = (id) => document.getElementById(id);
-const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
+const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC', 'debug'];
 const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
 
 function renderOutputs(s) {

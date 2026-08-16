@@ -22,8 +22,13 @@
 
   const { clean, normKey, siteConfigFor, DEFAULT_SETTINGS } = self.PL;
 
-  const POLL_MS = 250;             // 主動輪詢字幕的間隔（偵測主力）
+  // 100ms（原 250ms）。observer 正常時輪詢只是備援，這個間隔不重要；
+  // 但 observer 失聯時它就是唯一的偵測手段，而 250ms 直接加在顯示延遲上。
+  // collectCaption() 只掃字幕容器內的少數節點，100ms 的成本可以接受。
+  // 實際 observer 有沒有在作用，看診斷報告的「偵測來源」那兩個數字。
+  const POLL_MS = 100;             // 主動輪詢字幕的間隔（偵測備援）
   const STRUCT_MS = 1500;          // 結構性檢查的間隔
+  const STALL_MS = 2500;           // 超過這麼久沒輪詢到，判定分頁被節流過
 
   // 逐句即時翻譯（後備路徑）的節流參數。
   // 這條路只有在影片沒被預先收割時才會用到，本來就追不上 F1 的語速，
@@ -48,11 +53,13 @@
   const requested = new Set();     // 已送出、等待回應中的 normKey
   let pendingTimer = null;
   let inflight = 0;
+  const batchStats = [];           // { sent, got, ms } — 診斷用，看批次效率
 
   const state = {
     bundleCount: 0, translated: 0, misses: 0, errors: 0,
     playlistSegs: 0, segFetched: 0, segFailed: 0, prefetched: 0,
     workerPatched: 0, workerVtt: 0, manifests: 0, prefetchAnnounced: false,
+    serverCount: -1,               // 回寫查核：後端實際有幾句（-1 = 尚未查核）
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -74,6 +81,23 @@
   const evInfo = (m) => logEvent('info', m);
   const evWarn = (m) => logEvent('warn', m);
   const evErr = (m) => logEvent('err', m);
+
+  /**
+   * 詳細日誌（每句字幕、每個批次都印）。
+   *
+   * 為什麼要獨立一個層級：正常使用時每 3~4 秒印一行只是噪音，
+   * 但測試階段看不到這些就只能猜。預設關閉，兩種方式打開：
+   *   - 設定頁勾「詳細日誌」
+   *   - Console 打 `__pitlingo.debug(true)`（立即生效，不用重整）
+   *
+   * 這些**不寫進事件時間軸**——時間軸只有 400 筆，被逐句訊息灌爆的話，
+   * 匯出診斷時就看不到真正重要的狀態變化了。
+   */
+  let debugOn = false;
+  function dbg(msg) {
+    if (!debugOn) return;
+    console.log(`%c[PitLingo·debug] ${msg}`, 'color:#888');
+  }
   function setPhase(p, extra) {
     if (phase === p) return;
     phase = p;
@@ -208,7 +232,10 @@
   function checkPollStall() {
     const gap = Date.now() - lastPollAt;
     lastPollAt = Date.now();
-    if (gap < POLL_MS * 8) return false;          // 正常抖動
+    // 門檻用絕對值，不要用 POLL_MS 的倍數。
+    // 輪詢間隔從 250ms 調到 100ms 時，倍數寫法會把門檻一起縮到 800ms，
+    // 那已經落在正常抖動範圍內，會開始誤報停擺並無謂地整組重掛觀察者。
+    if (gap < STALL_MS) return false;             // 正常抖動
     evWarn(`偵測到輪詢停擺 ${Math.round(gap / 1000)} 秒（分頁可能被瀏覽器節流），強制重檢`);
     observedNodes = new Set();                    // 逼 hookObservers 整組重掛
     hookObservers();
@@ -217,12 +244,34 @@
     return true;
   }
 
+  /**
+   * 偵測來源統計 —— 用來回答「0.5 秒的延遲有多少是我們造成的」。
+   *
+   * 顯示延遲＝(a) F1TV 自己把字幕畫進 DOM 的時機 ＋ (b) 我們發現它的時間。
+   * 只有 (b) 是我們能改的，而兩者靠猜分不開。
+   *
+   * observer 命中代表 (b) 幾乎是 0（mutation 當下就處理）；
+   * 輪詢命中代表 observer 沒作用，(b) 最壞是一個 POLL_MS。
+   * 兩邊的比例直接告訴我們該不該把力氣花在調輪詢間隔上。
+   */
+  const detect = { byObserver: 0, byPoll: 0, renderMs: [] };
+  let inObserverTick = false;
+
+  function onMutation() {
+    inObserverTick = true;
+    try { pollCaption(); } finally { inObserverTick = false; }
+  }
+
   function pollCaption() {
     checkPollStall();
     if (!settings.enabled || !site) return;
     const cur = collectCaption();
     if (cur === lastSeenCaption) return;
     lastSeenCaption = cur;
+    if (cur) {
+      if (inObserverTick) detect.byObserver++; else detect.byPoll++;
+      dbg(`偵測到字幕（${inObserverTick ? 'observer' : '輪詢'}）：${cur.slice(0, 60)}`);
+    }
 
     if (!cur) {
       // 字幕清空可能只是換句空檔，也可能是切換視角導致重建。
@@ -249,7 +298,7 @@
     observers.length = 0;
     observedNodes = new Set(now);
     now.forEach((node) => {
-      const o = new MutationObserver(pollCaption);
+      const o = new MutationObserver(onMutation);
       o.observe(node, { childList: true, subtree: true, characterData: true });
       observers.push(o);
     });
@@ -268,9 +317,19 @@
 
     const k = normKey(text);
     const hit = memo.get(k);
-    if (hit) { state.hits++; render(hit, text); return; }
+    if (hit) {
+      state.hits++;
+      const t0 = Date.now();
+      render(hit, text);
+      const ms = Date.now() - t0;
+      detect.renderMs.push(ms);
+      if (detect.renderMs.length > 200) detect.renderMs.shift();
+      dbg(`命中本機快取（繪製 ${ms}ms）：${hit.slice(0, 40)}`);
+      return;
+    }
 
     state.misses++;
+    dbg(`未命中，排入佇列：${text.slice(0, 60)}`);
     // 走到這裡代表預抓還沒涵蓋到這句。
     // 不顯示「翻譯中…」之類的佔位字——那會一直在畫面上閃、非常分心。
     // 就讓畫面保持空白，譯文回來時若這句還在螢幕上就補顯示。
@@ -295,12 +354,21 @@
     keys.forEach((k) => { pending.delete(k); requested.add(k); });
 
     inflight++;
+    const t0 = Date.now();
+    dbg(`送出批次 ${batch.length} 句（佇列剩 ${pending.size}，飛行中 ${inflight}/${MAX_INFLIGHT}）`);
+    batch.forEach((t, i) => dbg(`  ${i + 1}. ${t.slice(0, 70)}`));
     try {
       const res = await send({ type: 'translate', cid: contentId, lines: batch });
       const lines = (res.ok && res.result && res.result.lines) || {};
       let n = 0;
       for (const [k, zh] of Object.entries(lines)) { memo.set(k, zh); n++; }
       state.translated += n;
+      const ms = Date.now() - t0;
+      batchStats.push({ sent: batch.length, got: n, ms });
+      if (batchStats.length > 100) batchStats.shift();
+      dbg(`批次回應：送 ${batch.length} / 回 ${n} 句，耗時 ${ms}ms`
+        + (n < batch.length ? `　⚠ 少了 ${batch.length - n} 句` : ''));
+      for (const [k, zh] of Object.entries(lines)) dbg(`  → ${zh.slice(0, 40)}`);
       if (res.ok && res.result && res.result.error) {
         state.errors++;
         // logEvent 只吃一個參數，第二個會被靜默丟掉——實測就這樣印出
@@ -320,6 +388,7 @@
       }
     } catch (e) {
       state.errors++;
+      dbg(`批次失敗：${e.message}`);
     } finally {
       keys.forEach((k) => requested.delete(k));
       inflight--;
@@ -681,6 +750,35 @@
   }
 
   /**
+   * 預抓翻完之後，回頭問後端「你現在有幾句」。
+   *
+   * 為什麼值得做：整條共用快取的價值全押在「我翻的東西真的存進去了」上，
+   * 而那件事**沒有任何使用者可見的回饋**——存失敗了畫面一模一樣，
+   * 只有下一個人要重新付費。實測就踩過：以為在貢獻，其實伺服器一句沒收到。
+   *
+   * 等 20 秒是要讓最後幾批翻譯先回來並寫進後端。
+   */
+  function verifyUpload(cid, myGen) {
+    setTimeout(async () => {
+      if (myGen !== harvestGen || cid !== contentId) return;
+      const res = await send({ type: 'getBundle', cid, force: true });
+      const b = (res.ok && res.bundle) || {};
+      if (b.error) { evWarn(`共用快取回寫查核失敗：${b.error}`); return; }
+      const serverCount = Object.keys(b.lines || {}).length;
+      state.serverCount = serverCount;
+      const local = memo.size;
+      if (serverCount >= local * 0.9) {
+        evOk(`☁ 回寫查核：後端已有 ${serverCount} 句（本機 ${local} 句），共用快取正常累積`);
+      } else {
+        evWarn(`⚠ 回寫查核：本機 ${local} 句，但後端只有 ${serverCount} 句。`
+          + '譯文沒有完整進入共用快取——下一個觀看者會重新付費。'
+          + '請確認後端已部署最新版（`cd backend && wrangler deploy`），'
+          + '以及 Cloudflare KV 當日寫入額度未用盡。');
+      }
+    }, 20000);
+  }
+
+  /**
    * 整軌預抓。
    *
    * 為什麼這件事值得做：worker 攔截給的是「播放器已經下載的」分段，也就是約
@@ -743,6 +841,7 @@
         if (myGen !== harvestGen) { evInfo('預抓已中止（影片切換）'); return; }
         state.harvestDone = state.segFailed === 0;
         evOk(`預抓完成：${state.segFetched} 段成功、${state.segFailed} 段失敗，待翻 ${pending.size} 句`);
+        verifyUpload(cid, myGen);
       } else {
         setPhase('直播預抓中');
         evInfo(`偵測到直播（無 EXT-X-ENDLIST），改用滑動視窗持續補抓`);
@@ -839,6 +938,7 @@
     ]);
     const config = (cfgRes.ok && cfgRes.config) || self.PL.BUILT_IN_CONFIG;
     settings = Object.assign({}, DEFAULT_SETTINGS, (setRes.ok && setRes.settings) || {});
+    debugOn = !!settings.debug;
     site = siteConfigFor(config, location.hostname);
     configVersion = config.version;
 
@@ -892,6 +992,7 @@
 
     if (changes.settings) {
       settings = Object.assign({}, DEFAULT_SETTINGS, changes.settings.newValue || {});
+      debugOn = !!settings.debug;
       applyHideNative();
       reposition();
       if (!settings.enabled) box.classList.remove('on');
@@ -948,8 +1049,32 @@
     L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
     L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
     L.push('');
+    L.push('──── 顯示延遲的歸因 ────');
+    // 這一段的用途：回答「延遲有多少是我們造成的」。
+    // observer 命中 = 我們幾乎沒有加延遲；輪詢命中 = 最壞加了一個 POLL_MS。
+    const dTot = detect.byObserver + detect.byPoll;
+    const pctObs = dTot ? Math.round((detect.byObserver / dTot) * 100) : 0;
+    L.push(`偵測來源　：observer ${detect.byObserver} 次 / 輪詢 ${detect.byPoll} 次`
+      + `（observer 佔 ${pctObs}%，輪詢間隔 ${POLL_MS}ms）`);
+    if (detect.renderMs.length) {
+      const arr = detect.renderMs.slice().sort((a, b) => a - b);
+      const med = arr[Math.floor(arr.length / 2)];
+      L.push(`繪製耗時　：中位數 ${med}ms / 最大 ${arr[arr.length - 1]}ms（${arr.length} 筆）`);
+    } else {
+      L.push('繪製耗時　：(尚無樣本)');
+    }
+    L.push('※ observer 佔比高且繪製耗時個位數 → 剩下的延遲來自 F1TV 自己畫字幕的時機，不是我們');
+    L.push('');
     L.push('──── 翻譯 ────');
     L.push(`共用快取取得：${state.bundleCount} 句`);
+    L.push(`後端回寫查核：${state.serverCount < 0 ? '(尚未查核)' : state.serverCount + ' 句在後端'}`);
+    if (batchStats.length) {
+      const sent = batchStats.reduce((a, b) => a + b.sent, 0);
+      const got = batchStats.reduce((a, b) => a + b.got, 0);
+      const ms = batchStats.reduce((a, b) => a + b.ms, 0);
+      L.push(`批次效率　：${batchStats.length} 批、平均 ${(sent / batchStats.length).toFixed(1)} 句/批、`
+        + `平均 ${Math.round(ms / batchStats.length)}ms、回覆率 ${sent ? Math.round((got / sent) * 100) : 0}%`);
+    }
     L.push(`本機快取　：${memo.size} 句`);
     L.push(`命中 / 未命中：${state.hits} / ${state.misses}`);
     L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}`);
@@ -999,6 +1124,9 @@
       }, state);
     },
     peek: () => collectCaption(),
+    // 立即開關詳細日誌，不用進設定頁也不用重整
+    debug: (on) => { debugOn = on !== false; console.log('[PitLingo] 詳細日誌：' + (debugOn ? '開啟' : '關閉')); return debugOn; },
+    detect: () => detect,
     settings: () => settings,
     site: () => site,
   };

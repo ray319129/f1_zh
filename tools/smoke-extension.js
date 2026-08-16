@@ -182,6 +182,32 @@ run('匯出診斷', () => {
   if (typeof api.diag !== 'function') throw new Error('__pitlingo.diag 不存在');
   const out = api.diag();
   if (typeof out !== 'string' || out.length < 100) throw new Error('診斷內容異常短');
+  // 診斷報告是唯一的回報管道，區塊被改壞了不會有其他徵兆。
+  // 這裡釘住幾個「出問題時一定要看到」的欄位。
+  const MUST = [
+    '攔到的 manifest',        // 整軌預抓的入口
+    '偵測來源',                // 顯示延遲的歸因
+    '後端回寫查核',            // 譯文有沒有真的進共用快取
+    '事件時間軸',
+  ];
+  const missing = MUST.filter((k) => out.indexOf(k) === -1);
+  if (missing.length) throw new Error('診斷報告缺少欄位：' + missing.join('、'));
+});
+
+// 4b) 詳細日誌開啟後，各條路徑仍要跑得過（dbg 自己不能炸）
+run('詳細日誌模式', () => {
+  if (typeof api.debug !== 'function') throw new Error('__pitlingo.debug 不存在');
+  api.debug(true);
+  const handlers = windowListeners.message || [];
+  handlers.forEach((h) => h({
+    source: sandbox.window,
+    data: {
+      __pitlingo_vtt__: true, kind: 'vtt', url: 'https://x/seg2.vtt',
+      vtt: 'WEBVTT\n\n00:00:04.000 --> 00:00:06.000\nHe is going for the undercut\n',
+    },
+  }));
+  api.diag();
+  api.debug(false);
 });
 
 // 5) 換影片。checkContentChange 沒有公開入口，改用 boot() 註冊在 window 的
