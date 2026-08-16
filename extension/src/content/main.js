@@ -60,6 +60,7 @@
     playlistSegs: 0, segFetched: 0, segFailed: 0, prefetched: 0,
     workerPatched: 0, workerVtt: 0, manifests: 0, prefetchAnnounced: false,
     serverCount: -1,               // 回寫查核：後端實際有幾句（-1 = 尚未查核）
+    harvestSkipped: false,         // 是否因為「已有人收割完整」而跳過整軌預抓
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -507,6 +508,7 @@
   let harvestInFlight = false;
   let subtitlePlaylistUrl = null;
   let prefetchHow = '';               // 字幕清單是怎麼拿到的，診斷用
+  let bundleSegCount = 0;             // 後端記錄「這支收割過幾段」，0 = 沒人收割完整過
   const seenSegments = new Set();     // 已抓過的分段網址，直播重抓時用來去重
   const prefetchSeen = new Set();     // 已排入翻譯的 normKey
   let liveTimer = null;
@@ -750,6 +752,26 @@
   }
 
   /**
+   * 收割完成後告訴後端，讓下一個看同一支影片的人可以整段跳過。
+   *
+   * 等 25 秒才送：`handleComplete` 會拒絕「bundle 還沒有譯文」的標記請求，
+   * 而最後幾批翻譯此時可能還在路上。標記早了會被拒，等於白跑一趟。
+   */
+  function markComplete(cid, segCount, myGen) {
+    setTimeout(async () => {
+      if (myGen !== harvestGen || cid !== contentId) return;
+      const res = await send({ type: 'markComplete', cid, segCount });
+      const r = (res.ok && res.result) || {};
+      if (r.ok) {
+        evOk(`✅ 已標記完整收割（${segCount} 段 / 後端 ${r.lineCount || '?'} 句）`
+          + '，之後看這支影片的人會跳過整軌預抓');
+      } else {
+        evWarn(`標記完整收割未成功：${r.reason || r.error || '(未知)'}`);
+      }
+    }, 25000);
+  }
+
+  /**
    * 預抓翻完之後，回頭問後端「你現在有幾句」。
    *
    * 為什麼值得做：整條共用快取的價值全押在「我翻的東西真的存進去了」上，
@@ -790,7 +812,7 @@
    * Imperva 機器人防護）。改用 worker 攔到的 manifest——播放器自己一定會抓，
    * 我們搭便車，零額外請求。
    */
-  async function startPrefetch(cid, attempt) {
+  async function startPrefetch(cid, attempt, force) {
     if (!cid) return;
     const myGen = harvestGen;
 
@@ -800,7 +822,7 @@
     if (harvestInFlight) {
       const n = (attempt || 0) + 1;
       if (n > 30) { evWarn('前一次收割遲遲未釋放，放棄整軌預抓'); return; }
-      setTimeout(() => { if (myGen === harvestGen) startPrefetch(cid, n); }, 1500);
+      setTimeout(() => { if (myGen === harvestGen) startPrefetch(cid, n, force); }, 1500);
       return;
     }
 
@@ -827,6 +849,20 @@
       state.isLive = !isVod;
 
       if (isVod) {
+        // 已經有人完整收割過就不要再抓一次。
+        //
+        // 沒有這個判斷的話，每個開啟同一支影片的人都會再向 CDN 發 383 個請求、
+        // 花約 80 秒，而那些分段幾乎不會帶來任何新句子——純粹浪費，
+        // 還多累積一次 Imperva 的曝險。userscript 早就有這個判斷，
+        // 擴充功能到 v0.4.3 才補上。
+        if (!force && bundleSegCount > 0 && bundleSegCount === segs.length && memo.size > 0) {
+          state.harvestSkipped = true;
+          evOk(`⏭ 跳過整軌預抓：後端記錄這支已完整收割（${bundleSegCount} 段 / 本機 ${memo.size} 句），`
+            + '不重複向 CDN 抓 ' + segs.length + ' 個分段');
+          setPhase('前瞻預譯中');
+          return;
+        }
+
         setPhase('預抓中', `${segs.length} 段`);
         evInfo(`字幕分段共 ${segs.length} 個（重播，一次抓完）`);
         // 從目前播放位置開始，讓馬上要用到的先翻，不要先去翻片尾
@@ -841,6 +877,9 @@
         if (myGen !== harvestGen) { evInfo('預抓已中止（影片切換）'); return; }
         state.harvestDone = state.segFailed === 0;
         evOk(`預抓完成：${state.segFetched} 段成功、${state.segFailed} 段失敗，待翻 ${pending.size} 句`);
+        // 只有全部成功才敢標記完整——少抓幾段就標記，會害後續使用者跳過預抓
+        // 卻拿到殘缺的譯文。
+        if (state.harvestDone) markComplete(cid, segs.length, myGen);
         verifyUpload(cid, myGen);
       } else {
         setPhase('直播預抓中');
@@ -878,6 +917,7 @@
 
     const res = await send({ type: 'getBundle', cid });
     const b = (res.ok && res.bundle) || {};
+    bundleSegCount = b.segCount || 0;
     let n = 0;
     for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { memo.set(k, zh); n++; } }
     state.bundleCount = n;
@@ -920,7 +960,10 @@
     // ⚠️ manifest 一定要清。留著的話新影片會拿上一支的字幕清單去抓，
     //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
     manifests = [];
+    bundleSegCount = 0;
     state.manifests = 0;
+    state.harvestSkipped = false;
+    state.serverCount = -1;
     state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
     state.isLive = false; state.harvestDone = false;
 
@@ -1048,6 +1091,7 @@
     L.push(`字幕清單　：${subtitlePlaylistUrl || '(尚未取得)'}`);
     L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
     L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
+    L.push(`後端完整度：記錄 ${bundleSegCount} 段` + (state.harvestSkipped ? '　→ 本次已跳過整軌預抓' : (bundleSegCount ? '' : '（尚無人完整收割過）')));
     L.push('');
     L.push('──── 顯示延遲的歸因 ────');
     // 這一段的用途：回答「延遲有多少是我們造成的」。
@@ -1116,7 +1160,8 @@
     diag: () => { const r = buildDiagnostics(); console.log(r); return r; },
     reloadConfig: () => applyRemoteConfig(true),   // 立刻重讀遠端設定，不等 60 秒
     events: () => { console.log(eventLog.join('\n')); return eventLog.length; },
-    prefetch: () => startPrefetch(contentId),
+    // 手動觸發一律強制，繞過「已完整」的跳過判斷（與 userscript 行為一致）
+    prefetch: () => startPrefetch(contentId, 0, true),
     get state() {
       return Object.assign({
         contentId, memo: memo.size, pending: pending.size,

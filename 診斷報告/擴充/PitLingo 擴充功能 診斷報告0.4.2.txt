@@ -1,0 +1,75 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-16T00:51:00.092Z
+版本　　　：0.4.2
+目前階段　：前瞻預譯中
+網址　　　：https://f1tv.formula1.com/detail/1000010267/post-race-show-monaco?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010267（網址 1000010267 / 觀察 1000010267）
+video　　　：播放中 126.9s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：43 字
+目前抓到　：I mean, he was completely outpaced by Kimi,
+曾看到字幕：是
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：30 份
+攔到的 manifest：9 份（整軌預抓的入口）
+  其中 master 1 份、字幕清單 1 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
+
+──── 整軌預抓（決定成本與拖進度條會不會漏）────
+型態　　　：重播
+清單來源　：由 master 解析
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMTc4MDIzMTJmODBhNDkzNTgxZGQ0MTRlNmI0ODJiNzIlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4NjkyNzcxN3x0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTA0ME5GNFZGUTJYOFdKR05XRUhUNlZHX1BST3xzdGFydDp8ZW5kOnx0b2tlbjpCTWw3eHRpdTBXbzhTY0hmMzZMSWVlcVE0S2NyREFLc3B2MW5uOVlCb09JXw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/17802312f80a493581dd414e6b482b72/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/e53ec6289e034ae58ebfe4dfd3783331/f74fb10563564130a4702743d64112a3/index_13_0.m3u8
+分段　　　：清單 383 / 已抓 383（失敗 0）
+收割完成　：true　進行中：false　世代 1
+
+──── 顯示延遲的歸因 ────
+偵測來源　：observer 51 次 / 輪詢 0 次（observer 佔 100%，輪詢間隔 100ms）
+繪製耗時　：中位數 1ms / 最大 1ms（48 筆）
+※ observer 佔比高且繪製耗時個位數 → 剩下的延遲來自 F1TV 自己畫字幕的時機，不是我們
+
+──── 翻譯 ────
+共用快取取得：562 句
+後端回寫查核：710 句在後端
+批次效率　：68 批、平均 5.4 句/批、平均 1796ms、回覆率 100%
+本機快取　：925 句
+命中 / 未命中：48 / 3
+即時翻譯　：363 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":24,"bottomPct":4,"holdMs":3000,"hideNativeCC":true,"debug":false}
+遠端設定版本：v1（重讀間隔 60 秒；含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 24 筆）────
+[00:48:32.237] INFO ▶ 等待播放
+[00:48:32.237] OK   PitLingo v0.4.2 已啟動　|　設定版本 1　|　翻譯：開啟
+[00:48:32.237] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[00:48:32.569] OK   ☁ 從共用快取取得 562 句譯文（cid 1000010267），這些不會再花錢
+[00:48:32.570] INFO ▶ 等待字幕清單
+[00:48:35.163] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[00:48:37.599] OK   ✅ 取得字幕清單（由 master 解析）
+[00:48:37.599] INFO ▶ 讀取字幕清單
+[00:48:38.586] INFO ▶ 預抓中 — 383 段
+[00:48:38.586] INFO 字幕分段共 383 個（重播，一次抓完）
+[00:48:47.977] INFO 預抓進度 10%（39/383 段，待翻 0 句）
+[00:48:56.811] INFO ▶ 前瞻預譯中
+[00:48:56.811] OK   ✅ 從播放器的字幕分段取得提前量，開始批次預譯
+[00:48:56.914] INFO 已偵測到第一句字幕，CC 運作正常
+[00:48:59.764] INFO 預抓進度 20%（77/383 段，待翻 2 句）
+[00:49:08.246] INFO 預抓進度 30%（115/383 段，待翻 4 句）
+[00:49:17.853] INFO 預抓進度 40%（154/383 段，待翻 8 句）
+[00:49:24.790] INFO 預抓進度 50%（192/383 段，待翻 0 句）
+[00:49:31.629] INFO 預抓進度 60%（230/383 段，待翻 0 句）
+[00:49:38.951] INFO 預抓進度 70%（269/383 段，待翻 2 句）
+[00:49:46.127] INFO 預抓進度 80%（307/383 段，待翻 3 句）
+[00:49:52.623] INFO 預抓進度 90%（345/383 段，待翻 0 句）
+[00:50:00.198] OK   預抓完成：383 段成功、0 段失敗，待翻 0 句
+[00:50:20.430] WARN ⚠ 回寫查核：本機 925 句，但後端只有 710 句。譯文沒有完整進入共用快取——下一個觀看者會重新付費。請確認後端已部署最新版（`cd backend && wrangler deploy`），以及 Cloudflare KV 當日寫入額度未用盡。
+
+════════ 報告結束 ════════

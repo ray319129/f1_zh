@@ -133,6 +133,26 @@ async function translateLines(cid, lines) {
   }
 }
 
+/**
+ * 告訴後端「這支影片的字幕已被完整收割」，讓後續觀看者跳過整軌預抓。
+ *
+ * 標記成功後要把本機的 bundle 快取作廢，否則同一個 SW 生命週期內
+ * 下一次 getBundle 還是回舊的 segCount=0，跳過判斷永遠不會生效。
+ */
+async function markComplete(cid, segCount) {
+  if (!cid || !segCount) return { ok: false };
+  try {
+    const d = await api('/v1/complete', {
+      method: 'POST',
+      body: JSON.stringify({ cid, segCount }),
+    });
+    memCache.bundles.delete(cid);
+    return d;
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // F1TV 串流資源
 //
@@ -185,6 +205,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
+          break;
+        case 'markComplete':
+          sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount) });
           break;
         case 'fetchText':
           try {

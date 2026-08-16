@@ -10,6 +10,7 @@
  *   GET  /v1/subs?cid=<contentId>      取回整支影片的譯文
  *   POST /v1/subs                      上傳譯文（需 ADMIN_TOKEN）
  *   POST /v1/translate                 翻譯未命中的句子（需 CLIENT_TOKEN）
+ *   POST /v1/complete                  標記整支已完整收割（需 CLIENT_TOKEN）
  *
  * 環境變數（wrangler secret put）
  *   ANTHROPIC_API_KEY   Anthropic 金鑰
@@ -19,6 +20,8 @@
  *
  * v1.4  SYSTEM_PROMPT 與 userscript 同步（34 → 273 條術語）。
  *       同時讓 prompt 跨過 4096 token 門檻，cache_control 才真的生效。
+ * v1.5  修 /v1/translate 的讀改寫競爭（並行請求互相覆蓋，實測只有 41%
+ *       的譯文存活）。新增 /v1/complete 讓用戶端標記整支已收割完整。
  */
 
 const MODEL = 'claude-haiku-4-5';
@@ -614,6 +617,65 @@ async function readBundle(env, cid) {
   } catch { return { v: 1, cid, updatedAt: null, segCount: 0, lines: {} }; }
 }
 
+/**
+ * 標記「這支影片的字幕已經被完整收割過」。
+ *
+ * 用途：讓後續的觀看者跳過整軌預抓。沒有這個標記的話，每個人開啟同一支影片
+ * 都會再向 CDN 抓一次全部分段（實測 383 段、約 80 秒），而那些分段幾乎不會
+ * 帶來任何新句子——純粹的浪費，還會多累積一次 Imperva 的曝險。
+ *
+ * userscript 早就有這個判斷（`bundleSegCount === segs.length`），
+ * 但它是靠 ADMIN_TOKEN 走 `POST /v1/subs` 寫進去的。擴充功能的使用者
+ * 不該持有 ADMIN_TOKEN，所以獨立成這支只能寫 segCount 的端點。
+ *
+ * 防呆：只准往上加。這樣就算某個用戶端算錯或惡意回報，最壞也只是讓別人
+ * 略過預抓、退回 worker 攔截（仍有提前量），不會弄壞既有譯文。
+ */
+async function handleComplete(request, env) {
+  let body = null;
+  try { body = await request.json(); } catch { return err('invalid json'); }
+  const cid = String((body && body.cid) || '').trim();
+  const segCount = Number(body && body.segCount) || 0;
+  if (!cid) return err('缺少 cid');
+  if (!(segCount > 0 && segCount < 100000)) return err('segCount 不合理');
+
+  const bundle = await readBundle(env, cid);
+  const lineCount = Object.keys(bundle.lines || {}).length;
+  // 沒有譯文就不該標記完整——否則別人會跳過預抓卻什麼也拿不到
+  if (!lineCount) return json({ ok: false, reason: 'bundle 沒有譯文，不標記', segCount: bundle.segCount });
+  if (bundle.segCount >= segCount) {
+    return json({ ok: true, unchanged: true, segCount: bundle.segCount, lineCount });
+  }
+
+  bundle.segCount = segCount;
+  await writeBundle(env, cid, bundle);
+  return json({ ok: true, segCount, lineCount });
+}
+
+/**
+ * 重讀 → 合併 → 寫回。**不要直接寫 handler 一開始讀到的那份。**
+ *
+ * 為什麼：`/v1/translate` 的流程是「讀 bundle → 呼叫模型（1~2 秒）→ 寫回」。
+ * 用戶端同時最多有 3 個請求在飛，三個都讀到同一份舊快照，然後依序整份覆蓋——
+ * 只有最後寫的那個活下來，前面的譯文全部消失。
+ *
+ * 實測：一輪翻了 363 句，後端只多了 148 句（41%），與 3 個並行請求的預期吻合。
+ * **完全不會報錯**——每個請求自己都成功，使用者也拿得到譯文，
+ * 只有下一個觀看者要重新付費。
+ *
+ * KV 沒有 CAS，所以做不到完全無損；但把競爭視窗從「模型呼叫的 1~2 秒」縮到
+ * 「讀+寫的幾十毫秒」，已經是數量級的差別。（handoff 坑 #24）
+ */
+async function mergeWrite(env, cid, added) {
+  const keys = Object.keys(added || {});
+  if (!keys.length) return;
+  const fresh = await readBundle(env, cid);
+  for (const k of keys) {
+    if (!fresh.lines[k]) fresh.lines[k] = added[k];   // 只補、不覆蓋別人的
+  }
+  await writeBundle(env, cid, fresh);
+}
+
 async function writeBundle(env, cid, bundle) {
   bundle.updatedAt = new Date().toISOString();
   await env.SUBS.put(bundleKey(cid), JSON.stringify(bundle));
@@ -764,6 +826,7 @@ async function handleTranslate(request, env, ip) {
   // 1) 讀一次 bundle 當快取（取代先前逐句讀 line: key）
   const bundle = await readBundle(env, cid);
   const result = {};
+  const added = {};       // 這次請求新翻出來的，寫回時只合併這些
   const missing = [];
   for (const raw of input) {
     const en = String(raw || '').trim();
@@ -785,7 +848,8 @@ async function handleTranslate(request, env, ip) {
         const zh = out[m.en];
         if (!zh) continue;
         result[m.k] = zh;
-        bundle.lines[m.k] = zh;       // 只改記憶體，最後一次寫回
+        bundle.lines[m.k] = zh;       // 本次請求的快取，避免同批重複
+        added[m.k] = zh;              // 寫回時只合併這些，見 mergeWrite
         translated++;
       }
       usageTotals.input_tokens += usage.input_tokens || 0;
@@ -793,13 +857,13 @@ async function handleTranslate(request, env, ip) {
       usageTotals.cache_read_input_tokens += usage.cache_read_input_tokens || 0;
     } catch (e) {
       // 已經翻好的先存起來，不要因為後面失敗就整批丟掉
-      if (translated) { try { await writeBundle(env, cid, bundle); } catch (e2) { /* noop */ } }
+      if (translated) { try { await mergeWrite(env, cid, added); } catch (e2) { /* noop */ } }
       return json({ lines: result, translated, error: String(e.message || e) }, 502);
     }
   }
 
-  // 3) 一次請求只寫一次 KV
-  if (translated) await writeBundle(env, cid, bundle);
+  // 3) 一次請求只寫一次 KV，而且是「重讀後合併」不是直接覆蓋
+  if (translated) await mergeWrite(env, cid, added);
 
   return json({
     cid,
@@ -865,6 +929,11 @@ export default {
       if (path === '/v1/translate' && request.method === 'POST') {
         if (request.headers.get('x-client-token') !== env.CLIENT_TOKEN) return err('unauthorized', 401);
         return handleTranslate(request, env, ip);
+      }
+
+      if (path === '/v1/complete' && request.method === 'POST') {
+        if (request.headers.get('x-client-token') !== env.CLIENT_TOKEN) return err('unauthorized', 401);
+        return handleComplete(request, env);
       }
 
       return err('not found', 404);

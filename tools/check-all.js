@@ -45,6 +45,13 @@ function run(label, args) {
 console.log('── 語法 ──');
 for (const f of SYNTAX) run(f, ['--check', f]);
 
+// JSON 檔沒有 `node --check` 可用，但壞掉的後果更嚴重：
+// manifest.json 不合法 → 擴充功能整個載入不了。
+// 實際發生過一次（腳本先開寫入模式清空檔案才讀取），所以納入檢查。
+for (const f of ['extension/manifest.json']) {
+  run(f, ['-e', `JSON.parse(require('fs').readFileSync(${JSON.stringify(f)}, 'utf8'))`]);
+}
+
 console.log('\n── 契約與行為 ──');
 for (const [label, script] of CHECKS) run(label, [script]);
 
