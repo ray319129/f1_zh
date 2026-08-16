@@ -40,6 +40,11 @@
   let settings = Object.assign({}, DEFAULT_SETTINGS);
   let site = null;                 // 目前網域適用的選擇器設定
 
+  // 上限。一場正賽約 2,000 句，這次實測單支練習賽就 3,331 句——
+  // 沒有上限的話，長時間連看多支影片會一路長上去。
+  // Map 保留插入順序，砍最舊的就近似 LRU（重看同一支時最近的那些才有價值）。
+  const MEMO_MAX = 12000;
+  const PENDING_MAX = 3000;        // 待翻佇列。正常收割不會逼近，防的是異常情況
   const memo = new Map();          // normKey -> 譯文
   let contentId = null;
   let seenContentId = null;        // 從 performance 觀察到的
@@ -229,6 +234,45 @@
    * 這是推測而非確認，但不論真正原因為何，處理方式都一樣：
    * **偵測到自己剛剛被凍結，就強制做一次完整重檢**，而不是假設狀態還新鮮。
    */
+  /**
+   * 「播放中卻沒有字幕」的提示。擴充功能一直缺這個——使用者忘了開 CC 時
+   * 畫面完全沒反應，也沒有任何說明，只會以為是我們壞了。
+   *
+   * 防呆的重點在**寧可漏報也不要誤報**（userscript 坑 #14）：
+   *   - 只有 video 存在、正在播放、且沒暫停才計時
+   *   - 看過任何一句字幕就永不再提示（那代表 CC 是開的，現在只是沒旁白）
+   *   - 五分鐘內最多提示一次
+   *   - 有 VTT 資料才是高訊號（確定這支有字幕卻沒顯示 → CC 沒開）；
+   *     沒資料只記 Console，因為可能真的是開場動畫或宣傳片
+   */
+  const NO_CAPTION_WARN_MS = 45000;
+  let lastNonEmptyAt = Date.now();
+  let hintShownAt = 0;
+
+  function isActuallyPlaying() {
+    const v = document.querySelector('video');
+    return !!(v && !v.paused && !v.ended && v.readyState >= 2 && v.currentTime > 0);
+  }
+
+  function checkNoCaption() {
+    if (!settings.enabled || !site) return;
+    if (!isActuallyPlaying()) { lastNonEmptyAt = Date.now(); return; }
+    if (Date.now() - lastNonEmptyAt < NO_CAPTION_WARN_MS) return;
+    lastNonEmptyAt = Date.now();
+
+    if (everSawCaption) return;                       // CC 正常，只是這段沒旁白
+    if (Date.now() - hintShownAt < 300000) return;    // 五分鐘內只提示一次
+    hintShownAt = Date.now();
+
+    const haveData = state.workerVtt > 0 || state.segFetched > 0 || memo.size > 0;
+    if (haveData) {
+      evWarn('這支影片有字幕資料，但畫面上從未出現字幕 — 播放器的 CC 應該是關著的');
+      show('⚠ 請在播放器設定開啟英文字幕 (CC)', '');
+    } else {
+      evInfo('播放中但尚未取得任何字幕（可能是無旁白片段，或 CC 未開啟）');
+    }
+  }
+
   let lastPollAt = Date.now();
   function checkPollStall() {
     const gap = Date.now() - lastPollAt;
@@ -284,6 +328,7 @@
       scheduleHide();
       return;
     }
+    lastNonEmptyAt = Date.now();
     if (!everSawCaption) { everSawCaption = true; log('已偵測到第一句字幕，CC 運作正常'); }
     handleCaption(cur);
   }
@@ -361,6 +406,12 @@
    * 收割期間改成「湊滿 BATCH_MAX 才送」，收割結束時再把剩下的一次倒出去。
    * 這不影響即時性：收割中的句子本來就是未來 40 分鐘才會用到的。
    */
+  /** 寫入本機快取並維持上限。切換影片時 memo 刻意不清（重複用語可互相受惠） */
+  function remember(k, zh) {
+    memo.set(k, zh);
+    while (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value);
+  }
+
   function scheduleFlush() {
     if (pendingTimer) return;
     if (harvestInFlight && pending.size < BATCH_MAX) return;   // 等湊滿
@@ -392,7 +443,7 @@
       const res = await send({ type: 'translate', cid: contentId, lines: batch });
       const lines = (res.ok && res.result && res.result.lines) || {};
       let n = 0;
-      for (const [k, zh] of Object.entries(lines)) { memo.set(k, zh); n++; }
+      for (const [k, zh] of Object.entries(lines)) { remember(k, zh); n++; }
       state.translated += n;
       const ms = Date.now() - t0;
       batchStats.push({ sent: batch.length, got: n, ms });
@@ -760,6 +811,7 @@
       if (!k || prefetchSeen.has(k)) continue;
       prefetchSeen.add(k);
       if (memo.has(k)) continue;          // 共用快取已有，不用再翻
+      if (pending.size >= PENDING_MAX) continue;   // 佇列爆了就先不收，下輪再說
       pending.set(k, t);
       added++;
     }
@@ -1002,7 +1054,7 @@
     const b = (res.ok && res.bundle) || {};
     bundleSegCount = b.segCount || 0;
     let n = 0;
-    for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { memo.set(k, zh); n++; } }
+    for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { remember(k, zh); n++; } }
     state.bundleCount = n;
 
     if (n) { evOk(`☁ 從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`); return; }
@@ -1090,6 +1142,7 @@
       hookObservers();
       mount();
       reposition();
+      checkNoCaption();
     }, STRUCT_MS);
 
     // 定期重讀遠端設定並「就地套用」。
@@ -1099,6 +1152,27 @@
 
     ['fullscreenchange', 'webkitfullscreenchange', 'resize', 'scroll'].forEach((e) =>
       window.addEventListener(e, () => { mount(); reposition(); }, true));
+
+    /**
+     * 關閉分頁前，把還沒送出的句子做最後一搏。
+     *
+     * 擴充功能的譯文是**由後端在 /v1/translate 當下寫回 bundle** 的，所以
+     * 「翻好的」本來就已經在伺服器上，中途離開不會白費——這點和 userscript
+     * 的「累積到最後才上傳」不同，反而更安全。
+     *
+     * 但**還在佇列裡、根本還沒送出去**的那些會直接消失。收割完的瞬間可能還有
+     * 幾十句待送，這時關掉分頁就等於下一個人要重翻那幾十句。
+     *
+     * pagehide 不能用 await（頁面隨時會被凍結），所以直接發 keepalive 請求。
+     * 這也是為什麼要走 sendBeacon 風格而不是等回應——我們不需要譯文了，
+     * 只是要讓伺服器把它翻出來存進共用快取，嘉惠下一個人。
+     */
+    window.addEventListener('pagehide', () => {
+      if (!pending.size || !contentId) return;
+      const lines = Array.from(pending.values()).slice(0, 200);
+      send({ type: 'translateKeepalive', cid: contentId, lines });
+      evInfo(`離開頁面，最後送出 ${lines.length} 句給共用快取`);
+    });
 
     // 分頁重新可見／取得焦點時立刻重檢，不用等下一次輪詢。
     // 這正是「動了動滑鼠就好」那個症狀的直接對策。

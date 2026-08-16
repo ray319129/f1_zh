@@ -1,0 +1,82 @@
+════════ PitLingo 擴充功能 診斷報告 ════════
+產生時間　：2026-08-16T01:31:24.593Z
+版本　　　：0.5.1
+目前階段　：預抓中
+網址　　　：https://f1tv.formula1.com/detail/1000010271/2026-barcelona-gp-practice-1?action=play
+UA　　　　：Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
+
+──── 影片與字幕 ────
+contentId　：1000010271（網址 1000010271 / 觀察 1000010271）
+video　　　：播放中 275.4s / Infinity
+字幕容器　：1 個（觀察中 1）
+容器文字長：51 字
+目前抓到　：Well, it looks to me to be the same shape and it is
+曾看到字幕：是
+
+──── 提前量來源：Worker 注入 ────
+已注入 Worker：1 個
+收到的 VTT 分段：54 份
+攔到的 manifest：7 份（整軌預抓的入口）
+  其中 master 1 份、字幕清單 1 份
+PLAY API 路徑：已停用（八輪未通，改用 Worker 注入 + 攔到的 manifest）
+
+──── 整軌預抓（決定成本與拖進度條會不會漏）────
+型態　　　：重播
+清單來源　：由 master 解析
+字幕清單　：https://ott-video-fer-cf.formula1.com/v2/pa_cGF0aDolMkZhNzIzZWE2MWU3YjhlYjIxZmQ3NDk3ZTg0MmY0ZGI5MiUyRm91dCUyRnYxJTJGMjJiZWQ5MmY4NzE1NGZiYjlmZDBjZjdhYTE2NmUxNzMlMkZkYTk2YjU4N2YzZjk0ODM3YmUwN2NlYzdkZjVhYWJhYXxraWQ6MTA0MnxleHA6MTc4NjkzMDAwNHx0dGw6MTQ0MHxnZW86Q0F8c3RyZWFtVHlwZTpTRFJfSERfQ01BRnxzZXNzaW9uSWQ6MjMyNDEyNjkxXzAxTTA0MlY4UkJWU0tHMDE0OTNHRUQ5RzZSX1BST3xzdGFydDp8ZW5kOnx0b2tlbjpPbzg0eDQ0UGxRMjktcFl1MkwyYkJITi13eGMtUWJDfnpFMEZCZEU0UXFzXw__/a723ea61e7b8eb21fd7497e842f4db92/out/v1/22bed92f87154fbb9fd0cf7aa166e173/da96b587f3f94837be07cec7df5aabaa/970552fa460041eeb829abf7b4bf23f8/0631004207b04ba08728ced5de5294be/f74fb10563564130a4702743d64112a3/index_14_0.m3u8
+分段　　　：清單 1055 / 已抓 1055（失敗 0）
+收割完成　：true　進行中：false　世代 2
+後端完整度：記錄 0 段（尚無人完整收割過）
+
+──── 顯示延遲的歸因 ────
+偵測來源　：observer 111 次 / 輪詢 1 次（observer 佔 99%，輪詢間隔 100ms）
+JS 耗時　　：中位數 0.5ms / p90 0.6ms / 最大 0.9ms（111 筆）
+到上畫面　：中位數 4.3ms / p90 10.3ms / 最大 11.5ms（111 筆）　← 這個才是使用者看到的
+※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。
+
+──── 翻譯 ────
+共用快取取得：0 句
+後端回寫查核：2333 句在後端
+批次效率　：100 批、平均 19.8 句/批、平均 3921ms、回覆率 100%
+本機快取　：3331 句
+命中 / 未命中：111 / 1
+即時翻譯　：2413 句　錯誤 0
+待送出　　：0 句　飛行中 0 個請求（上限 3）
+
+──── 設定 ────
+{"enabled":true,"showEnglish":true,"fontSize":24,"bottomPct":4,"holdMs":3000,"hideNativeCC":true,"debug":false}
+遠端設定版本：v1（重讀間隔 60 秒；含後端快取，實際傳播最壞約 3 分鐘。要立即生效請用「立即重新載入設定」）
+選擇器：{"root":[".tm-subtitle-region-container"],"label":[".tm-ui-subtitle-label"]}
+
+──── 事件時間軸（最近 29 筆）────
+[01:26:18.227] INFO 測試版：Console 打 `__pitlingo.help()` 看可用指令
+[01:26:18.930] INFO ▶ 等待播放
+[01:26:18.930] OK   PitLingo v0.5.1 已啟動　|　設定版本 1　|　翻譯：開啟
+[01:26:18.930] INFO 提示：擴充功能圖示 →「匯出診斷」可一鍵複製完整狀態
+[01:26:19.353] OK   ☁ 從共用快取取得 918 句譯文（cid 1000010267），這些不會再花錢
+[01:26:19.354] INFO ▶ 等待字幕清單
+[01:26:41.432] INFO ▶ 切換影片
+[01:26:41.432] INFO 影片切換 1000010267 → 1000010271
+[01:26:41.713] INFO 共用快取尚無此影片的譯文（cid 1000010271），將以逐句即時翻譯運作
+[01:26:41.713] INFO ▶ 等待字幕清單
+[01:26:42.272] OK   ✅ 已注入 Worker hook（原始腳本 707103 bytes）
+[01:26:43.727] OK   ✅ 取得字幕清單（由 master 解析）
+[01:26:43.727] INFO ▶ 讀取字幕清單
+[01:26:44.856] INFO ▶ 預抓中 — 1055 段
+[01:26:44.856] INFO 字幕分段共 1055 個（重播，一次抓完）
+[01:26:54.405] INFO 已偵測到第一句字幕，CC 運作正常
+[01:27:07.993] INFO 預抓進度 10%（106/1055 段，待翻 14 句）
+[01:27:30.470] INFO 預抓進度 20%（211/1055 段，待翻 18 句）
+[01:27:52.135] INFO 預抓進度 30%（317/1055 段，待翻 16 句）
+[01:28:13.518] INFO 預抓進度 40%（422/1055 段，待翻 18 句）
+[01:28:35.295] INFO 預抓進度 50%（528/1055 段，待翻 15 句）
+[01:28:54.722] INFO 預抓進度 60%（633/1055 段，待翻 24 句）
+[01:29:15.270] INFO 預抓進度 70%（739/1055 段，待翻 22 句）
+[01:29:35.546] INFO 預抓進度 80%（844/1055 段，待翻 19 句）
+[01:29:56.929] INFO 預抓進度 90%（950/1055 段，待翻 28 句）
+[01:30:18.292] OK   預抓完成：1055 段成功、0 段失敗，待翻 3 句
+[01:30:38.615] WARN ⚠ 回寫查核：本機 3331 句，但後端只有 2333 句。譯文沒有完整進入共用快取——下一個觀看者會重新付費。請確認後端已部署最新版（`cd backend && wrangler deploy`），以及 Cloudflare KV 當日寫入額度未用盡。
+[01:30:43.872] OK   ✅ 已標記完整收割（1055 段 / 後端 2333 句），之後看這支影片的人會跳過整軌預抓
+[01:31:18.973] OK   ⚙ 遠端設定已更新 v1 → v1，選擇器已就地套用（root: .tm-subtitle-region-container）
+
+════════ 報告結束 ════════

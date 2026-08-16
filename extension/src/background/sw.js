@@ -209,6 +209,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'translate':
           sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
           break;
+        // pagehide 觸發的最後一搏。頁面隨時會被凍結，所以立刻回應、
+        // 用 keepalive 讓請求在分頁消失後仍然送達。我們不需要譯文，
+        // 只是要讓伺服器把它翻出來存進共用快取。
+        case 'translateKeepalive':
+          sendResponse({ ok: true });
+          try {
+            const token = await getClientToken();
+            fetch(BACKEND + '/v1/translate', {
+              method: 'POST',
+              keepalive: true,
+              headers: { 'content-type': 'application/json', 'x-client-token': token },
+              body: JSON.stringify({ cid: msg.cid || 'misc', lines: msg.lines || [] }),
+            }).catch(() => {});
+          } catch (e) { /* 離開途中，不做任何事 */ }
+          break;
         case 'markComplete':
           sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount) });
           break;
