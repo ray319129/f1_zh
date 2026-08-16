@@ -335,6 +335,7 @@
 
   function pollCaption() {
     checkPollStall();
+    tickEarlyDisplay();
     if (!settings.enabled || !site || killed || tooOld) return;
     const cur = collectCaption();
     if (cur === lastSeenCaption) return;
@@ -487,6 +488,108 @@
     }
   }
 
+  // =========================================================================
+  // 字幕時機微調
+  //
+  // 使用者實測發現 F1TV 官方字幕本身時快時慢。這裡讓他自己補那個偏差。
+  //
+  // **兩個方向的難度完全不同：**
+  //
+  //   延後（offset < 0）  容易。收到字幕後 setTimeout 再顯示。零風險，任何情況都能用。
+  //   提前（offset > 0）  難。我們是「看到 F1TV 畫出字幕才知道有這句」，
+  //                       本質上不可能比它更早——除非用 VTT 的時間軸。
+  //
+  // 而直接用 VTT 時間軸就是 handoff 決策 4.1 明確避開的那條路：
+  // HLS 分段 VTT 的時間基準要靠 X-TIMESTAMP-MAP 換算，很脆弱，
+  // 做出來常常是「翻譯正確但時機歪掉」。
+  //
+  // **所以這裡不解析 X-TIMESTAMP-MAP，改用自我校準：**
+  // 每當 DOM 出現一句我們手上也有 VTT 時間的字幕，就記下
+  // `video.currentTime - cue 時間` 這個差值。取中位數就是這支影片的基準偏移。
+  // 有了它才啟用提前顯示；校準樣本不足就自動退回「只能延後」。
+  //
+  // 好處是它自我修正、不依賴任何格式假設，而且**校準失敗時的退化方向是安全的**
+  // （退回現在的行為，而不是顯示錯位的字幕）。
+  //
+  // ⚠️ 直播只允許延後。直播的字幕清單是滑動視窗，基準點會隨著重抓而變，
+  //    校準出來的值不可信——寧可不做，也不要在直播時顯示錯位的字幕。
+  // =========================================================================
+  const OFFSET_MAX_MS = 2000;        // 正負上限
+  const CALIB_MIN = 8;               // 至少要這麼多樣本才敢提前顯示
+
+  const cueTimes = new Map();        // normKey -> VTT 裡的 cue 起始秒數
+  const calibSamples = [];           // video.currentTime - cueTime 的樣本
+  let calibrated = null;             // 中位數，null = 尚未校準
+  const shownEarly = new Set();      // 已經提前顯示過的鍵，避免 DOM 到時重複
+
+  /** 目前允許的偏移。直播時把正值夾成 0。 */
+  function activeOffsetMs() {
+    const raw = Math.max(-OFFSET_MAX_MS, Math.min(OFFSET_MAX_MS, Number(settings.subtitleOffset) || 0));
+    if (raw <= 0) return raw;
+    if (state.isLive) return 0;                    // 直播不提前
+    if (calibrated === null) return 0;             // 沒校準好就不提前
+    return raw;
+  }
+
+  /** DOM 出現一句時記一筆校準樣本。 */
+  function noteCalibration(k) {
+    if (state.isLive) return;
+    const cue = cueTimes.get(k);
+    if (cue === undefined) return;
+    const v = document.querySelector('video');
+    if (!v || !isFinite(v.currentTime)) return;
+
+    calibSamples.push(v.currentTime - cue);
+    if (calibSamples.length > 40) calibSamples.shift();
+    if (calibSamples.length >= CALIB_MIN) {
+      const a = calibSamples.slice().sort((x, y) => x - y);
+      calibrated = a[Math.floor(a.length / 2)];     // 中位數，抗離群值
+    }
+  }
+
+  /**
+   * 提前顯示。每次輪詢時檢查「再過 offset 毫秒就該出現」的那句。
+   *
+   * 只在**已經有譯文**時才提前——沒有譯文就提前顯示等於什麼都沒有，
+   * 反而讓下面的 DOM 路徑被去重擋掉。
+   */
+  function tickEarlyDisplay() {
+    const off = activeOffsetMs();
+    if (off <= 0) return;
+    const v = document.querySelector('video');
+    if (!v || !isFinite(v.currentTime) || v.paused) return;
+
+    const target = v.currentTime - calibrated + off / 1000;
+    // 找出「起始時間落在 [target-0.5, target] 這個窗內」且還沒顯示過的那句。
+    // 窗口 0.5 秒是為了容忍輪詢間隔與校準誤差。
+    for (const [k, t] of cueTimes) {
+      if (t > target || t < target - 0.5) continue;
+      if (shownEarly.has(k)) continue;
+      const zh = memo.get(k);
+      if (!zh) continue;
+      shownEarly.add(k);
+      if (shownEarly.size > 3000) shownEarly.clear();
+      lastRaw = '';                 // 讓 DOM 到達時不會因為去重而漏掉狀態更新
+      render(zh, '');
+      dbg(`提前 ${off}ms 顯示：${zh.slice(0, 30)}`);
+      return;
+    }
+  }
+
+  /** 延後顯示。單純排程，任何情況都安全。 */
+  let delayTimer = null;
+  function renderWithOffset(zh, en) {
+    const off = activeOffsetMs();
+    if (off >= 0) { render(zh, en); return; }
+    clearTimeout(delayTimer);
+    delayTimer = setTimeout(() => {
+      // 排程期間畫面可能已經換句了。**一定要當場重讀 DOM 比對**——
+      // 這正是坑 #18（過時的譯文重新彈出）的成因。
+      const now = clean(collectCaption());
+      if (now && now === en) render(zh, en);
+    }, -off);
+  }
+
   function handleCaption(raw) {
     const text = clean(raw);
     if (!text || text.length < 2 || text === lastRaw) return;
@@ -502,8 +605,9 @@
     const hit = memo.get(k);
     if (hit) {
       state.hits++;
+      noteCalibration(k);
       const t0 = performance.now();
-      render(hit, text);
+      renderWithOffset(hit, text);
       const jsMs = performance.now() - t0;
       detect.renderMs.push(jsMs);
       if (detect.renderMs.length > 200) detect.renderMs.shift();
@@ -880,18 +984,37 @@
     return { segs, isVod: /#EXT-X-ENDLIST/i.test(body) };
   }
 
-  /** 極簡 WebVTT 解析：只要 cue 文字，不要時間軸 */
+  /** `00:01:23.456` → 秒。分秒可省略小時。 */
+  function hmsToSec(t) {
+    const m = String(t).trim().match(/(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/);
+    if (!m) return null;
+    return (Number(m[1] || 0) * 3600) + (Number(m[2]) * 60) + Number(m[3]) + Number(m[4]) / 1000;
+  }
+
+  /**
+   * 極簡 WebVTT 解析。回傳 `{ text, start }`。
+   *
+   * `start` 是 cue 在**這個分段檔案內**的秒數，不是影片的絕對時間——
+   * HLS 分段 VTT 要靠 X-TIMESTAMP-MAP 才能換算成絕對時間，而那條路很脆弱
+   * （決策 4.1 明確避開）。我們不換算，改用自我校準推出基準，
+   * 見 `noteCalibration`。
+   */
   function parseVtt(raw) {
     const out = [];
     if (!raw || raw.indexOf('-->') === -1) return out;
-    let cur = null;
+    let cur = null, start = null;
     String(raw).replace(/\r\n?/g, '\n').split('\n').forEach((ln) => {
-      if (ln.indexOf('-->') !== -1) { if (cur && cur.length) out.push(cur.join(' ')); cur = []; return; }
+      if (ln.indexOf('-->') !== -1) {
+        if (cur && cur.length) out.push({ text: cur.join(' '), start });
+        cur = [];
+        start = hmsToSec(ln.split('-->')[0]);
+        return;
+      }
       if (cur === null) return;
-      if (ln.trim() === '') { if (cur.length) { out.push(cur.join(' ')); cur = null; } return; }
+      if (ln.trim() === '') { if (cur.length) { out.push({ text: cur.join(' '), start }); cur = null; } return; }
       cur.push(ln.trim());
     });
-    if (cur && cur.length) out.push(cur.join(' '));
+    if (cur && cur.length) out.push({ text: cur.join(' '), start });
     return out;
   }
 
@@ -1069,13 +1192,15 @@
   function ingestVtt(text) {
     let added = 0;
     for (const cue of parseVtt(text)) {
-      const t = clean(cue);
+      const t = clean(cue.text);
       if (!t || t.length < 2) continue;
       const k = normKey(t);
       if (!k || prefetchSeen.has(k)) continue;
       prefetchSeen.add(k);
       // 已有譯文也要登記——那句確實出現在這支影片的 VTT 裡（坑 #16）
       sessionKeys.add(k);
+      // 時間軸留給「提前顯示」用。上限與 memo 同級，避免無界成長。
+      if (cue.start !== null && cueTimes.size < 20000) cueTimes.set(k, cue.start);
       if (memo.has(k)) continue;          // 共用快取已有，不用再翻
       if (pending.size >= PENDING_MAX) continue;   // 佇列爆了就先不收，下輪再說
       pending.set(k, t);
@@ -1394,6 +1519,7 @@
     //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
     manifests = [];
     sessionKeys = new Set();
+    cueTimes.clear(); calibSamples.length = 0; calibrated = null; shownEarly.clear();
     // 每支影片各自判定免費資格
     freeSession = self.PL.isFreeSession(location.pathname, freeTierCfg);
     freeSpent = 0; lastTickAt = 0; trialEndedShown = false;

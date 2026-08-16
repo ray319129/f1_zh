@@ -38,7 +38,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, SEASON_TIERS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -448,8 +448,10 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       c.d.params.CheckMacValue && c.d.params.MerchantTradeNo && c.d.action.includes('ecpay')
         ? ok(`結帳：產生完整的綠界表單（${c.d.params.MerchantTradeNo}，${c.d.action.includes('stage') ? 'stage' : '正式'}）`)
         : fail('結帳：表單欄位不完整');
-      Number(c.d.params.TotalAmount) === 599
-        ? ok('結帳：金額與方案一致') : fail('結帳：金額不對', c.d.params.TotalAmount);
+      // 金額要與 /v1/plans 顯示的一致 —— 畫面寫 420 卻收 599 是糾紛
+      const expect = A.seasonPriceNow(599).price;
+      Number(c.d.params.TotalAmount) === expect
+        ? ok(`結帳：金額與當期分段一致（NT$${expect}）`) : fail('結帳：金額不對', c.d.params.TotalAmount);
       // 官方規格的硬性限制
       const P = c.d.params;
       P.MerchantTradeNo.length <= 20 ? ok('綠界規格：MerchantTradeNo ≤ 20') : fail('MerchantTradeNo 超長');
@@ -476,7 +478,32 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     }
   }
 
-  // ---- 19. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 19. 賽季中的分段定價 ----
+  // 8 月才加入的人付 599 卻只看得到剩下 8 場，會覺得不划算——
+  // 而「覺得不划算」不會變成客訴，會變成不買。
+  {
+    const at = (m) => A.seasonPriceNow(599, Date.UTC(2026, m - 1, 15));
+    const rows = [1, 3, 6, 9, 11].map((m) => [m, at(m)]);
+    rows.forEach(([m, r]) => console.log(`     ${String(m).padStart(2)} 月　NT$${String(r.price).padStart(3)}　${r.tier}`));
+
+    at(3).price === 599 ? ok('分段定價：季初全價') : fail('分段定價：季初不是全價', String(at(3).price));
+    at(11).price < at(3).price ? ok('分段定價：越晚越便宜') : fail('分段定價：季末沒有比較便宜');
+    // 價格必須單調不遞增，否則會出現「早買比較貴」的荒謬情況
+    let mono = true, prev = Infinity;
+    for (let m = 3; m <= 12; m++) { const p = at(m).price; if (p > prev) mono = false; prev = p; }
+    mono ? ok('分段定價：3~12 月單調不遞增（不會早買比較貴）') : fail('分段定價：中途變貴了');
+    // 1~2 月買的是即將開始的新賽季，該收全價
+    at(1).price === 599 ? ok('分段定價：1~2 月算新賽季，收全價') : fail('分段定價：跨年處理不對');
+    // 折扣價取整到 10 元（牌價本身是 599，不在此限）。
+    // 而且**折扣價永遠不可高於牌價**——round 會讓 599×1.0 變成 600，那很荒謬。
+    const discounted = rows.filter(([, r]) => r.price !== 599);
+    discounted.every(([, r]) => r.price % 10 === 0)
+      ? ok('分段定價：折扣價一律取整到 10 元') : fail('分段定價：折扣價出現零頭');
+    rows.every(([, r]) => r.price <= 599)
+      ? ok('分段定價：任何時候都不高於牌價') : fail('分段定價：折扣價竟然高於牌價');
+  }
+
+  // ---- 20. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

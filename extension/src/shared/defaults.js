@@ -68,6 +68,10 @@
     bottomPct: 8,               // 距影片底部的百分比（相對影片高度，不是視窗）
     holdMs: 7000,               // 一句字幕最長停留時間
     hideNativeCC: true,         // 隱藏原生英文字幕，避免與疊字重疊
+    // 字幕時機微調（毫秒）。負值＝延後顯示，正值＝提前顯示。
+    // 提前只在重播且校準成功時生效，直播一律夾成 0——
+    // 直播的字幕清單是滑動視窗，基準點會變，校準值不可信。
+    subtitleOffset: 0,
     debug: false,               // 詳細日誌：每句字幕、每個批次都印到 Console（測試用）
   };
 
@@ -96,6 +100,7 @@
       fontSize: num(s.fontSize, 12, 72, DEFAULT_SETTINGS.fontSize),
       bottomPct: num(s.bottomPct, 0, 60, DEFAULT_SETTINGS.bottomPct),
       holdMs: num(s.holdMs, 1000, 30000, DEFAULT_SETTINGS.holdMs),
+      subtitleOffset: num(s.subtitleOffset, -2000, 2000, 0),
     };
   }
 

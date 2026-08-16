@@ -18,7 +18,7 @@
   // 一般使用者看不到「詳細日誌」——那是開發用的，放出去只會造成困惑。
 // 需要時仍可在 F1TV 分頁的 Console 打 `__pitlingo.debug(true)` 打開。
 const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
-  const RANGES = ['fontSize', 'bottomPct', 'holdMs'];
+  const RANGES = ['fontSize', 'bottomPct', 'holdMs', 'subtitleOffset'];
 
   let settings = Object.assign({}, DEFAULT_SETTINGS);
 
@@ -189,6 +189,10 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
     $('fontSizeOut').textContent = settings.fontSize + ' px';
     $('bottomPctOut').textContent = settings.bottomPct + ' %';
     $('holdMsOut').textContent = (settings.holdMs / 1000).toFixed(1) + ' 秒';
+    const off = settings.subtitleOffset || 0;
+    $('subtitleOffsetOut').textContent = off === 0 ? '跟隨官方字幕'
+      : off < 0 ? `延後 ${(-off / 1000).toFixed(1)} 秒`
+      : `提前 ${(off / 1000).toFixed(1)} 秒（僅重播）`;
   }
 
   function paint() {

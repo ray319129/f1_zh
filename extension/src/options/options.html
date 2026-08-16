@@ -112,6 +112,17 @@
   <summary>進階</summary>
 
   <label class="field">
+    <span>字幕時機 <output id="subtitleOffsetOut"></output></span>
+    <input id="subtitleOffset" type="range" min="-2000" max="2000" step="200">
+  </label>
+  <p class="hint">
+    F1TV 官方字幕本身時快時慢，這裡可以自己補。<br>
+    <b>往左（延後）任何情況都有效。往右（提前）只在重播有效</b>——
+    直播的字幕清單是滑動視窗，基準點會變，強行提前只會顯示錯位的字幕。
+    重播也需要先播一段讓它自動校準。
+  </p>
+
+  <label class="field">
     <span>字幕停留上限 <output id="holdMsOut"></output></span>
     <input id="holdMs" type="range" min="2000" max="15000" step="500">
   </label>

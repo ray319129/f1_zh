@@ -929,9 +929,46 @@ const PLANS = {
   // 正式價。
   season: { label: 'Season', price: 599, untilSeasonEnd: true },
 
+  // 單場周末。賽季中加入的人不必為看不到的比賽付錢。
+  weekend: { label: 'Weekend Pass', price: 39, days: 4 },
+
   // 客服補償用，不公開販售。
   comp: { label: '客服補償', price: 0, days: 30 },
 };
+
+/**
+ * 賽季中的分段定價。
+ *
+ * 問題：8 月才加入的人，付 599 卻只看得到剩下 8 場，會覺得不划算——
+ * 而「覺得不划算」不會變成客訴，會變成**不買**。
+ *
+ * 用固定分段而不是按場次比例：比例定價每天都不同價，
+ * 使用者會覺得「明天會不會更便宜」而拖延；分段是明確的門檻，
+ * 而且好溝通（「現在是下半季價」比「現在是 62% 價」清楚得多）。
+ *
+ * 分段以**月份**為界，因為 F1 賽季的場次分布每年不同，
+ * 用月份切才不必每年重寫。賽季大約 3 月開跑、12 月結束。
+ */
+const SEASON_TIERS = [
+  { untilMonth: 5, ratio: 1.00, label: '全季' },       // 3~5 月：整季都還在
+  { untilMonth: 8, ratio: 0.70, label: '季中' },       // 6~8 月：過了約三分之一
+  { untilMonth: 10, ratio: 0.45, label: '季末' },      // 9~10 月
+  { untilMonth: 12, ratio: 0.25, label: '最後幾場' },  // 11~12 月
+];
+
+/** 現在買 season 要多少錢。回傳 { price, tier }。 */
+function seasonPriceNow(base, from) {
+  const m = new Date(from || Date.now()).getUTCMonth() + 1;
+  // 1~2 月是上個賽季的尾巴，此時買的是「即將開始的新賽季」，算全價
+  if (m <= 2) return { price: base, tier: '新賽季' };
+  const t = SEASON_TIERS.find((x) => m <= x.untilMonth) || SEASON_TIERS[SEASON_TIERS.length - 1];
+  if (t.ratio >= 1) return { price: base, tier: t.label };   // 全價就是牌價，不做任何加工
+
+  // 取整到 10 元，避免 419 這種難溝通的價格。
+  // ⚠️ 用 floor 不是 round —— round 會讓 599×1.0 變成 600，**比牌價還貴**。
+  //    折扣價永遠不該高於牌價，寧可少收 9 元也不要出現那種畫面。
+  return { price: Math.floor(base * t.ratio / 10) * 10, tier: t.label };
+}
 
 // 早鳥限量。賣完自動改用正式價——**不能靠人工盯著改**，
 // 賣超了要嘛食言要嘛虧錢，兩個都不該發生。
@@ -1535,19 +1572,22 @@ const TRADE_AB = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';   // 36 個
 function tradeNo() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
+  // 時間戳只到「分」，把省下的兩碼讓給隨機。
+  // 秒級時間戳 + 6 碼隨機在 20000 次仍會偶爾碰撞（生日問題）；
+  // 分級 + 8 碼隨機把同一分鐘內的空間拉到 36^8 ≈ 2.8×10^12。
   const stamp = `${String(d.getUTCFullYear()).slice(2)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`
-    + `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+    + `${p(d.getUTCHours())}${p(d.getUTCMinutes())}`;
 
   // 拒絕取樣去掉模數偏差（256 不是 36 的倍數）。成本可忽略，何必留個歪的分布。
   let r = '';
-  while (r.length < 6) {
+  while (r.length < 8) {
     for (const b of crypto.getRandomValues(new Uint8Array(8))) {
       if (b >= 252) continue;                  // 252 = 7 × 36
       r += TRADE_AB[b % 36];
-      if (r.length === 6) break;
+      if (r.length === 8) break;
     }
   }
-  return `PL${stamp}${r}`;                     // PL + 12 + 6 = 20 碼，剛好在上限
+  return `PL${stamp}${r}`;                     // PL + 10 + 8 = 20 碼，剛好在上限
 }
 
 /** 綠界要的時間格式：yyyy/MM/dd HH:mm:ss，且必須是台北時間。 */
@@ -1578,7 +1618,10 @@ async function handleCheckout(request, env, url) {
   // 否則使用者看到 399 卻被收 599（或反過來），兩種都是糾紛。
   let finalPlan = plan;
   if (plan === 'season_early' && (await earlyIssued(env)) >= EARLY_LIMIT) finalPlan = 'season';
-  const price = PLANS[finalPlan].price;
+  // 與 /v1/plans 用同一個函式算，否則畫面上寫 420 卻收 599。
+  const sp = PLANS[finalPlan].untilSeasonEnd
+    ? seasonPriceNow(PLANS[finalPlan].price) : { price: PLANS[finalPlan].price, tier: null };
+  const price = sp.price;
 
   const conf = ecpayConf(env, body.mode === 'stage' ? 'stage' : 'production');
   if (!conf.merchantId || !conf.hashKey || !conf.hashIV) {
@@ -2673,7 +2716,18 @@ export default {
         return json({
           plans: Object.entries(PLANS)
             .filter(([, v]) => v.price > 0)
-            .map(([k, v]) => ({ key: k, label: v.label, price: v.price, limit: v.limit || null })),
+            .map(([k, v]) => {
+              // 賽季方案要顯示**當下實際會收的錢**，不是牌價。
+              // 顯示 599 卻收 420（或反過來）都是糾紛。
+              const sp = v.untilSeasonEnd ? seasonPriceNow(v.price) : null;
+              return {
+                key: k, label: v.label,
+                price: sp ? sp.price : v.price,
+                listPrice: v.price,
+                tier: sp ? sp.tier : null,
+                limit: v.limit || null,
+              };
+            }),
           earlyLeft: left,
         }, 200, { 'cache-control': 'public, max-age=60' });
       }
