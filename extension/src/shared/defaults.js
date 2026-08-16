@@ -14,8 +14,11 @@
 
 (function (root) {
   'use strict';
-
-  const BACKEND = 'https://f1zh-api.pitlingo.workers.dev';
+  // ⚠️ 換這個位址前，先確認 manifest 的 host_permissions 兩個都在。
+  //    api.pitlingo.com 是正式位址（換供應商時不用改所有已安裝的擴充功能），
+  //    workers.dev 保留是為了舊版還連得上——**在確認沒有用戶端使用之前不可移除**。
+  //    實際踩過：加子網域時 wrangler 預設關掉 workers.dev，所有安裝立刻斷線。
+  const BACKEND = 'https://api.pitlingo.com';
 
   const BUILT_IN_CONFIG = {
     version: 0,                       // 內建版本永遠是 0，遠端的一定比較新

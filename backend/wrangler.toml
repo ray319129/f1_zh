@@ -4,6 +4,26 @@ compatibility_date = "2026-01-01"
 
 # 建立 KV：wrangler kv namespace create SUBS
 # 然後把回傳的 id 填進來
+# API 有自己的子網域。
+#
+# ⚠️ **不要把 pitlingo.com 掛在 Worker 上**——那會讓整個網域指向 API，
+#    網站與法律文件全部變成 {"error":"not found"}。實際發生過。
+#
+#   pitlingo.com / www   → Cloudflare Pages（網站、法律文件、購買頁）
+#   api.pitlingo.com     → 這個 Worker
+#
+# 用自訂網域而不是只靠 workers.dev，是為了日後換供應商時
+# 不用改所有已安裝的擴充功能。
+# ⚠️ 加了 [[routes]] 之後，wrangler 會**預設關掉 workers.dev 路由**。
+#    實際踩過：加上子網域那一刻，f1zh-api.pitlingo.workers.dev 立刻回 1042，
+#    而所有已安裝的擴充功能都指向那個位址——等於全部斷線。
+#    這行必須留著，直到確認沒有任何用戶端還在用舊位址為止。
+workers_dev = true
+
+[[routes]]
+pattern = "api.pitlingo.com"
+custom_domain = true
+
 [[kv_namespaces]]
 binding = "SUBS"
 id = "606ab33223b74d929d4d0ba8f5e1ae69"
