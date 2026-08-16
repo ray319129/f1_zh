@@ -12,7 +12,7 @@
 | 產物 | 角色 | 版本 |
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.7.2 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.3 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v1.4 |
 | `extension/` | MV3 擴充功能，**商品化主體** | v0.3.5 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
@@ -31,7 +31,7 @@
 
 1. **每次修改程式碼，必須同步更新 `handoff.md`（版本號 + 更新紀錄）與對應的 README／TUTORIAL。** 不需要提醒。
 2. **每一步都要詳細解釋在做什麼、改了什麼、為什麼。**
-3. 修改後跑 `node --check`，以及 `node tools/check-normkey.js`、`node tools/check-logcalls.js`。
+3. 修改後跑 `node --check`，以及 `node tools/check-normkey.js`、`node tools/check-logcalls.js`、`node tools/check-prompt.js`。
 4. 改動 userscript 的 `SYSTEM_PROMPT` 後，提醒跑選單的「🧮 檢查 token 數」確認 ≥ 4096。
 5. 使用者已決定**不再討論 F1TV 條款的法務風險**。企劃書把法務列為 P0 並會找律師——尊重該安排，不要重複勸阻。
 6. 回應用**繁體中文**。
@@ -51,6 +51,8 @@
 | 9 | **非同步結果回來時世界已經變了**——補顯示前要當場重讀 DOM 比對，不能只信變數 |
 | 10 | **KV 寫入是 Cloudflare 免費方案的天花板**（1,000/天），任何「每筆資料寫一次」的設計都要先估算 |
 | 11 | **傳播延遲是所有快取層的總和**，不是最短那層 |
+| 12 | **prompt 低於 4,096 tokens 時 `cache_control` 靜默失效**——不報錯，只是每次全額計費 |
+| 13 | **在某個檔案學到的規則，要主動確認它在別的檔案成不成立**。坑 #21 就是規則只套用在 userscript、後端漏掉 |
 
 ## 關鍵技術事實（已實測，不要重新驗證）
 
@@ -77,8 +79,14 @@
 
 **擴充功能是雙 world**：MAIN 負責注入，ISOLATED 才有 `chrome.*` API，靠 `window.postMessage` 相接。
 
-**⚠️ `normKey()` 有三份**（backend / extension / userscript），必須行為完全一致，
-否則共用快取靜默失效。改動後跑 `node tools/check-normkey.js`。
+**⚠️ 兩個跨檔案的硬性契約，壞掉都不會報錯：**
+
+| 契約 | 份數 | 壞掉的後果 | 檢查 |
+|---|---|---|---|
+| `normKey()` | 3（backend／extension／userscript） | 同一句算出不同快取鍵，共用快取整個失效 | `node tools/check-normkey.js` |
+| `SYSTEM_PROMPT` | 2（backend／userscript） | 兩個產物翻出不同結果；低於 4,096 tokens 還會讓 prompt 快取失效 | `node tools/check-prompt.js` |
+
+userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用模組，只能靠檢查工具擋漂移。
 
 ## 成本現況（實測）
 

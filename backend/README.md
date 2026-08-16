@@ -122,23 +122,31 @@ curl https://f1zh-api.xxx.workers.dev/v1/health
 
 ## Prompt 同步 ⚠️
 
-`src/index.js` 的 `SYSTEM_PROMPT` 與 userscript 的 `SYSTEM_PROMPT` **必須語意一致**，否則同一句在兩邊會翻出不同結果，快取就失去意義。
+`src/index.js` 的 `SYSTEM_PROMPT` 與 userscript 的 `SYSTEM_PROMPT` **必須逐字相同**。改完跑：
 
-後端這份是精簡版（只保留規則與核心術語），因為：
+```bash
+node tools/check-prompt.js
+```
 
-- 後端翻的是**未命中的零星句子**，量少
-- 完整術語表在 userscript（收割器）那邊，那才是產生 bundle 的主力
+### 為什麼是「逐字相同」而不是「語意一致」
 
-**改動原則：規則區塊兩邊要一致；術語表可以只加在 userscript。**
+v1.3 以前後端只放精簡版（34 條術語），理由是「後端只翻零星未命中句，完整術語表放收割器就好」。**這個理由是錯的**，錯在兩個地方：
 
-日後若要單一來源，可改成後端用 `/v1/config` 一併下發 prompt，userscript 啟動時拉取。
+1. **擴充功能的翻譯 100% 由後端執行。** 使用者沒有 API key，沒有收割器。共用快取沒命中時，他拿到的就是精簡術語表翻出來的結果——比 userscript 差一截。
+2. **精簡版約 650 tokens，低於 Haiku 的 4,096 快取門檻。** `cache_control` 在門檻以下是**靜默失效**的：不報錯，只是每次都全額計費。等於為了「省 prompt」反而一直多付錢。
+
+搬完整份之後兩個問題一起解決：術語表補齊，token 數也跨過門檻。
+
+### 為什麼用複製而不是共用模組
+
+userscript 必須是單一檔案（Tampermonkey），backend 由 wrangler 打包，兩邊沒有共用模組的辦法。所以比照 `normKey()` 的前例：允許複製，但用 `tools/check-prompt.js` 擋漂移。
 
 ---
 
 ## 成本與限制
 
 - **Cloudflare 免費方案**：每天 100,000 次 Workers 請求、KV 每天 100,000 次讀 / 1,000 次寫。以早期規模綽綽有餘。
-- **KV 寫入次數是最先會碰到的天花板**（每天 1,000 次）。`/v1/translate` 每翻一句寫一次，所以大量冷啟動時要留意。收割器改用 `POST /v1/subs` 一次寫一個 bundle，只佔 1 次寫入 —— **這是建議的主要灌注方式**。
+- **KV 寫入次數是最先會碰到的天花板**（每天 1,000 次）。v1.3 起 `/v1/translate` 不論翻幾句都只寫 1 次 KV（v1.2 以前是每句一次，實測 38 分鐘就把當日額度用光，見 handoff 坑 #19）。收割器的 `POST /v1/subs` 一次寫一個 bundle 也只佔 1 次 —— **仍是建議的主要灌注方式**，因為它能在賽前就把整支影片灌滿。
 - 速率限制 120 req/min/IP，KV 最終一致性，屬近似值。
 
 ---
