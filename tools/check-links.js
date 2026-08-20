@@ -45,6 +45,7 @@ const ROUTES = {
   '/privacy': 'legal/privacy.html',
   '/terms': 'legal/terms.html',
   '/buy': 'legal/buy.html',
+  '/faq': 'legal/faq.html',
   '/paid': 'legal/paid.html',
   '/contact': 'legal/contact.html',
   '/admin': 'legal/admin.html',

@@ -214,7 +214,7 @@ async function getBundle(cid, force) {
  * 後端會先查自己的單句快取，未命中才呼叫模型，並把結果存起來——
  * 所以就算是「第一個看的人」，他翻過的每一句也都會嘉惠後面的人。
  */
-async function translateLines(cid, lines, urgent) {
+async function translateLines(cid, lines, urgent, slug) {
   if (!lines || !lines.length) return { lines: {} };
   try {
     return await api('/v1/translate', {
@@ -222,7 +222,8 @@ async function translateLines(cid, lines, urgent) {
       // urgent = 畫面上現在就要用。後端只讓**非急件**參與直播的並發去重，
       // 因為讓路的人要等別人翻完再讀快取，而直播字幕 3~4 秒就換一句。
       // **預設是急件**：漏標的後果是多花一點錢，標錯方向的後果是看不到字幕。
-      body: JSON.stringify({ cid: cid || 'misc', lines, urgent: urgent !== false }),
+      // slug：伺服器要靠它判斷這支影片算不算免費場次（那條規則以前只在用戶端）
+      body: JSON.stringify({ cid: cid || 'misc', lines, urgent: urgent !== false, slug: slug || '' }),
     });
   } catch (e) {
     return { lines: {}, error: String(e.message || e) };
@@ -467,7 +468,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, bundle: await getBundle(msg.cid, msg.force) });
           break;
         case 'translate':
-          sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines, msg.urgent) });
+          sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines, msg.urgent, msg.slug) });
           break;
         // pagehide 觸發的最後一搏。頁面隨時會被凍結，所以立刻回應、
         // 用 keepalive 讓請求在分頁消失後仍然送達。我們不需要譯文，

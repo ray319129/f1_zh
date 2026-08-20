@@ -347,10 +347,12 @@
       // 原生有字幕，我們卻沒畫出來 —— 這是真的漏了
       const k = normKey(nativeNow);
       kind = memo.has(k) ? 'render' : 'untranslated';
+      if (kind === 'render') plErr('PL-C04', gapSec + ' 秒');
       msg = `⚠ 字幕缺漏 ${gapSec} 秒：原生字幕存在但未顯示中文`
         + `（${memo.has(k) ? '譯文已在本機，疑似顯示層問題' : '這句尚無譯文'}）`;
     } else if (!container) {
       kind = 'container_gone';
+      plErr('PL-C03', gapSec + ' 秒');
       msg = `⚠ 字幕缺漏 ${gapSec} 秒：找不到字幕容器 —— 選擇器可能已失效，或播放器重建中`;
     } else {
       kind = 'silent';
@@ -364,6 +366,23 @@
     state.lastGap = { kind, sec: gapSec, at: new Date().toISOString() };
   }
 
+  /**
+   * 播了一陣子還是完全攔不到串流 → 注入失敗。
+   *
+   * 這種情況功能還在（會退化成逐句翻譯），但**慢很多也貴很多**，
+   * 而且使用者只會覺得「字幕怎麼一直慢半拍」。所以要留代碼，
+   * 但**不打斷觀看**——它還能用，跳一個大警告只會嚇到人。
+   */
+  let injectChecked = false;
+  let injectSince = Date.now();
+  function checkInjection() {
+    if (injectChecked || !site || killed) return;
+    if (!isActuallyPlaying()) return;
+    if (Date.now() - injectSince < 90000) return;      // 給它 90 秒
+    injectChecked = true;
+    if (state.workerPatched > 0 || state.workerVtt > 0 || state.segFetched > 0) return;
+    plErr('PL-C05', '播放 90 秒仍未攔截到任何串流資料');
+  }
   function checkNoCaption() {
     if (!settings.enabled || !site) return;
     if (!isActuallyPlaying()) { lastNonEmptyAt = Date.now(); return; }
@@ -435,6 +454,42 @@
     if (v) { videoMissingSince = 0; return false; }
     if (!videoMissingSince) { videoMissingSince = Date.now(); return false; }
     return Date.now() - videoMissingSince > 5000;
+  }
+
+  /**
+   * 錯誤代碼。
+   *
+   * ⚠️ **只有「使用者的體驗確實壞了」而且「我們拿到代碼查得出東西」才給代碼。**
+   *
+   *    這個專案有兩種「沒有字幕」是完全正常的：這支影片本來就沒字幕，
+   *    以及有字幕的影片中途長時間沒旁白（賽後訪問、頒獎、純畫面）。
+   *    給那兩種發代碼，等於訓練使用者把正常現象當故障回報——
+   *    然後真正的故障就淹沒在雜訊裡。它們一律只記 INFO，不給代碼。
+   *
+   * ⚠️ 代碼發出去就不可以改語意。要淘汰就留著別再用。
+   */
+  const PL_CODES = {
+    'PL-C01': '連不上翻譯伺服器',
+    'PL-C02': '伺服器回報錯誤（後面會附伺服器自己的代碼）',
+    'PL-C03': '找不到字幕容器 —— 播放器改版或選擇器失效',
+    'PL-C04': '譯文已在本機，畫面卻沒顯示 —— 顯示層問題',
+    'PL-C05': '注入失敗 —— 攔不到串流，只能逐句翻譯（較慢較貴）',
+    'PL-C06': '這支影片不在免費範圍內（不是故障）',
+    'PL-C07': '免費額度已用完（不是故障）',
+  };
+  // 這次觀看出現過哪些代碼，診斷報告要帶上去
+  const seenCodes = new Map();
+
+  /**
+   * 記一個錯誤代碼。toUser 為 true 時才會顯示在畫面上——
+   * 大部分代碼只需要進診斷，不需要打斷觀看。
+   */
+  function plErr(code, detail, toUser) {
+    seenCodes.set(code, (seenCodes.get(code) || 0) + 1);
+    const line = '【' + code + '】' + (PL_CODES[code] || '') + (detail ? '　' + detail : '');
+    evWarn(line);
+    if (toUser) show('⚠ ' + line + '　（回報時請附上代碼）', '');
+    return code;
   }
 
   function pollCaption() {
@@ -1076,7 +1131,12 @@
       // 而批次大小直接決定成本（實測 14.3 句/批 vs 4.8 句/批＝三倍的呼叫）。
       const isUrgent = keys.some((k) => urgentKeys.has(k));
       keys.forEach((k) => urgentKeys.delete(k));
-      const res = await send({ type: 'translate', cid: contentId, lines: batch, urgent: isUrgent });
+      // slug 要一起送。**伺服器要靠它判斷這支影片算不算免費場次**——
+      // 那條規則以前只存在於這裡，改一下用戶端就繞得過去。
+      const res = await send({
+        type: 'translate', cid: contentId, lines: batch,
+        urgent: isUrgent, slug: location.pathname,
+      });
       const lines = (res.ok && res.result && res.result.lines) || {};
       let n = 0;
       for (const [k, zh] of Object.entries(lines)) { remember(k, zh); n++; }
@@ -1105,9 +1165,13 @@
       }
       if (res.ok && res.result && res.result.error) {
         state.errors++;
-        // logEvent 只吃一個參數，第二個會被靜默丟掉——實測就這樣印出
-        // 「翻譯後端回報錯誤：」後面空白，等於白記一筆。一律用字串串接。
-        evWarn('翻譯後端回報錯誤：' + String(res.result.error || '(無訊息)'));
+        const be = String(res.result.code || '');
+        // 免費層的兩種情形**不是故障**，用專屬代碼標成「預期內」，
+        // 不要跟真正的錯誤混在一起（見 plErr 的說明）。
+        const code = res.result.reason === 'not_free_session' ? 'PL-C06'
+          : /^E3[02]$/.test(be) ? 'PL-C07' : 'PL-C02';
+        // logEvent 只吃一個參數，第二個會被靜默丟掉——一律用字串串接。
+        plErr(code, String(res.result.error || '(無訊息)') + (be ? '（伺服器 ' + be + '）' : ''));
       }
       // 譯文可能正好對應畫面上「此刻仍在顯示」的那一句，補上去。
       //
@@ -1122,6 +1186,7 @@
       }
     } catch (e) {
       state.errors++;
+      plErr('PL-C01', String(e.message || e));
       requeue(keys, batch, e.message);
     } finally {
       keys.forEach((k) => requested.delete(k));
@@ -2105,6 +2170,8 @@
     contentId = cid;
     // 換影片時重置顯示狀態，但 memo 保留——不同影片的重複用語可以互相受惠
     lastRaw = ''; lastSeenCaption = ''; everSawCaption = false; currentEn = '';
+    // 換影片＝重新判斷一次注入有沒有成功，並清掉上一支的代碼統計
+    injectChecked = false; injectSince = Date.now(); seenCodes.clear();
     pending.clear(); requested.clear();
     clearTimeout(bundleRetryTimer); bundleAttempts = 0;
     observedNodes = new Set();
@@ -2186,6 +2253,7 @@
       mount();
       reposition();
       checkNoCaption();
+      checkInjection();
       tickFreeUsage();
     }, STRUCT_MS);
 
@@ -2381,6 +2449,13 @@
     }
     L.push(`本機快取　：${memo.size} 句`);
     L.push(`命中 / 未命中：${state.hits} / ${state.misses}`);
+    // 出現過的錯誤代碼。**排在前面**——這是回報時最有用的一行。
+    if (seenCodes.size) {
+      L.push('錯誤代碼　：' + Array.from(seenCodes, ([c, n]) =>
+        c + '×' + n + '（' + (PL_CODES[c] || '?') + '）').join('　'));
+    } else {
+      L.push('錯誤代碼　：無');
+    }
     L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}　`
       + `放棄 ${state.dropped} 句${state.dropped ? '（已重試 3 次）' : ''}`);
     // 不是 0 就代表「攔到的東西不是字幕」。曾經因為 worker 把媒體分段

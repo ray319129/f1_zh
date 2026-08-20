@@ -946,6 +946,69 @@ function costOf(u) {
     + (u.cache_creation_input_tokens || 0) / 1e6 * PRICE.cacheWrite;
 }
 
+/**
+ * 每位使用者的用量。
+ *
+ * 為什麼要獨立一份，而不是加在 stats 的每支影片底下：
+ * **兩個問題不一樣。** 「哪支影片花最多錢」是內容問題（要不要預先收割）；
+ * 「哪個安裝花最多錢」是濫用與單位經濟問題（有人在燒錢嗎？付費者的
+ * 平均成本是多少？）。混在一起會讓兩邊的維度都變成笛卡兒積，資料量爆掉。
+ *
+ * ⚠️ **一天一個 key，跟著 stats 同一次 flush 落地。**
+ *    KV 寫入是免費方案的天花板（1,000/天，坑 #10），
+ *    所以絕不能「每位使用者一個 key」——那是每天上萬次寫入。
+ *
+ * ⚠️ 筆數要有上限。無界成長的 value 遲早撞上 KV 的 25MB 單值上限，
+ *    而那會**讓整份統計寫不進去**（連帶影響成本熔斷）。
+ *    超過上限的併進 __others，寧可失去尾端的解析度也不要整份掉。
+ */
+const USTATS_MAX_ROWS = 2000;
+let upending_ = {};
+
+function ustatsKey(d) {
+  const t = new Date(d || Date.now());
+  return `ustats:${t.toISOString().slice(0, 10)}`;
+}
+
+function recordUserUsage(installId, plan, usage, translated, cachedHits) {
+  const id = String(installId || 'unknown').slice(0, 40);
+  const r = upending_[id] || (upending_[id] = {
+    calls: 0, translated: 0, cached: 0,
+    in: 0, out: 0, cacheRead: 0, cacheWrite: 0, plan: '', last: 0,
+  });
+  r.calls++;
+  r.translated += translated || 0;
+  r.cached += cachedHits || 0;
+  r.in += usage.input_tokens || 0;
+  r.out += usage.output_tokens || 0;
+  r.cacheRead += usage.cache_read_input_tokens || 0;
+  r.cacheWrite += usage.cache_creation_input_tokens || 0;
+  r.plan = plan || r.plan;
+  r.last = nowSec();
+}
+
+async function flushUserStats(env) {
+  const mine = upending_;
+  if (!Object.keys(mine).length) return;
+  upending_ = {};
+  const key = ustatsKey();
+  let day = {};
+  try { day = JSON.parse((await env.SUBS.get(key)) || '{}'); } catch (e) { day = {}; }
+  for (const [id, r] of Object.entries(mine)) {
+    // 已經滿了就併進 __others，不要讓 value 無界成長
+    const target = (day[id] || Object.keys(day).length < USTATS_MAX_ROWS) ? id : '__others';
+    const d = day[target] || (day[target] = {
+      calls: 0, translated: 0, cached: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0, plan: '', last: 0,
+    });
+    for (const k of ['calls', 'translated', 'cached', 'in', 'out', 'cacheRead', 'cacheWrite']) {
+      d[k] = (d[k] || 0) + r[k];
+    }
+    d.plan = r.plan || d.plan;
+    d.last = Math.max(d.last || 0, r.last || 0);
+  }
+  await env.SUBS.put(key, JSON.stringify(day), { expirationTtl: 120 * 86400 });
+}
+
 function recordUsage(cid, usage, translated, cachedHits) {
   const r = pending_.rows[cid] || (pending_.rows[cid] = {
     calls: 0, translated: 0, cached: 0,
@@ -978,6 +1041,9 @@ async function flushStats(env) {
     for (const k of Object.keys(r)) d[k] = (d[k] || 0) + r[k];
   }
   await env.SUBS.put(key, JSON.stringify(day), { expirationTtl: 400 * 86400 });
+  // 每位使用者的那份跟著同一次落地。**不要另外排一個時程**——
+  // 兩份各自 flush 等於 KV 寫入翻倍，而那是這個專案的天花板。
+  try { await flushUserStats(env); } catch (e) { /* 使用者統計失敗不影響成本熔斷 */ }
 }
 
 /**
@@ -1079,6 +1145,11 @@ const MAX_DEVICES = 3;
 // 所以宣告在 PLANS 之前——放後面會 TDZ，而那要到執行時才炸。
 const WEEKEND_PRICE = 39;
 
+// 兩段整季價。**同樣必須宣告在 PLANS 之前**——season_next 的 price 直接引用它，
+// 放在後面會 TDZ： 完全過得去，只有真的載入時才炸（實際踩過）。
+const PRICE_FIRST_HALF = 599;
+const PRICE_SECOND_HALF = 299;
+
 const PLANS = {
   // 免費層。不需要授權碼——四種正式場次的前 15 分鐘，見 REMOTE_CONFIG.freeTier。
   // 列在這裡是為了讓後台與統計有一致的名稱可用。
@@ -1089,6 +1160,23 @@ const PLANS = {
 
   // 正式價。
   season: { desc: "整個賽季不限時數、不限場次。涵蓋所有練習賽、排位賽、衝刺賽與正賽，以及 F1TV 上的重播與節目。效期至賽季結束（隔年 1 月 31 日）。", label: 'Season', price: 599, untilSeasonEnd: true },
+
+  // 下一賽季通行證。
+  //
+  // 為什麼要獨立成一個方案，而不是讓 season 在季末自動變成「下一季」？
+  // 因為那樣**同一張卡片會在某一天突然換成另一個商品**，價格還從 299 跳回 599。
+  // 使用者看到的是「漲價」，實際上是換商品——那種困惑沒有文案救得回來。
+  //
+  // 拆開之後兩張卡各自說自己的話：
+  //   本賽季通行證  上半季 599／夏休起 299，隨時買得到
+  //   下一賽季通行證 599，**平常鎖住**，本季剩不到 8 個比賽週末才開放預購
+  //
+  // ⚠️ 鎖住不等於隱藏。留在頁面上並說明為什麼不能買，比整張消失好——
+  //    消失會讓人以為賣完了或網站壞了，而「即將開放」本身就是預告。
+  season_next: {
+    desc: "下一個賽季的完整通行證，涵蓋該季所有場次。於本賽季尾聲開放預購，購買後本賽季剩餘場次一併附贈。",
+    label: '下一賽季通行證', price: PRICE_FIRST_HALF, nextSeasonOnly: true,
+  },
 
   // 一週通行證。**不是「比賽週末」而是完整七天。**
   //
@@ -1198,8 +1286,7 @@ const PLANS = {
 // 本來就知道的界線，不需要解釋。「夏休前加入 599／夏休後加入 299」
 // 一句話講得完，而「剩 15 個週末以上 599」要先問「那現在剩幾個」。
 // ---------------------------------------------------------------------------
-const PRICE_FIRST_HALF = 599;
-const PRICE_SECOND_HALF = 299;
+// PRICE_FIRST_HALF / PRICE_SECOND_HALF 已移到 PLANS 之前宣告（TDZ，見那裡的說明）
 
 /**
  * 低於這個數量就不再賣「本賽季」，改賣**下一個賽季**。
@@ -1310,17 +1397,14 @@ function seasonPriceNow(base, from, cfg) {
     };
   }
 
-  if (left < NEXT_SEASON_MIN_WEEKENDS) {
-    // 本賽季所剩無幾 → 賣下一季的上半季價，本季剩下的週末附贈。
-    return {
-      price: PRICE_FIRST_HALF,
-      tier: '下一賽季',
-      weekendsLeft: left,
-      nextSeason: true,
-      until: nextSeasonEndSec(now),
-    };
-  }
-
+  // ⚠️ **本賽季通行證永遠只賣本賽季。**
+  //
+  //    舊版在剩不到 8 個比賽週末時，把這張票整個換成「下一賽季」並收 599。
+  //    使用者的決定（2026-08-19）是不要那樣做：剩幾場、值不值得，讓他自己判斷，
+  //    我們不替他決定「這時候買本季不划算」。想買下一季的人去買 season_next。
+  //
+  //    這也移除了一個很難解釋的現象——同一張卡片會在某一天突然從 299 變成 599，
+  //    而那其實是換了商品，不是漲價。
   let second = afterSummerBreak(now, cfg);
 
   // ⚠️ **絕對底線：整季票不可以比「單場 × 剩餘週末」還貴。**
@@ -1504,13 +1588,30 @@ function weekWindow(from, cfg) {
   // 贈送期上限
   const graceStart = Math.max(now, monday - WEEK_GRACE_MAX_SEC);
 
+  // ⚠️ **一張 NT$39 的票不可以涵蓋兩個比賽週末。**
+  //
+  //    「購買起算七天」在背靠背的兩場之間會出事：例如 6/7（正賽當天）購買，
+  //    七天後是 6/14——那正好是下一場的正賽日，於是一張票看了兩場。
+  //    這不是理論，2026 的賽程裡有多組連續週末。
+  //
+  //    所以效期還要再夾一次：**最晚到下一場比賽週開始的前一刻**。
+  //    賽程夠鬆時這個上限碰不到，七天就是七天；只有背靠背時才會縮短，
+  //    而那時購買頁上顯示的到期日本來就是伺服器算出來的這個數字，
+  //    不會有「說七天卻只有五天」的落差。
+  const after = scheduleList(cfg)
+    .slice()
+    .sort((a, b) => dayStartSec(a.start) - dayStartSec(b.start))
+    .find((g) => dayStartSec(g.start) > dayStartSec(gp.end));
+  let expiresAt = monday + 7 * 86400;
+  if (after) expiresAt = Math.min(expiresAt, dayStartSec(after.start));
+
   return {
     gp,
     // 立刻可用，所以沒有 startsAt（不設限）
     startsAt: null,
     graceFrom: graceStart,
     weekFrom: monday,
-    expiresAt: monday + 7 * 86400,
+    expiresAt,
   };
 }
 
@@ -1527,6 +1628,8 @@ function planExpiry(plan, from, cfg) {
   //    而不是「白送一張永久授權」。**要壞就壞在安全的那一邊。**
   if (p.manual) return Math.floor((from || Date.now()) / 1000) - 1;
   // 賽季方案：季末改賣下一季，效期要跟著那一季走（見 seasonPriceNow）
+  // 下一賽季通行證：效期到**下一季**結束，本季剩餘場次一併附贈（所以現在就能用）
+  if (p.nextSeasonOnly) return nextSeasonEndSec(from);
   if (p.untilSeasonEnd) return seasonPriceNow(p.price, from, cfg).until;
   if (p.weekBound) {
     const w = weekWindow(from, cfg);
@@ -1843,6 +1946,34 @@ async function checkEntitlement(env, auth, request, wantLines) {
     reason: 'free', plan: 'trial', used, left,
     ipKey: ipRaw ? true : false,
   };
+}
+
+/**
+ * 這個網址後綴算不算免費場次。
+ *
+ * ⚠️ **這條規則以前只存在於用戶端。** 後端的免費層只認「今天用掉幾句」，
+ *    完全不知道使用者在看哪支影片——所以「免費只涵蓋四種正式場次的前 15 分鐘」
+ *    這件事，只要改一下用戶端就繞得過去。那不是取捨，是疏漏。
+ *
+ * ⚠️ **slug 的來源順序有意義。**
+ *    1. bundle.slug —— 收割時由我們自己寫入，一般使用者改不到，是可信的
+ *    2. body.slug   —— 用戶端送的，可以偽造，只在我們還沒有記錄時才用
+ *
+ *    兩者都沒有時**放行**（fail open）。理由：真正值得白嫖的是正賽、排位這些
+ *    熱門影片，而那些一定被收割過、一定有 bundle.slug；為了堵一個不存在的
+ *    情境去擋掉「還沒被收割的新影片」，代價是把新使用者第一次的體驗弄壞，
+ *    而那是我們的獲客漏斗。免費層本來就還有每日句數上限兜著。
+ */
+function isFreeSlug(slug) {
+  const ft = REMOTE_CONFIG.freeTier || {};
+  const s = String(slug || '').toLowerCase();
+  if (!s) return null;                                  // 沒有資訊，不做判斷
+  try {
+    if ((ft.exclude || []).some((p) => new RegExp(p).test(s))) return false;
+    return (ft.include || []).some((p) => new RegExp(p).test(s));
+  } catch (e) {
+    return null;                                        // 設定裡的正則壞掉：不擋
+  }
 }
 
 /**
@@ -2245,6 +2376,8 @@ async function quoteCart(env, items, opts) {
     const p = PLANS[key];
     if (!p || p.internal || !(p.price > 0)) return { error: `方案不存在或不販售：${key}` };
     if (ops.hidden.includes(key)) return { error: `此方案目前未販售：${p.label}` };
+    const lock = planLock(key);
+    if (lock) return { error: `${p.label} 目前無法購買——${lock}` };
     const qty = Math.max(1, Math.min(5, Number(it.qty) || 1));
 
     let unit = planPrice(key, ops);          // 後台覆寫優先，沒設就用程式碼裡的牌價
@@ -2601,6 +2734,9 @@ async function handlePaymentWebhook(request, env) {
 
   const lic = {
     plan, email, orderId,
+    // 帳號鍵。**日後導入登入時，靠這個欄位把既有資料接回帳號**——
+    // 少一筆就是一筆接不回去的孤兒，而且完全不會報錯（見 accountKey）。
+    acct: accountKey(email),
     expiresAt: planExpiry(plan),
     startsAt: planStart(plan),
     gpName: w ? w.gp.name : null,
@@ -2861,6 +2997,7 @@ async function handleLicenseIssue(request, env) {
   const lic = {
     plan,
     email: String(body.email || ''),            // 來自金流，用於補發，不另外收集
+    acct: accountKey(body.email),               // 帳號鍵，見 accountKey 的說明
     orderId: String(body.orderId || ''),
     // 期限一律由伺服器依方案算。只有明確傳 expiresAt 時才覆寫（客服調整用）。
     expiresAt: body.expiresAt ? Number(body.expiresAt) : planExpiry(plan),
@@ -3045,6 +3182,39 @@ function adminJson(data, status = 200) {
     headers: { 'content-type': 'application/json; charset=utf-8', ...ADMIN_CORS },
   });
 }
+
+/**
+ * 錯誤代碼表。
+ *
+ * 為什麼需要：**訊息會隨文案調整而變，代碼不會。** 使用者截圖回報時，
+ * 「翻譯失敗，請稍後再試」查不出任何東西；「PL-E31」一秒就定位。
+ *
+ * ⚠️ **不是每個異常都該給使用者代碼。** 這個專案有兩種「沒有字幕」是正常的：
+ *      · 這支影片本來就沒有字幕（宣傳片、純畫面）
+ *      · 有字幕的影片中途長時間沒旁白（賽後訪問、頒獎）
+ *    給那兩種發代碼，等於訓練使用者把正常現象當故障回報，
+ *    然後真正的故障就淹沒在雜訊裡。判準是：
+ *      **「使用者的體驗確實壞了」且「我們拿到代碼真的查得出東西」** 才給。
+ *
+ * ⚠️ 代碼一旦發出去就**不可以改語意**。要淘汰就留著別再用，
+ *    不要回收給別的錯誤——使用者手上與工單裡的舊代碼會永遠存在。
+ */
+const ERR_CODES = {
+  E10: '請求格式不正確',
+  E11: '缺少必要欄位',
+  E12: '一次送出的句數超過上限',
+  E13: '單句長度超過上限（整批都超過才會擋）',
+  E20: '安裝權杖無效或已過期',
+  E21: '這個安裝已被封鎖',
+  E22: '授權碼有問題（不存在／已停用／已過期／尚未生效）',
+  E30: '免費額度今日已用完',
+  E31: '這支影片不在免費範圍內',
+  E32: '請求太頻繁',
+  E40: '今日翻譯成本已達上限（共用快取不受影響）',
+  E41: '翻譯服務暫時不可用',
+  E50: '金流參數驗證失敗',
+  E51: '訂單不存在',
+};
 
 /**
  * 錯誤回應。
@@ -3476,7 +3646,7 @@ async function claimLine(cid, key) {
 
 async function handleTranslate(request, env, ip, auth) {
   if (await rateLimited(env, auth.installId === 'legacy' ? ip : auth.installId)) {
-    return err('rate limited', 429);
+    return err('請求太頻繁，請稍後再試', 429, 'E32');
   }
 
   // 成本熔斷：超過當日上限就停掉會花錢的路徑。
@@ -3487,14 +3657,15 @@ async function handleTranslate(request, env, ip, auth) {
       lines: {}, translated: 0,
       error: '今日翻譯額度已用盡，已翻譯過的影片仍可正常觀看',
       overBudget: true,
+      code: 'E40',
     }, 503);
   }
 
   const body = await request.json().catch(() => null);
-  if (!body) return err('body 不是合法 JSON');
+  if (!body) return err('body 不是合法 JSON', 400, 'E10');
   const cid = String(body.cid || 'misc');
   const input = Array.isArray(body.lines) ? body.lines : [];
-  if (!input.length) return err('缺少 lines');
+  if (!input.length) return err('缺少 lines', 400, 'E11');
 
   // ⚠️ 授權閘門。用戶端的檢查只是 UI，**這裡才是真正的牆**。
   const gate = await checkEntitlement(env, auth, request, input.length);
@@ -3506,9 +3677,10 @@ async function handleTranslate(request, env, ip, auth) {
         : '免費額度今日已用完。已翻譯過的影片仍可正常觀看，或購買 Season 解除限制。',
       reason: gate.reason,
       plan: gate.plan,
+      code: gate.reason === 'revoked' ? 'E21' : 'E30',
     }, 402);
   }
-  if (input.length > 200) return err('一次最多 200 句');
+  if (input.length > 200) return err('一次最多 200 句', 400, 'E12');
 
   // 每句的長度上限。沒有這個限制的話，200 句 × 每句 100KB = 20MB 進模型，
   // 一次請求就能燒掉大量 token —— **成本放大攻擊**。
@@ -3527,11 +3699,28 @@ async function handleTranslate(request, env, ip, auth) {
     : input;
   // 整批都是超長的才算真的有問題（那不像字幕，像是有人在灌資料）
   if (!lines2.length) {
-    return err(`整批字幕都超過 ${MAX_LINE_LEN} 字元，已全數略過`, 400, 'E_LINE_TOO_LONG');
+    return err(`整批字幕都超過 ${MAX_LINE_LEN} 字元，已全數略過`, 400, 'E13');
   }
 
   // 1) 讀一次 bundle 當快取（取代先前逐句讀 line: key）
   const bundle = await readBundle(env, cid);
+
+  // 免費使用者只能翻**免費場次**的影片。見 isFreeSlug 的說明。
+  // 已付費的（gate.reason === 'licensed'）與收割工具（legacy）不受這條限制。
+  if (gate.reason === 'free') {
+    const known = isFreeSlug(bundle.slug || body.slug);
+    if (known === false) {
+      return json({
+        lines: {}, translated: 0,
+        error: '這支影片不在免費範圍內。免費試看涵蓋練習賽、排位賽、衝刺賽與正賽的前 15 分鐘。',
+        reason: 'not_free_session',
+        code: 'E31',
+        plan: 'trial',
+      }, 402);
+    }
+  }
+  // 順手把 slug 記下來，下一次就有可信的來源了（先到先得，不覆蓋）
+  if (!bundle.slug && body.slug) bundle.slug = String(body.slug).slice(0, 120);
   const result = {};
   const added = {};       // 這次請求新翻出來的，寫回時只合併這些
   const missing = [];
@@ -3633,6 +3822,8 @@ async function handleTranslate(request, env, ip, auth) {
   if (Object.keys(added).length) await mergeWrite(env, cid, added);
 
   recordUsage(cid, usageTotals, translated, input.length - missing.length);
+  // 每位使用者一份。直播時要回答的是「誰在燒錢」，那用 cid 分組看不出來。
+  recordUserUsage(auth.installId, gate.plan, usageTotals, translated, input.length - missing.length);
   if (gate.reason === 'free' && translated) {
     try { await noteFreeUsage(env, auth.installId, translated); } catch (e) { /* 統計不擋主流程 */ }
   }
@@ -3770,6 +3961,296 @@ async function patchOrder(env, no, fields) {
     expirationTtl: ORDER_TTL, metadata: ordMeta(o),
   });
   return o;
+}
+
+/**
+ * 帳號鍵。
+ *
+ * ⚠️ **這是日後導入帳號系統時唯一的接點，現在就必須釘死。**
+ *
+ * 目前沒有帳號、沒有密碼，使用者的身分就是**購買時填的 email**。
+ * 那沒問題——授權碼本來就是綁人不綁機器。但要能無痛長成
+ *
+ *     Account
+ *       ├── Purchases     ord:<訂單編號>     （已經有了）
+ *       ├── Licenses      lic:<授權碼>       （已經有了）
+ *       └── Entitlements  簽出去的通行證      （已經有了）
+ *
+ * 唯一的前提是：**每一筆訂單與每一組授權碼都必須帶著同一個正規化過的 email。**
+ * 少一筆就是一筆日後接不回帳號的孤兒資料，而且不會報錯——
+ * 只會在某個人登入後發現「我買的東西不見了」。
+ *
+ * 正規化規則刻意保守：只做 trim + 小寫。
+ * **不做 Gmail 的點號與 +tag 摺疊**——那會把兩個在法律上不同的
+ * 收件人視為同一個人，退款與爭議時說不清楚。
+ */
+function accountKey(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+/**
+ * 管理端：一個帳號（email）底下的全部東西。
+ *
+ * 這同時是**客服最常需要的那一頁**（「這個人寄信來，他買了什麼？」）
+ * 與**帳號系統的預演**：日後真的做登入時，這支的回傳內容就是
+ * 使用者登入後看到的畫面，不需要改資料結構。
+ */
+async function handleAccount(env, url) {
+  const acct = accountKey(url.searchParams.get('email'));
+  if (!acct || !acct.includes('@')) return err('請提供 email', 400, 'E10');
+
+  // Licenses：走既有的 email 索引
+  let keys = [];
+  try { keys = JSON.parse((await env.SUBS.get(`licmail:${acct}`)) || '[]'); } catch (e) { keys = []; }
+  const licenses = [];
+  for (const k of keys.slice(0, 50)) {
+    const lic = await readLicense(env, normLicense(k));
+    if (!lic) continue;
+    const expired = !!(lic.expiresAt && lic.expiresAt * 1000 < Date.now());
+    licenses.push({
+      licenseKey: prettyLicense(normLicense(k)),
+      plan: lic.plan,
+      planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+      state: lic.revoked ? 'revoked' : expired ? 'expired' : 'active',
+      expiresAt: lic.expiresAt || null,
+      devices: (lic.devices || []).length,
+      orderId: lic.orderId || '',
+      paid: lic.paid || 0,
+      // 代訂送的那一週要標出來——它與使用者自己買的意義完全不同
+      fromService: !!(PLANS[lic.plan] && PLANS[lic.plan].fromService),
+    });
+  }
+
+  // Purchases：掃訂單的 metadata（不逐筆 get）
+  const purchases = [];
+  let cursor;
+  for (let page = 0; page < 5; page++) {
+    const r = await env.SUBS.list({ prefix: 'ord:', limit: 1000, cursor });
+    for (const k of r.keys) {
+      const m = k.metadata || {};
+      if (accountKey(m.e) !== acct) continue;
+      purchases.push({
+        no: k.name.slice(4), status: m.s || 'created', at: m.at || 0,
+        price: m.t || 0, summary: m.l || '', mailed: !!m.m, manual: !!m.n,
+      });
+    }
+    if (r.list_complete) break;
+    cursor = r.cursor;
+  }
+  purchases.sort((a, b) => (b.at || 0) - (a.at || 0));
+
+  const paid = purchases.filter((p) => p.status === 'paid');
+  return json({
+    ok: true,
+    account: acct,
+    licenses,
+    purchases,
+    summary: {
+      licenses: licenses.length,
+      active: licenses.filter((l) => l.state === 'active').length,
+      orders: purchases.length,
+      paidOrders: paid.length,
+      lifetimeTwd: paid.reduce((n, p) => n + (p.price || 0), 0),
+      // 孤兒偵測：有授權碼卻找不到對應的訂單，日後接帳號時會接不上
+      orphanLicenses: licenses.filter((l) => l.orderId
+        && !purchases.some((p) => p.no === l.orderId)).length,
+    },
+  });
+}
+
+/**
+ * 管理端：單位經濟。
+ *
+ * ⚠️ **量得到的與估出來的必須分開標示。**
+ *
+ *    量得到：成本（token 實際用量 × 單價）、營收（已付款訂單）、
+ *            使用者數、翻譯句數、快取命中率。
+ *    估出來：匯率、行銷花費、續訂季數——這三個系統裡沒有資料，只能由你填。
+ *
+ *    把兩者混在一起呈現，會讓一個「我猜的續訂率」看起來像實測的 LTV，
+ *    然後那個數字被拿去決定廣告預算。所以回傳裡 assumptions 是獨立欄位，
+ *    後台也必須把它標成估算。
+ */
+async function handleEcon(env, url) {
+  const days = Math.max(1, Math.min(120, Number(url.searchParams.get('days')) || 30));
+  const ops = await opsConfig(env);
+  const fx = ops.fxTwdPerUsd;
+
+  // ---- 成本（實測）----
+  let usd = 0;
+  let translated = 0;
+  let cachedHits = 0;
+  const perVideo = {};
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    let day = {};
+    try { day = JSON.parse((await env.SUBS.get(statsKey(d))) || '{}'); } catch (e) { day = {}; }
+    for (const [cid, r] of Object.entries(day)) {
+      const c = costOf({
+        input_tokens: r.in, output_tokens: r.out,
+        cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+      });
+      usd += c;
+      translated += r.translated || 0;
+      cachedHits += r.cached || 0;
+      perVideo[cid] = (perVideo[cid] || 0) + c;
+    }
+  }
+
+  // ---- 使用者（實測）----
+  let users = 0;
+  let paidUsers = 0;
+  let freeUsers = 0;
+  let usdPaid = 0;
+  let usdFree = 0;
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    let day = {};
+    try { day = JSON.parse((await env.SUBS.get(ustatsKey(d))) || '{}'); } catch (e) { day = {}; }
+    for (const [id, r] of Object.entries(day)) {
+      if (id === '__others') continue;
+      users++;
+      const c = costOf({
+        input_tokens: r.in, output_tokens: r.out,
+        cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+      });
+      if (r.plan && r.plan !== 'trial') { paidUsers++; usdPaid += c; } else { freeUsers++; usdFree += c; }
+    }
+  }
+  // ⚠️ 跨日會重複計算同一個安裝（我們刻意不做跨日去重——那需要保存
+  //    每個 installId 的全部歷史，成本與隱私都不划算）。
+  //    所以這裡是**人日**，不是「不重複人數」。名字要誠實。
+  const userDays = users;
+
+  // ---- 營收（實測，來自訂單）----
+  let revenueTwd = 0;
+  let orders = 0;
+  let cursor;
+  const since = nowSec() - days * 86400;
+  for (let page = 0; page < 5; page++) {
+    const r = await env.SUBS.list({ prefix: 'ord:', limit: 1000, cursor });
+    for (const k of r.keys) {
+      const m = k.metadata || {};
+      if (m.s !== 'paid' || (m.at || 0) < since) continue;
+      revenueTwd += Number(m.t) || 0;
+      orders++;
+    }
+    if (r.list_complete) break;
+    cursor = r.cursor;
+  }
+
+  const costTwd = usd * fx;
+  const grossTwd = revenueTwd - costTwd;
+  const arpu = orders ? revenueTwd / orders : null;
+
+  return json({
+    ok: true,
+    days,
+    measured: {
+      costUsd: +usd.toFixed(4),
+      costTwd: +costTwd.toFixed(1),
+      revenueTwd,
+      orders,
+      grossTwd: +grossTwd.toFixed(1),
+      grossMargin: revenueTwd ? +(grossTwd / revenueTwd).toFixed(4) : null,
+      translated,
+      cachedHits,
+      cacheHitRate: (translated + cachedHits) ? +(cachedHits / (translated + cachedHits)).toFixed(4) : null,
+      // 題目要的那幾個「每 X 成本」
+      usdPerTranslation: translated ? +(usd / translated).toFixed(6) : null,
+      usdPerCacheMiss: translated ? +(usd / translated).toFixed(6) : null,
+      usdPerRace: Object.keys(perVideo).length
+        ? +(usd / Object.keys(perVideo).length).toFixed(4) : null,
+      videos: Object.keys(perVideo).length,
+      userDays,
+      paidUserDays: paidUsers,
+      freeUserDays: freeUsers,
+      usdPerActiveUserDay: userDays ? +(usd / userDays).toFixed(6) : null,
+      usdPerPaidUserDay: paidUsers ? +(usdPaid / paidUsers).toFixed(6) : null,
+      usdPerTrialUserDay: freeUsers ? +(usdFree / freeUsers).toFixed(6) : null,
+      arpuTwd: arpu == null ? null : +arpu.toFixed(1),
+    },
+    // ⚠️ 以下三個是**你填的估算值**，不是量出來的
+    assumptions: {
+      fxTwdPerUsd: fx,
+      marketingTwd: ops.marketingTwd,
+      ltvSeasons: ops.ltvSeasons,
+    },
+    estimated: {
+      // CAC：行銷花費 ÷ 這段期間的付費訂單數
+      cacTwd: orders ? +(ops.marketingTwd / orders).toFixed(1) : null,
+      // LTV：平均客單價 × 預期續訂季數 − 服務該客戶的成本
+      ltvTwd: arpu == null ? null
+        : +((arpu * ops.ltvSeasons) - (paidUsers ? (usdPaid / paidUsers) * fx : 0)).toFixed(1),
+      ltvCac: (orders && ops.marketingTwd > 0 && arpu != null)
+        ? +(((arpu * ops.ltvSeasons) - (paidUsers ? (usdPaid / paidUsers) * fx : 0))
+            / (ops.marketingTwd / orders)).toFixed(2)
+        : null,
+    },
+  });
+}
+
+/**
+ * 管理端：每位使用者花了多少。
+ *
+ * 直播測試要回答的問題就是這一個——「有沒有人在燒錢」「付費者的平均成本」。
+ * 用影片分組看不出來：一支熱門影片的成本可能來自 1 個人也可能來自 100 個人，
+ * 那兩件事的意義完全相反。
+ */
+async function handleUserStats(env, url) {
+  const days = Math.max(1, Math.min(31, Number(url.searchParams.get('days')) || 1));
+  const merged = {};
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000);
+    let day = {};
+    try { day = JSON.parse((await env.SUBS.get(ustatsKey(d))) || '{}'); } catch (e) { day = {}; }
+    for (const [id, r] of Object.entries(day)) {
+      const t = merged[id] || (merged[id] = {
+        calls: 0, translated: 0, cached: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0, plan: '', last: 0,
+      });
+      for (const k of ['calls', 'translated', 'cached', 'in', 'out', 'cacheRead', 'cacheWrite']) {
+        t[k] = (t[k] || 0) + (r[k] || 0);
+      }
+      t.plan = r.plan || t.plan;
+      t.last = Math.max(t.last || 0, r.last || 0);
+    }
+  }
+
+  const rows = Object.entries(merged).map(([id, r]) => ({
+    installId: id,
+    plan: r.plan || 'trial',
+    calls: r.calls,
+    translated: r.translated,
+    cached: r.cached,
+    // 共用快取命中率：這是整個商業模式的分母
+    hitRate: (r.translated + r.cached) ? r.cached / (r.translated + r.cached) : null,
+    usd: +costOf({
+      input_tokens: r.in, output_tokens: r.out,
+      cache_read_input_tokens: r.cacheRead, cache_creation_input_tokens: r.cacheWrite,
+    }).toFixed(6),
+    lastAt: r.last || null,
+  })).sort((a, b) => b.usd - a.usd);
+
+  const paid = rows.filter((r) => r.plan && r.plan !== 'trial');
+  const free = rows.filter((r) => !r.plan || r.plan === 'trial');
+  const sum = (a) => a.reduce((x, r) => x + r.usd, 0);
+
+  return json({
+    ok: true,
+    days,
+    rows: rows.slice(0, 300),
+    totals: {
+      users: rows.length,
+      paidUsers: paid.length,
+      freeUsers: free.length,
+      usd: +sum(rows).toFixed(4),
+      usdPaid: +sum(paid).toFixed(4),
+      usdFree: +sum(free).toFixed(4),
+      // 單位經濟的兩個核心數字
+      usdPerPaidUser: paid.length ? +(sum(paid) / paid.length).toFixed(4) : null,
+      usdPerFreeUser: free.length ? +(sum(free) / free.length).toFixed(4) : null,
+    },
+  });
 }
 
 /**
@@ -3919,6 +4400,13 @@ async function handleAdminPlans(env) {
       hidden: ops.hidden.includes(key),
       manual: !!p.manual,
       weekBound: !!p.weekBound,
+      // ⚠️ **發碼下拉只能列出「發了有用」的方案。**
+      //    代訂方案本身發出去是一張立刻到期的碼（字幕使用權是靠附贈的
+      //    week_svc 給的）；trial 是免費層，根本不需要授權碼。
+      //    把它們列進去只會讓客服在壓力下選錯，而選錯完全不報錯——
+      //    使用者拿到一張「看起來正常、貼上去卻說已過期」的碼。
+      issuable: !p.manual && !p.noSubs && !p.free,
+      locked: planLock(key),
       note: '',
     };
     if (p.untilSeasonEnd) {
@@ -3938,6 +4426,28 @@ async function routeAdmin(path, request, env, url) {
 
   if (path === '/v1/admin/license/issue' && m === 'POST') return handleLicenseIssue(request, env);
   if (path === '/v1/admin/plans' && m === 'GET') return handleAdminPlans(env);
+  if (path === '/v1/admin/account' && m === 'GET') return handleAccount(env, url);
+  if (path === '/v1/admin/econ' && m === 'GET') {
+    try { await flushStats(env); } catch (e) { /* 先落地再讀 */ }
+    return handleEcon(env, url);
+  }
+  if (path === '/v1/admin/users' && m === 'GET') {
+    try { await flushStats(env); } catch (e) { /* 先落地再讀 */ }
+    return handleUserStats(env, url);
+  }
+  // 代碼表。後台照著顯示，不必自己抄一份（抄了就會漂）。
+  if (path === '/v1/admin/codes' && m === 'GET') return json({ ok: true, codes: ERR_CODES });
+  // 單一影片的完整譯文。用途有二：後台抽查翻譯品質、以及 tools/fetch-fixtures.js
+  // 抓固定測試資料。**不做分頁**——一支影片最多 BUNDLE_MAX_LINES 句，回得完。
+  if (path === '/v1/admin/bundle' && m === 'GET') {
+    const cid = String(url.searchParams.get('cid') || '').trim();
+    if (!/^\d{1,20}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
+    const b = await readBundle(env, cid);
+    return json({
+      ok: true, cid, slug: b.slug || '', segCount: b.segCount || 0,
+      count: Object.keys(b.lines || {}).length, lines: b.lines || {},
+    });
+  }
   if (path === '/v1/admin/orders' && m === 'GET') return handleOrderList(env, url);
   if (path === '/v1/admin/orders/get' && m === 'GET') return handleOrderGet(env, url);
   if (path === '/v1/admin/orders/patch' && m === 'POST') return handleOrderPatch(request, env);
@@ -4082,9 +4592,36 @@ async function opsConfig(env) {
     choosePayment: typeof o.choosePayment === 'string' && /^[A-Za-z]+$/.test(o.choosePayment)
       ? o.choosePayment : null,
     notice: typeof o.notice === 'string' ? o.notice.slice(0, 500) : '',
+    // ---- 單位經濟的三個輸入 ----
+    // ⚠️ 這三個**我們量不到，只能由你填**。填之前後台會明講是估算值，
+    //    不會拿假數字冒充實測——單位經濟算錯的代價是「以為賺錢其實在虧」。
+    fxTwdPerUsd: Number(o.fxTwdPerUsd) > 0 ? Number(o.fxTwdPerUsd) : 32,
+    marketingTwd: Number(o.marketingTwd) >= 0 ? Number(o.marketingTwd) : 0,
+    // 一個付費者預期會續訂幾季。**沒有資料之前一律是 1**——
+    // 用 2、3 會讓 LTV 憑空變兩三倍，然後據此決定廣告預算，那是最貴的一種錯。
+    ltvSeasons: Number(o.ltvSeasons) > 0 ? Number(o.ltvSeasons) : 1,
   };
   opsCache = { at: Date.now(), data };
   return data;
+}
+
+/**
+ * 這個方案現在能不能買。回傳 null＝可以，否則回傳鎖住的原因。
+ *
+ * ⚠️ **鎖住的方案仍然要回給購買頁**，只是不能結帳。
+ *    直接從清單裡拿掉會讓人以為賣完了或網站壞了；
+ *    留著並說明「什麼時候會開放」，那本身就是預告。
+ *
+ * ⚠️ 這個判斷必須同時擋住 quoteCart（結帳）與 checkout，不能只做在畫面上——
+ *    購買頁的按鈕是用戶端的東西，繞過它只要開一個 devtools。
+ */
+function planLock(key, from, cfg) {
+  const p = PLANS[key];
+  if (!p) return '方案不存在';
+  if (!p.nextSeasonOnly) return null;
+  const left = racesLeft(from, cfg);
+  if (left < NEXT_SEASON_MIN_WEEKENDS) return null;
+  return `本賽季還有 ${left} 個比賽週末，下一賽季通行證要到剩 ${NEXT_SEASON_MIN_WEEKENDS} 個週末時才開放預購`;
 }
 
 /** 這個方案現在的牌價（後台覆寫優先）。 */
@@ -4464,6 +5001,8 @@ async function handleRequest(request, env) {
             const sp = v.untilSeasonEnd ? seasonPriceNow(list) : null;
             return {
               key: k, label: v.label,
+              // 鎖住的方案照樣回給購買頁，只是不能結帳（見 planLock 的說明）
+              locked: planLock(k),
               price: sp ? sp.price : list,
               listPrice: list,
               tier: sp ? sp.tier : null,

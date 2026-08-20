@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.10.3
+// @version      4.10.4
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -672,7 +672,7 @@ sorry mate → 抱歉
   // 而那是我們排查問題的第一個依據。
   //
   // 由 `tools/check-userscript-version.js` 把關。
-  const VERSION = '4.10.3';
+  const VERSION = '4.10.4';
   const eventLog = [];
   function logEvent(level, msg) {
     const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;

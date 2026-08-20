@@ -46,7 +46,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -545,13 +545,23 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : ok('定價：兩段整季價在生效當下都比單買便宜 20% 以上　'
         + entry.map(([n, r]) => `${n} NT$${(r.price / r.weekendsLeft).toFixed(1)}`).join('　'));
 
-    // 3b. **絕對底線**：任何時候整季票都不可以比「單場 × 剩餘週末」還貴。
-    //     這條沒有例外——出現一次就是把使用者當傻子。
-    const worse = thisSeason.filter(([, r]) => r.price > WEEKEND * r.weekendsLeft);
+    // 3b. 整季票不可以比「單場 × 剩餘週末」還貴——**在還有 8 個以上週末時**。
+    //
+    // ⚠️ 這條在 2026-08-19 放寬了範圍，是使用者明確的決定：
+    //    賽季尾聲（剩不到 8 個週末）**不再自動下架本賽季通行證**，
+    //    「剩幾場、值不值得」讓使用者自己判斷。所以那一段允許比單買貴。
+    //
+    //    代價要說清楚：剩 2 個週末時 299 元等於每場 150 元，而單買是 39。
+    //    所以購買頁**必須**把「剩餘週末數」與「單買總價」擺在旁邊，
+    //    讓那個決定是真的知情，而不是技術上知情（見 buy.js 的 valueHint）。
+    //
+    //    8 個週末以上的區間仍然沒有例外：那是我們自己控制得了的部分。
+    const guarded = thisSeason.filter(([, r]) => r.weekendsLeft >= A.NEXT_SEASON_MIN_WEEKENDS);
+    const worse = guarded.filter(([, r]) => r.price > WEEKEND * r.weekendsLeft);
     worse.length
-      ? fail('定價：整季票竟然比一場一場買還貴', worse.map(([d, r]) =>
+      ? fail('定價：還有 8 個以上週末時，整季票竟然比一場一場買貴', worse.map(([d, r]) =>
         `${d}（${r.price} > ${WEEKEND}×${r.weekendsLeft}）`).join('、'))
-      : ok('定價：任何時候整季票都不比一場一場買貴');
+      : ok(`定價：剩餘 ≥${A.NEXT_SEASON_MIN_WEEKENDS} 個週末時，整季票一定不比單買貴`);
 
     // 3c. 資訊性：每一段從哪一天起「不再明顯划算」，給定價決策參考
     const crossover = (price) => Math.ceil(price / (WEEKEND * 0.8));
@@ -563,18 +573,27 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     for (const [, r] of thisSeason) { if (r.price > prev) mono = false; prev = r.price; }
     mono ? ok('定價：本賽季內單調不遞增（不會早買比較貴）') : fail('定價：中途變貴了');
 
-    // 5. 剩不到 NEXT_SEASON_MIN_WEEKENDS 個週末時改賣下一季，而且**必須標示出來**
+    // 5. 本賽季通行證**永遠只賣本賽季**，不會在某一天突然變成另一個商品
+    const at2 = (d) => new Date(d + 'T12:00:00Z').getTime();
     const late = at('2026-11-25');
-    late.nextSeason && late.price === A.PRICE_FIRST_HALF
-      ? ok(`定價：剩不到 ${A.NEXT_SEASON_MIN_WEEKENDS} 個週末時改賣下一賽季`)
-      : fail('定價：季末沒有切到下一賽季', JSON.stringify(late));
-    late.until > at('2026-06-01').until
-      ? ok('定價：下一賽季的效期確實比本賽季晚')
-      : fail('定價：下一賽季的效期沒有往後 —— 使用者付了錢卻拿到今年的');
-    // 切換點必須就在「整季票開始不划算」之前，不能晚
-    A.PRICE_SECOND_HALF <= WEEKEND * A.NEXT_SEASON_MIN_WEEKENDS
-      ? ok(`定價：切換門檻 ${A.NEXT_SEASON_MIN_WEEKENDS} 個週末，在那之前整季票都不會比單買貴`)
-      : fail('定價：切換太晚 —— 會有一段時間整季票比單買貴');
+    !late.nextSeason && late.price === A.PRICE_SECOND_HALF
+      ? ok('定價：季末仍然賣本賽季（不再自動換成下一季）')
+      : fail('定價：季末又自己換商品了', JSON.stringify(late));
+
+    // 5b. 下一賽季通行證是獨立方案，**平常鎖住、季末才開放**
+    A.planLock('season_next', at2('2026-06-01'))
+      ? ok('下一賽季通行證：賽季中鎖住（不能買）')
+      : fail('下一賽季通行證：賽季中竟然買得到 —— 使用者會拿到幾個月後才用得到的東西');
+    !A.planLock('season_next', at2('2026-11-25'))
+      ? ok(`下一賽季通行證：剩不到 ${A.NEXT_SEASON_MIN_WEEKENDS} 個週末時開放預購`)
+      : fail('下一賽季通行證：季末仍然鎖著');
+    A.planExpiry('season_next', at2('2026-11-25')) > A.planExpiry('season', at2('2026-11-25'))
+      ? ok('下一賽季通行證：效期確實比本賽季晚')
+      : fail('下一賽季通行證：效期沒有往後 —— 使用者付了錢卻拿到今年的');
+    // 本賽季通行證任何時候都不可以被鎖住——那是主力商品
+    !A.planLock('season', at2('2026-06-01')) && !A.planLock('season', at2('2026-11-25'))
+      ? ok('本賽季通行證：任何時候都買得到')
+      : fail('本賽季通行證：竟然被鎖住了');
 
     // 6. 任何時候都不高於上半季牌價
     rows.every(([, r]) => r.price <= A.PRICE_FIRST_HALF)
@@ -601,6 +620,53 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     }
   }
 
+  // ---- 19a1. 免費層要認得出「這支影片算不算免費」 ----
+  //
+  // 這條規則以前只存在於用戶端，改一下用戶端就繞得過去（疏漏，不是取捨）。
+  {
+    const cases = [
+      ["/detail/1/2026-dutch-grand-prix-race", true, "正賽"],
+      ["/detail/2/2026-dutch-grand-prix-qualifying", true, "排位賽"],
+      ["/detail/3/2026-dutch-grand-prix-practice-1", true, "練習賽"],
+      ["/detail/4/2026-china-sprint", true, "衝刺賽"],
+      ["/detail/5/weekend-warm-up-australia", false, "暖身節目"],
+      ["/detail/6/2026-dutch-grand-prix-highlights", false, "精華"],
+      ["/detail/7/thursday-press-conference", false, "記者會"],
+      ["/detail/8/post-race-show", false, "賽後節目"],
+      ["", null, "沒有 slug（放行）"],
+    ];
+    const bad = [];
+    for (const [p, want, why] of cases) {
+      const got = A.isFreeSlug(p);
+      if (got !== want) bad.push(why + "（得到 " + got + "）");
+    }
+    bad.length
+      ? fail("免費層：影片判斷不符預期", bad.join("、"))
+      : ok("免費層：" + cases.length + " 種網址都判斷正確（伺服器端）");
+  }
+  // ---- 19a2. 一張 NT$39 的票不可以涵蓋兩個比賽週末 ----
+  //
+  // 「購買起算七天」在背靠背的兩場之間會出事：正賽當天買，七天後正好是
+  // 下一場的正賽日，一張票看了兩場。2026 的賽程裡有多組連續週末。
+  {
+    const sched = A.REMOTE_CONFIG.schedule.slice().sort((x, y) => new Date(x.start) - new Date(y.start));
+    let leaks = [];
+    for (const g of sched) {
+      // 在這一場的正賽當天買（最容易漏的時間點）
+      const buyAt = new Date(g.end + "T18:00:00Z").getTime();
+      const w = A.weekWindow(buyAt);
+      if (!w) continue;
+      // 效期內還有沒有「另一場」比賽的正賽日
+      const covered = sched.filter((x) => {
+        const s0 = Math.floor(new Date(x.end + "T00:00:00Z").getTime() / 1000);
+        return s0 >= Math.floor(buyAt / 1000) - 86400 && s0 <= w.expiresAt;
+      });
+      if (covered.length > 1) leaks.push(g.name + " → " + covered.map((c) => c.name).join("+"));
+    }
+    leaks.length
+      ? fail("一週通行證：一張票涵蓋了兩個比賽週末", leaks.join("、"))
+      : ok("一週通行證：任何購買時間點都只涵蓋一個比賽週末");
+  }
   // ---- 19b. 代訂不可以變成一張永久字幕授權 ----
   //
   // 這是**送錢出去的漏洞**，而且完全靜默：購物車裡全是代訂時，
@@ -647,6 +713,32 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     A.PLANS.week_svc.fromService === true
       ? ok('代訂附贈的一週有 fromService 標記（不列入升級折抵）')
       : fail('代訂附贈的一週沒有 fromService 標記');
+  }
+
+  // ---- 19c. 帳號鍵：日後導入登入時唯一的接點 ----
+  //
+  // 每一組授權碼與每一筆訂單都必須帶著正規化過的 email。
+  // 少一筆就是一筆接不回帳號的孤兒，而且**完全不會報錯**——
+  // 只會在某個人登入後發現「我買的東西不見了」。
+  {
+    const src = fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
+    // 兩條發碼路徑（webhook 與後台手動）都要寫 acct
+    const lics = src.match(/const lic = \{[\s\S]*?\n  \};/g) || [];
+    const missing = lics.filter((b) => !/\bacct:/.test(b));
+    lics.length >= 2 && !missing.length
+      ? ok(`帳號鍵：${lics.length} 條發碼路徑都寫入 acct`)
+      : fail('帳號鍵：有發碼路徑沒有寫入 acct —— 那些授權碼日後接不回帳號',
+        `${lics.length} 條裡有 ${missing.length} 條沒寫`);
+
+    A.accountKey('  Ray@Example.COM ') === 'ray@example.com'
+      ? ok('帳號鍵：trim + 小寫正規化正確')
+      : fail('帳號鍵：正規化不正確', A.accountKey('  Ray@Example.COM '));
+
+    // ⚠️ 刻意**不**摺疊 Gmail 的點號與 +tag：那會把法律上不同的收件人
+    //    視為同一個人，退款與爭議時說不清楚。
+    A.accountKey('a.b+f1@gmail.com') !== A.accountKey('ab@gmail.com')
+      ? ok('帳號鍵：不摺疊 Gmail 的點號與 +tag（刻意）')
+      : fail('帳號鍵：把不同的 email 當成同一個人了');
   }
 
   // ---- 20. 訂單狀態機不可以倒退 ----

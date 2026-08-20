@@ -36,14 +36,20 @@ const CHECKS = [
   ['後台與後端一致（端點都有 UI、危險操作有確認）', 'tools/check-admin.js'],
   ['法律文件與程式碼一致（權限／保存期限／價格／法規要件）', 'tools/check-legal.js'],
   ['所有超連結指向正確位置', 'tools/check-links.js'],
+  ['翻譯品質沒有靜默退化（固定測試資料）', 'tools/check-fixtures.js'],
 ];
 
 let failed = 0;
 
 function run(label, args) {
   try {
-    execFileSync(process.execPath, args, { cwd: root, stdio: 'pipe' });
+    const out = execFileSync(process.execPath, args, { cwd: root, stdio: 'pipe' }).toString();
     console.log(`✅ ${label}`);
+    // ⚠️ **通過但有警告時一定要印出來。**
+    //    「沒有測試資料所以跳過」如果被吞掉，就等於那項檢查永遠不存在，
+    //    而畫面上還是一片綠 —— 這個專案最不能接受的就是這種靜默。
+    out.split(String.fromCharCode(10)).filter((l) => l.includes('⚠'))
+      .forEach((l) => console.log('     ' + l.trim()));
   } catch (e) {
     failed++;
     console.log(`❌ ${label}`);

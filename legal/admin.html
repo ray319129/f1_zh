@@ -94,6 +94,7 @@
 
 <div class="tabs">
   <button class="tab on" data-t="cost">成本</button>
+  <button class="tab" data-t="econ">單位經濟</button>
   <button class="tab" data-t="ord">訂單<span id="ordBadge" class="badge" hidden></span></button>
   <button class="tab" data-t="lic">授權管理</button>
   <button class="tab" data-t="rep">問題回報</button>
@@ -108,6 +109,52 @@
 <section id="p-cost">
   <div id="cards" class="cards"></div>
   <div id="out"></div>
+</section>
+
+<section id="p-econ" hidden>
+  <div class="panel">
+    <h3>單位經濟</h3>
+    <p class="hint">
+      <b>量得到的與估出來的分開放。</b>上面那組是實際量到的（token 用量 × 單價、
+      已付款訂單金額）；下面那組要靠你填的三個假設，數字只能當方向參考。<br>
+      混在一起呈現會讓「我猜的續訂率」看起來像實測的 LTV，然後那個數字被拿去
+      決定廣告預算——那是最貴的一種錯。
+    </p>
+    <div class="bar">
+      <select id="ec-days">
+        <option value="7">近 7 天</option>
+        <option value="30" selected>近 30 天</option>
+        <option value="90">近 90 天</option>
+      </select>
+      <button id="ec-go">重新計算</button>
+    </div>
+    <h4 class="secHead">實測</h4>
+    <div id="ec-cards" class="cards"></div>
+    <div id="ec-detail"></div>
+    <h4 class="secHead">估算（依賴下方假設）</h4>
+    <div id="ec-est" class="cards"></div>
+    <p class="hint" id="ec-assume"></p>
+  </div>
+
+  <div class="panel">
+    <h3>每位使用者的用量</h3>
+    <p class="hint">
+      直播測試要回答的就是這一頁——<b>有沒有人在燒錢</b>、付費者的平均成本是多少。
+      用影片分組看不出來：一支熱門影片的成本可能來自 1 個人，也可能來自 100 個人，
+      那兩件事的意義完全相反。<br>
+      安裝編號可以拿去「封鎖安裝」，也可以對得上使用者的診斷工單。
+    </p>
+    <div class="bar">
+      <select id="us-days">
+        <option value="1" selected>今天</option>
+        <option value="3">近 3 天</option>
+        <option value="7">近 7 天</option>
+      </select>
+      <button id="us-go">重新整理</button>
+    </div>
+    <div id="us-cards" class="cards"></div>
+    <div id="us-out"></div>
+  </div>
 </section>
 
 <section id="p-ord" hidden>
@@ -175,7 +222,29 @@
   </div>
 
   <div class="panel">
+    <h3>查一個客戶（帳號視圖）</h3>
+    <p class="hint">
+      客服最常需要的一頁：<b>這個人寄信來，他到底買了什麼</b>。
+      一次列出這個 email 底下的所有訂單與所有授權碼。<br>
+      ⚠️ 這同時是<b>帳號系統的預演</b>。目前沒有登入，使用者的身分就是購買時填的 email；
+      日後真的做登入時，這一頁的內容就是他登入後看到的畫面，資料結構不必改。
+      前提是<b>每一筆訂單與每一組授權碼都帶著同一個 email</b>——
+      下面的「孤兒授權」就是在盯這件事。
+    </p>
+    <div class="bar">
+      <input id="ac-mail" size="30" placeholder="買家 email">
+      <button id="ac-go">查詢</button>
+    </div>
+    <div id="ac-out"></div>
+  </div>
+  <div class="panel">
     <h3>所有授權碼</h3>
+    <p class="hint">
+      只留客服真的會用到的四個動作。<b>「換方案」已經移除</b>——
+      買錯方案的正解是退款後重發，就地改方案會讓訂單金額與授權內容對不起來，
+      而且 12 個方案的下拉在壓力下很容易選錯，選錯完全不報錯。<br>
+      <b>停用</b>留紀錄（退款、爭議時需要），<b>刪除</b>不留（只用來清測試碼）。
+    </p>
     <div class="bar">
       <input id="ll-q" size="26" placeholder="搜尋授權碼 / email / 訂單編號">
       <select id="ll-status">
@@ -246,6 +315,13 @@
       <div id="bnSlugOut" class="hint"></div>
     </details>
     <div id="bnCards" class="cards"></div>
+    <div class="bar">
+      <input id="bnCid" size="18" placeholder="contentId">
+      <button id="bnView" class="secondary">檢視譯文</button>
+    </div>
+    <p class="hint">抽查翻譯品質用。也可以用 <code>node tools/fetch-fixtures.js</code>
+      把幾支完整的影片抓下來當固定測試資料。</p>
+    <pre id="bnLines" class="full" hidden></pre>
     <div id="bnOut"></div>
   </div>
 </section>
@@ -276,6 +352,17 @@
     <div class="bar">
       <input id="opsNotice" size="46" maxlength="500" placeholder="購買頁公告（留空＝不顯示）">
     </div>
+    <h4 class="secHead">單位經濟的假設值</h4>
+    <p class="hint">
+      這三個系統量不到，只能由你填。<b>「單位經濟」分頁會把它們標成估算</b>，
+      不會拿去冒充實測數字。
+    </p>
+    <div class="bar">
+      <input id="opsFx" type="number" min="1" max="200" step="0.1" size="8" placeholder="匯率（留空＝32）">
+      <input id="opsMkt" type="number" min="0" size="10" placeholder="行銷花費 TWD（留空＝0）">
+      <input id="opsLtv" type="number" min="1" max="10" step="0.1" size="8" placeholder="預期續訂季數（留空＝1）">
+    </div>
+    <p class="hint">⚠️ 續訂季數沒有實際資料之前請保持 1。填 2 會讓 LTV 憑空翻倍。</p>
     <div id="opsHidden"></div>
     <p class="hint">下架＝購買頁不顯示、也不能結帳。資料保留，隨時可以放回來。<br>
       ⚠️ 這裡刻意改成<b>勾選</b>而不是填代碼：代碼打錯時伺服器會直接忽略那一筆，
@@ -287,6 +374,18 @@
 </section>
 
 <section id="p-rep" hidden>
+  <div class="panel">
+    <h3>錯誤代碼對照</h3>
+    <p class="hint">
+      使用者回報時會帶一個代碼。<b>代碼不會隨文案調整而變</b>，訊息會——
+      所以查問題一律以代碼為準。<br>
+      擴充功能自己的代碼是 <code>PL-Cxx</code>（畫面上看得到），伺服器的是
+      <code>Exx</code>（附在後面）。<b>PL-C06／PL-C07 不是故障</b>，
+      那是免費層的正常行為。
+    </p>
+    <div id="cd-out"><button id="cd-go" class="secondary">載入代碼表</button></div>
+  </div>
+
   <div class="panel">
     <h3>問題回報</h3>
     <p class="hint">使用者在擴充功能按「傳送診斷」就會出現在這裡，保留 90 天。使用者手上有工單編號，對得起來。</p>
@@ -344,6 +443,9 @@ async function opsLoad() {
     $('opsEffHint').innerHTML = '此刻的賽季方案售價由<b>剩餘比賽週末</b>決定，'
       + '改牌價不會繞過那個規則——上面標紅的就是綠界實際會收的數字。';
 
+    $('opsFx').value = cur.fxTwdPerUsd == null ? '' : cur.fxTwdPerUsd;
+    $('opsMkt').value = cur.marketingTwd == null ? '' : cur.marketingTwd;
+    $('opsLtv').value = cur.ltvSeasons == null ? '' : cur.ltvSeasons;
     $('opsEarly').value = cur.earlyLimit == null ? '' : cur.earlyLimit;
     $('opsPay').value = cur.choosePayment || '';
     $('opsNotice').value = cur.notice || '';
@@ -362,6 +464,9 @@ $('opsSave').onclick = async () => {
   const body = {
     prices,
     earlyLimit: $('opsEarly').value.trim() === '' ? null : Number($('opsEarly').value),
+    fxTwdPerUsd: $('opsFx').value.trim() === '' ? null : Number($('opsFx').value),
+    marketingTwd: $('opsMkt').value.trim() === '' ? null : Number($('opsMkt').value),
+    ltvSeasons: $('opsLtv').value.trim() === '' ? null : Number($('opsLtv').value),
     choosePayment: $('opsPay').value.trim(),
     notice: $('opsNotice').value.trim(),
     hidden: Array.from(document.querySelectorAll('[data-hide]:checked'), (el) => el.dataset.hide),
@@ -485,6 +590,17 @@ $('bnFix').onclick = async () => {
   }
   btn.disabled = false;
 };
+$('bnView').onclick = async () => {
+  const pre = $('bnLines');
+  pre.hidden = false; pre.textContent = '載入中…';
+  try {
+    const d = await apiCall('/v1/admin/bundle?cid=' + encodeURIComponent($('bnCid').value.trim()));
+    pre.textContent = d.slug + '　' + d.count + ' 句　' + d.segCount + ' 個分段\n\n'
+      + Object.entries(d.lines).slice(0, 400)
+        .map(([en, zh]) => en + '\n  → ' + zh).join('\n');
+  } catch (e) { pre.textContent = String(e.message || e); }
+};
+
 $('bnQ').oninput = bnRender;
 $('bnOnlyIncomplete').onchange = bnRender;
 
@@ -510,6 +626,7 @@ document.querySelectorAll('.tab').forEach((b) => {
     $('p-cost').hidden = b.dataset.t !== 'cost';
     $('p-lic').hidden = b.dataset.t !== 'lic';
     $('p-ord').hidden = b.dataset.t !== 'ord';
+    $('p-econ').hidden = b.dataset.t !== 'econ';
     $('p-rep').hidden = b.dataset.t !== 'rep';
     $('p-met').hidden = b.dataset.t !== 'met';
     $('p-ops').hidden = b.dataset.t !== 'ops';
@@ -519,6 +636,7 @@ document.querySelectorAll('.tab').forEach((b) => {
     if (b.dataset.t === 'met') $('mt-go').click();
     if (b.dataset.t === 'lic' && !llRows.length) loadLicenses();
     if (b.dataset.t === 'ord') { markOrdersSeen(); orLoad(); }
+    if (b.dataset.t === 'econ') { ecLoad(); usLoad(); }
     if (b.dataset.t === 'rep') $('rp-go').click();
   };
 });
@@ -569,9 +687,6 @@ function renderLicenses(d) {
       <td class="mail">${r.email || '—'}</td>
       <td class="st-${r.state}">${STATE_LABEL[r.state]}</td>
       <td class="ops">
-        <select data-a="plan" data-i="${i}" class="planSel">
-          ${planSelOptions(r.plan)}
-        </select>
         <button data-a="extend" data-i="${i}" class="secondary">+30 天</button>
         <button data-a="clear" data-i="${i}" class="secondary">清空裝置</button>
         <button data-a="toggle" data-i="${i}" class="${r.state === 'revoked' ? 'secondary' : 'danger'}">${r.state === 'revoked' ? '恢復' : '停用'}</button>
@@ -582,10 +697,6 @@ function renderLicenses(d) {
 
   $('ll-out').querySelectorAll('button[data-a]').forEach((b) => {
     b.onclick = () => licenseAction(b.dataset.a, llRows[Number(b.dataset.i)], b);
-  });
-  // 換方案用下拉，改完立刻套用並重算到期日
-  $('ll-out').querySelectorAll('select[data-a="plan"]').forEach((sel) => {
-    sel.onchange = () => licenseAction('plan', llRows[Number(sel.dataset.i)], sel, sel.value);
   });
 }
 
@@ -608,7 +719,7 @@ async function loadAdminPlans() {
     ['internal', '不公開販售'],
   ];
   sel.innerHTML = groups.map(function (g) {
-    const rows = planList.filter(function (p) { return p.kind === g[0]; });
+    const rows = planList.filter(function (p) { return p.kind === g[0] && p.issuable; });
     if (!rows.length) return '';
     return '<optgroup label="' + g[1] + '">' + rows.map(function (p) {
       return '<option value="' + p.key + '">' + escHtml(p.label)
@@ -640,25 +751,10 @@ function planLabelOf(key) {
   return p ? p.label : key;
 }
 
-function planSelOptions(cur) {
-  const list = planList.length ? planList : [{ key: cur, label: cur, kind: 'sub' }];
-  return list.map(function (p) {
-    return '<option value="' + p.key + '"' + (p.key === cur ? ' selected' : '')
-      + '>' + escHtml(p.label) + '</option>';
-  }).join('');
-}
 
 async function licenseAction(action, row, btn, value) {
   const payload = { licenseKey: row.raw };
 
-  if (action === 'plan') {
-    if (!confirm('把 ' + row.licenseKey + ' 改成「' + planLabelOf(value) + '」？到期日會依新方案重算。')) {
-      loadLicenses();
-      return;
-    }
-    payload.plan = value;
-    payload.recalcExpiry = true;
-  }
 
   if (action === 'delete') {
     // 刪除與停用是不同的東西：停用留紀錄（日後有爭議時需要），刪除是清掉。
@@ -871,6 +967,120 @@ function render(d) {
       + '低於門檻時 cache_control 會靜默失效，每次全額計費。</div>');
   }
 }
+// ---------------------------------------------------------------------------
+// 單位經濟
+// ---------------------------------------------------------------------------
+const usd4 = (n) => n == null ? '—' : '$' + Number(n).toFixed(4);
+const usd6 = (n) => n == null ? '—' : '$' + Number(n).toFixed(6);
+const pct1 = (n) => n == null ? '—' : (n * 100).toFixed(1) + '%';
+
+async function ecLoad() {
+  $('ec-cards').innerHTML = '計算中…';
+  let d;
+  try { d = await apiCall('/v1/admin/econ?days=' + $('ec-days').value); }
+  catch (e) { $('ec-cards').innerHTML = ''; $('err').textContent = String(e.message || e); return; }
+
+  const m = d.measured;
+  $('ec-cards').innerHTML = [
+    ['營收', adMoney(m.revenueTwd) + '（' + m.orders + ' 筆）'],
+    ['翻譯成本', adMoney(Math.round(m.costTwd))],
+    ['毛利', adMoney(Math.round(m.grossTwd))],
+    ['毛利率', pct1(m.grossMargin)],
+    ['共用快取命中率', pct1(m.cacheHitRate)],
+  ].map((x) => '<div class="card' + (x[0] === '毛利率' && m.grossMargin != null && m.grossMargin < 0.5 ? ' warn' : '')
+    + '"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>').join('');
+
+  $('ec-detail').innerHTML = '<table>'
+    + [
+      ['每次翻譯成本', usd6(m.usdPerTranslation), '一句沒有命中快取、真的送進模型的成本'],
+      ['每次快取未命中', usd6(m.usdPerCacheMiss), '與上面同義——命中快取的那些不花錢'],
+      ['每支影片成本', usd4(m.usdPerRace) + '（' + m.videos + ' 支）', '一場比賽的翻譯成本，第一個看的人付掉，之後的人免費'],
+      ['每人日成本', usd6(m.usdPerActiveUserDay), m.userDays + ' 人日（同一個人跨天算兩次，刻意不做跨日去重）'],
+      ['付費者每人日', usd6(m.usdPerPaidUserDay), m.paidUserDays + ' 人日'],
+      ['免費者每人日', usd6(m.usdPerTrialUserDay), m.freeUserDays + ' 人日'],
+      ['平均客單價', m.arpuTwd == null ? '—' : adMoney(m.arpuTwd), '已付款訂單的平均金額'],
+    ].map((r) => '<tr><td style="width:150px">' + r[0] + '</td><td class="num" style="width:120px">'
+      + r[1] + '</td><td class="hint">' + r[2] + '</td></tr>').join('')
+    + '</table>';
+
+  const e = d.estimated;
+  const a = d.assumptions;
+  $('ec-est').innerHTML = [
+    ['CAC', e.cacTwd == null ? '—' : adMoney(e.cacTwd)],
+    ['LTV', e.ltvTwd == null ? '—' : adMoney(e.ltvTwd)],
+    ['LTV / CAC', e.ltvCac == null ? '—' : e.ltvCac + '×'],
+  ].map((x) => '<div class="card"><div class="k">' + x[0] + '（估算）</div><div class="v">' + x[1] + '</div></div>').join('');
+
+  $('ec-assume').innerHTML = '目前的假設：匯率 <b>' + a.fxTwdPerUsd + '</b> TWD/USD　·　'
+    + '行銷花費 <b>' + adMoney(a.marketingTwd) + '</b>　·　預期續訂 <b>' + a.ltvSeasons + '</b> 季'
+    + '（在「營運設定」裡改）<br>'
+    + '⚠️ <b>續訂季數沒有資料之前請保持 1。</b>填 2 會讓 LTV 憑空翻倍，'
+    + '而你會拿那個數字去決定要不要加碼廣告。'
+    + (a.marketingTwd ? '' : '　目前行銷花費是 0，所以 CAC 算不出來。');
+}
+
+$('ec-go').onclick = ecLoad;
+$('ec-days').onchange = ecLoad;
+
+// ---- 每位使用者 ----
+async function usLoad() {
+  $('us-out').innerHTML = '載入中…';
+  let d;
+  try { d = await apiCall('/v1/admin/users?days=' + $('us-days').value); }
+  catch (e) { $('us-out').innerHTML = ''; $('err').textContent = String(e.message || e); return; }
+
+  const t = d.totals;
+  $('us-cards').innerHTML = [
+    ['使用者', t.users],
+    ['付費', t.paidUsers],
+    ['免費', t.freeUsers],
+    ['總成本', usd4(t.usd)],
+    ['付費者平均', usd4(t.usdPerPaidUser)],
+    ['免費者平均', usd4(t.usdPerFreeUser)],
+  ].map((x) => '<div class="card"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>').join('');
+
+  if (!d.rows.length) { $('us-out').innerHTML = '<div class="hint">這段期間沒有翻譯紀錄。</div>'; return; }
+  $('us-out').innerHTML = '<table>'
+    + '<tr><th>安裝編號</th><th>方案</th><th class="num">成本</th><th class="num">翻譯</th>'
+    + '<th class="num">快取命中</th><th class="num">命中率</th><th>最後活動</th><th>操作</th></tr>'
+    + d.rows.map((r) => '<tr>'
+      + '<td class="mono">' + escHtml(r.installId) + '</td>'
+      + '<td>' + escHtml(r.plan) + '</td>'
+      + '<td class="num">' + usd4(r.usd) + '</td>'
+      + '<td class="num">' + r.translated + '</td>'
+      + '<td class="num">' + r.cached + '</td>'
+      + '<td class="num">' + pct1(r.hitRate) + '</td>'
+      + '<td>' + orTime(r.lastAt) + '</td>'
+      + '<td class="ops"><button data-blk="' + escHtml(r.installId) + '" class="danger">封鎖</button></td>'
+      + '</tr>').join('')
+    + '</table>';
+
+  $('us-out').querySelectorAll('button[data-blk]').forEach((b) => {
+    b.onclick = () => {
+      $('bl-id').value = b.dataset.blk;
+      // 刻意不直接封鎖：這一頁按錯的代價是把一個正常付費者踢出去。
+      // 帶去封鎖區、讓他在那裡確認一次。
+      document.querySelector('.tab[data-t="lic"]').click();
+      $('bl-id').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('已帶入安裝編號，請在下方「封鎖安裝」確認');
+    };
+  });
+}
+
+$('us-go').onclick = usLoad;
+$('us-days').onchange = usLoad;
+
+// ---- 錯誤代碼對照 ----
+$('cd-go').onclick = async () => {
+  try {
+    const d = await apiCall('/v1/admin/codes');
+    $('cd-out').innerHTML = '<table><tr><th>代碼</th><th>意思</th></tr>'
+      + Object.entries(d.codes).map(([k, v]) =>
+        '<tr><td class="mono">' + escHtml(k) + '</td><td>' + escHtml(v) + '</td></tr>').join('')
+      + '</table>';
+  } catch (e) { $('err').textContent = String(e.message || e); }
+};
+
 // ---------------------------------------------------------------------------
 // 訂單管理
 // ---------------------------------------------------------------------------
@@ -1126,5 +1336,52 @@ function startOrdPoll() {
   pollOrders();
   ordTimer = setInterval(pollOrders, 45000);
 }
+
+
+// ---------------------------------------------------------------------------
+// 帳號視圖（Order / License / Entitlement 的統一入口）
+// ---------------------------------------------------------------------------
+$('ac-go').onclick = async () => {
+  $('ac-out').innerHTML = '查詢中…';
+  let d;
+  try { d = await apiCall('/v1/admin/account?email=' + encodeURIComponent($('ac-mail').value.trim())); }
+  catch (e) { $('ac-out').innerHTML = '<div class="hint">' + escHtml(e.message) + '</div>'; return; }
+
+  const s = d.summary;
+  const cards = [
+    ['授權碼', s.licenses + '（有效 ' + s.active + '）'],
+    ['訂單', s.orders + '（已付款 ' + s.paidOrders + '）'],
+    ['累計消費', adMoney(s.lifetimeTwd)],
+  ];
+  // 孤兒授權＝日後接不回帳號的資料。**平常應該是 0**，不是 0 就要查。
+  if (s.orphanLicenses) cards.push(['孤兒授權', s.orphanLicenses]);
+
+  $('ac-out').innerHTML =
+    '<div class="cards">' + cards.map((x) =>
+      '<div class="card' + (x[0] === '孤兒授權' ? ' warn' : '') + '"><div class="k">' + x[0]
+      + '</div><div class="v">' + x[1] + '</div></div>').join('') + '</div>'
+    + (d.licenses.length ? '<h4 class="secHead">授權碼</h4><table>'
+      + '<tr><th>授權碼</th><th>方案</th><th>狀態</th><th>到期</th><th class="num">裝置</th><th>訂單</th></tr>'
+      + d.licenses.map((l) => '<tr>'
+        + '<td class="mono">' + escHtml(l.licenseKey) + '</td>'
+        + '<td>' + escHtml(l.planLabel) + (l.fromService ? '<span class="tag">代訂贈送</span>' : '') + '</td>'
+        + '<td class="st-' + (l.state === 'active' ? 'paid' : l.state === 'expired' ? 'awaiting' : 'failed') + '">'
+        + (l.state === 'active' ? '有效' : l.state === 'expired' ? '已過期' : '已停用') + '</td>'
+        + '<td>' + fmtDay(l.expiresAt) + '</td>'
+        + '<td class="num">' + l.devices + '</td>'
+        + '<td class="mono">' + escHtml(l.orderId || '—') + '</td>'
+        + '</tr>').join('') + '</table>' : '<div class="hint">這個 email 沒有任何授權碼。</div>')
+    + (d.purchases.length ? '<h4 class="secHead">訂單</h4><table>'
+      + '<tr><th>時間</th><th>訂單編號</th><th>商品</th><th class="num">金額</th><th>狀態</th></tr>'
+      + d.purchases.map((p) => '<tr>'
+        + '<td>' + orTime(p.at) + '</td>'
+        + '<td class="mono">' + escHtml(p.no) + '</td>'
+        + '<td>' + escHtml(p.summary || '—') + '</td>'
+        + '<td class="num">' + adMoney(p.price) + '</td>'
+        + '<td class="st-' + p.status + '">' + (OR_LABEL[p.status] || p.status) + '</td>'
+        + '</tr>').join('') + '</table>' : '');
+};
+
+$('ac-mail').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ac-go').click(); });
 
 </script>

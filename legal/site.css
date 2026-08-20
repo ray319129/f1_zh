@@ -1,4 +1,9 @@
 /* PitLingo 網站共用樣式。刻意極簡——沒有建置流程，一個檔案服務所有頁面。 */
+/* 鎖住的方案：看得到、看得懂為什麼，但點不下去。 */
+.plan.locked { opacity: .6; }
+.plan.locked .planHead { cursor: not-allowed; }
+.plan.locked .planPrice { text-decoration: line-through; }
+
 :root {
   color-scheme: light dark;
   --line: rgba(128,128,128,.25);

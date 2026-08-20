@@ -62,6 +62,9 @@
     el.dataset.key = p.key;
 
     const bits = [];
+    // 鎖住的方案：留在頁面上但不能選。**不要直接隱藏**——
+    // 整張消失會讓人以為賣完了或網站壞了，而「什麼時候開放」本身就是預告。
+    if (p.locked) el.classList.add('locked');
     // 賣的是下一賽季時**一定要講清楚**。靜靜收全價然後給一個要等好幾個月
     // 才用得到的東西，是最糟的那種體驗。
     if (p.nextSeason) bits.push('<b class="warn">此為次一賽季通行證，本賽季剩餘場次一併附贈</b>');
@@ -70,6 +73,13 @@
     if (p.limit) bits.push(`限量 ${p.limit} 組`);
     if (p.vpn) bits.push('<b class="warn">觀看時需自備 VPN</b>');
     if (p.bundleWeek) bits.push('隨附一個比賽週的字幕翻譯');
+    if (p.locked) bits.push('<b class="warn">目前無法購買</b>　' + esc(p.locked));
+    // **划算度要說實話。** 賽季尾聲的整季票可能比一場一場買貴，
+    // 那是刻意保留給使用者自己決定的（他可能就是想一次買斷），
+    // 但「自己決定」的前提是他看得到另一個選項的總價。
+    // 只顯示價格而不顯示對照，技術上沒說謊，實際上是靠他不會算。
+    const vh = valueHint(p);
+    if (vh) bits.push(vh);
 
     // ⚠️ 說明裡的 `**粗體**` 要跳脫星號（`\*\*`）。少了反斜線的話
     //    `/**(.+?)**/` 是無效的正規表示式（`*` 沒有可重複的對象），
@@ -86,11 +96,39 @@
       + (desc ? `<details class="planMore"><summary>商品說明</summary><div>${desc}</div></details>` : '');
 
     // 選取與展開是兩件事，必須綁在不同的元素上
-    el.querySelector('.planHead').onclick = () => { toggle(p.key); };
+    if (p.locked) {
+      el.querySelector('.planHead').disabled = true;
+    } else {
+      el.querySelector('.planHead').onclick = () => { toggle(p.key); };
+    }
     return el;
   }
 
+  // 剩餘週末數，用來算「一場一場買要多少」。由 /v1/plans 提供。
+  let seasonInfo = null;
+  let weekPrice = 0;
+
+  /**
+   * 這個方案跟「單場買到底」比起來划不划算。
+   * 只有**明顯比較貴**時才出現——每一張卡都掛一句比較文字會變成雜訊，
+   * 而雜訊會讓真正重要的那一句被略過。
+   */
+  function valueHint(p) {
+    if (!seasonInfo || !weekPrice) return '';
+    if (p.nextSeason || p.locked) return '';
+    if (!/^season$/.test(p.key)) return '';
+    const n = seasonInfo.weekendsLeft;
+    if (!n) return '';
+    const singles = weekPrice * n;
+    if (p.price <= singles) return '';
+    return '<b class="warn">本賽季只剩 ' + n + ' 個比賽週末，'
+      + '一週通行證買滿為 ' + money(singles) + '，比這個方案便宜</b>';
+  }
+
   function renderPlans(d) {
+    seasonInfo = d.season || null;
+    const wk = plans.find((p) => p.key === 'week');
+    weekPrice = wk ? wk.price : 0;
     const subs = plans.filter((p) => !/^svc_/.test(p.key));
     const svcs = plans.filter((p) => /^svc_/.test(p.key));
 
