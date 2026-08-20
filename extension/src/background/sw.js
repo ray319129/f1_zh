@@ -214,12 +214,15 @@ async function getBundle(cid, force) {
  * 後端會先查自己的單句快取，未命中才呼叫模型，並把結果存起來——
  * 所以就算是「第一個看的人」，他翻過的每一句也都會嘉惠後面的人。
  */
-async function translateLines(cid, lines) {
+async function translateLines(cid, lines, urgent) {
   if (!lines || !lines.length) return { lines: {} };
   try {
     return await api('/v1/translate', {
       method: 'POST',
-      body: JSON.stringify({ cid: cid || 'misc', lines }),
+      // urgent = 畫面上現在就要用。後端只讓**非急件**參與直播的並發去重，
+      // 因為讓路的人要等別人翻完再讀快取，而直播字幕 3~4 秒就換一句。
+      // **預設是急件**：漏標的後果是多花一點錢，標錯方向的後果是看不到字幕。
+      body: JSON.stringify({ cid: cid || 'misc', lines, urgent: urgent !== false }),
     });
   } catch (e) {
     return { lines: {}, error: String(e.message || e) };
@@ -232,12 +235,14 @@ async function translateLines(cid, lines) {
  * 標記成功後要把本機的 bundle 快取作廢，否則同一個 SW 生命週期內
  * 下一次 getBundle 還是回舊的 segCount=0，跳過判斷永遠不會生效。
  */
-async function markComplete(cid, segCount) {
+async function markComplete(cid, segCount, slug) {
   if (!cid || !segCount) return { ok: false };
   try {
     const d = await api('/v1/complete', {
       method: 'POST',
-      body: JSON.stringify({ cid, segCount }),
+      // slug 是後台唯一能分辨「這是哪一場的哪個場次」的東西——
+      // 我們只存 contentId，那是一串數字，人看不出是澳洲正賽還是賽後訪問。
+      body: JSON.stringify({ cid, segCount, slug: slug || '' }),
     });
     memCache.bundles.delete(cid);
     return d;
@@ -266,7 +271,18 @@ async function markComplete(cid, segCount) {
 // 兩者互不衝突：正常情況每天續一次，異常情況靠 14 天的緩衝撐著。
 const ENT_RECHECK_MS = 24 * 3600 * 1000;
 
-async function licenseStatus() {
+/**
+ * @param {boolean} force 立刻向後端問一次，不用等 24 小時的週期。
+ *
+ * 設定頁開啟時要用 force。使用者按圖示的當下就是他在確認狀態的當下——
+ * 那時給他一個最多過時 24 小時的答案，等於讓畫面說謊。
+ * 一次請求的成本可以忽略，而且離線時 `licenseRenew` 不會清掉任何東西。
+ */
+async function licenseStatus(force) {
+  if (force) {
+    const { licenseKey } = await chrome.storage.local.get('licenseKey');
+    if (licenseKey) await licenseRenew().catch(() => {});
+  }
   const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt', 'entCheckedAt']);
   if (!st.entitlement || !st.entExp) {
     const { licRevokedReason } = await chrome.storage.local.get('licRevokedReason');
@@ -326,12 +342,23 @@ async function licenseRenew() {
     });
     const d = await res.json().catch(() => ({}));
 
-    // 403 = 已停用或已過期。這是**確定的否定答案**，要立刻清掉本機狀態。
+    // 403 = 已停用／已過期／這台裝置已被解除。
+    // 404 = 授權碼**已被刪除**（後台永久刪除，或客服重新發碼）。
+    //
+    // 兩者都是**確定的否定答案**，要立刻清掉本機狀態。
+    // ⚠️ 原本只判 403。實際回報的症狀就是這個漏洞：後台把授權碼刪掉之後，
+    //    續期收到 404，程式碼一路往下走到「不是 ok 就什麼都不做」，
+    //    於是本機的通行證原封不動，擴充功能持續顯示「已啟用」最長 14 天。
+    //    不報錯、沒有日誌，只有使用者看得到那個錯的狀態。
+    //
     // 其他錯誤（500、逾時、斷網）一律不動——那可能只是後端暫時有事，
     // 把付費使用者的授權清掉才是真正的傷害。
-    if (res.status === 403) {
+    if (res.status === 403 || res.status === 404) {
       await chrome.storage.local.remove(['entitlement', 'entExp', 'licPlan', 'licExpiresAt']);
-      await chrome.storage.local.set({ entCheckedAt: Date.now(), licRevokedReason: d.error || '授權已停用' });
+      await chrome.storage.local.set({
+        entCheckedAt: Date.now(),
+        licRevokedReason: d.error || (res.status === 404 ? '這組授權碼已不存在' : '授權已停用'),
+      });
       return { ok: false, revoked: true, error: d.error };
     }
     if (res.ok && d && d.ok) {
@@ -406,7 +433,13 @@ function isAllowedFetch(url) {
 
 async function fetchText(url) {
   if (!isAllowedFetch(url)) throw new Error('網址不在允許清單內，已拒絕');
-  const res = await fetch(url, { credentials: 'include' });
+  // ⚠️ `priority: 'low'` 不是可有可無的優化，是**正確性層級的**。
+  //    這些請求打的是與影片同一個 CDN 主機，HTTP/2 之下共用同一條連線。
+  //    不標低優先權的話，瀏覽器會把「40 分鐘後才要用的字幕」和
+  //    「現在就要播的影片分段」排在同一個優先級 —— 播放器的 ABR 量到
+  //    吞吐量下降就會降解析度。使用者實測：開擴充功能就卡，關掉就正常。
+  //    舊版 Chrome 不支援這個欄位時會直接忽略，不會出錯。
+  const res = await fetch(url, { credentials: 'include', priority: 'low' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
@@ -434,7 +467,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, bundle: await getBundle(msg.cid, msg.force) });
           break;
         case 'translate':
-          sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines) });
+          sendResponse({ ok: true, result: await translateLines(msg.cid, msg.lines, msg.urgent) });
           break;
         // pagehide 觸發的最後一搏。頁面隨時會被凍結，所以立刻回應、
         // 用 keepalive 讓請求在分頁消失後仍然送達。我們不需要譯文，
@@ -460,7 +493,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'licenseStatus':
-          sendResponse({ ok: true, license: await licenseStatus() });
+          sendResponse({ ok: true, license: await licenseStatus(msg.force) });
           break;
         case 'licenseActivate':
           sendResponse({ ok: true, result: await licenseActivate(msg.licenseKey) });
@@ -496,7 +529,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'markComplete':
-          sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount) });
+          sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount, msg.slug) });
           break;
         case 'fetchText':
           try {

@@ -25,3 +25,15 @@ dist/
 
 # legal/ 的圖示是從 extension/icons 複製過去給 Pages 用的，不重複追蹤
 legal/icon128.png
+
+# 示範影片的原始檔（66MB）。網站上放的是 legal/demo.mp4（壓縮過的 9.4MB）。
+# Cloudflare Pages 單檔上限 25MB，原始檔放進去會部署失敗。
+test_video.mp4
+
+# === 使用者診斷報告：含 installId 與觀看紀錄 ===
+# ⚠️ 這個 repo 是**公開**的。診斷報告裡有安裝編號與事件時間軸，
+#    那是可以指認到某一台裝置的資料，絕對不能進公開 repo。
+診斷報告/
+
+# 暫存的實驗檔
+backend/dev/

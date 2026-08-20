@@ -66,12 +66,21 @@
     showEnglish: true,          // 雙語顯示。字幕延遲時能靠英文關鍵字對上畫面
     fontSize: 26,               // 以 1280px 寬的影片為基準，會依實際大小縮放
     bottomPct: 8,               // 距影片底部的百分比（相對影片高度，不是視窗）
-    holdMs: 7000,               // 一句字幕最長停留時間
     hideNativeCC: true,         // 隱藏原生英文字幕，避免與疊字重疊
     // 字幕時機微調（毫秒）。負值＝延後顯示，正值＝提前顯示。
-    // 提前只在重播且校準成功時生效，直播一律夾成 0——
-    // 直播的字幕清單是滑動視窗，基準點會變，校準值不可信。
+    //
+    // 提前只在重播、且**校準通過離散度檢查**時生效（見 main.js 的
+    // `recomputeCalibration`）。直播一律夾成 0——直播的字幕清單是滑動視窗，
+    // 基準點會變，校準值不可信。
+    //
+    // ⚠️ 這一項**每次換影片都會被重設為 0**（main.js 的 `resetOffsetForNewVideo`）。
+    //    它補的是「這一支影片的偏差」，不是使用者的長期偏好——
+    //    字級與位置才是長期偏好，那兩項刻意不重設。
     subtitleOffset: 0,
+    // 「字幕停留上限」曾經在這裡（holdMs）。**已移除，改成 main.js 的固定值 HOLD_MS。**
+    // 自從疊字改成跟著原生字幕一起收掉之後，那個計時器在正常播放時永遠不會觸發，
+    // 調它不會有任何可見效果——留著只會讓使用者以為自己調錯了。
+    // 舊的 storage 裡可能還有這個欄位，`sanitizeSettings` 不輸出它就等於自然淘汰。
     debug: false,               // 詳細日誌：每句字幕、每個批次都印到 Console（測試用）
   };
 
@@ -89,6 +98,9 @@
   function sanitizeSettings(raw) {
     const s = Object.assign({}, DEFAULT_SETTINGS, (raw && typeof raw === 'object') ? raw : {});
     const num = (v, lo, hi, dflt) => {
+      // 布林要先擋掉。`Number(true) === 1`，所以 `subtitleOffset: true` 會安靜地
+      // 變成「提前 1 毫秒」——不是預設值，也不是使用者的意思，而且完全看不出來。
+      if (typeof v === 'boolean') return dflt;
       const n = Number(v);
       return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
     };
@@ -99,8 +111,11 @@
       debug: !!s.debug,
       fontSize: num(s.fontSize, 12, 72, DEFAULT_SETTINGS.fontSize),
       bottomPct: num(s.bottomPct, 0, 60, DEFAULT_SETTINGS.bottomPct),
-      holdMs: num(s.holdMs, 1000, 30000, DEFAULT_SETTINGS.holdMs),
-      subtitleOffset: num(s.subtitleOffset, -2000, 2000, 0),
+      // 延後 3 秒 / 提前 2 秒。**不對稱是刻意的**：
+      // 延後是純計時器，設多少就是多少；提前依賴校準值，誤差會變成錯位的字幕。
+      // 這裡的夾值是最後一道防線——設定頁的 min/max 只是 UI，
+      // storage 可以被同步、被舊版寫入、被開發者工具塞任何東西。
+      subtitleOffset: num(s.subtitleOffset, -3000, 2000, 0),
     };
   }
 

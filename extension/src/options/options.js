@@ -18,7 +18,9 @@
   // 一般使用者看不到「詳細日誌」——那是開發用的，放出去只會造成困惑。
 // 需要時仍可在 F1TV 分頁的 Console 打 `__pitlingo.debug(true)` 打開。
 const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
-  const RANGES = ['fontSize', 'bottomPct', 'holdMs', 'subtitleOffset'];
+  // holdMs 已移除：疊字改成跟著原生字幕收掉之後，那個計時器在正常播放時
+  // 永遠不會觸發，放在設定頁上只是一個調了不會有反應的旋鈕。
+  const RANGES = ['fontSize', 'bottomPct', 'subtitleOffset'];
 
   let settings = Object.assign({}, DEFAULT_SETTINGS);
 
@@ -85,8 +87,36 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
         '請確認 F1TV 播放器的 <b>英文字幕（CC）已開啟</b>：播放器右下角齒輪 → Subtitles → English。');
     }
     const cached = (s.memo || 0).toLocaleString();
-    setStatus('ok', '運作中',
-      `本機已有 ${cached} 句譯文` + (s.harvestSkipped ? '　·　這支影片已完整翻譯，不會再花錢' : ''));
+    const detail = `本機已有 ${cached} 句譯文`
+      + (s.harvestSkipped ? '　·　本片譯文已完整，將直接套用' : '');
+
+    // 免費模式一定要把剩餘時間放在最顯眼的位置。
+    // 使用者要決定買不買，唯一的依據就是「還剩多久」——
+    // 把它藏在診斷報告裡等於沒有告訴他。
+    if (!s.licensed) {
+      if (!s.freeSession) {
+        return setStatus('warn', '本片不在免費範圍',
+          '免費試看僅涵蓋練習賽、衝刺賽、排位賽與正賽。',
+          '啟用授權後即可觀看所有內容。');
+      }
+      const left = Math.max(0, s.freeLeft || 0);
+      const mm = Math.floor(left / 60), ss = String(left % 60).padStart(2, '0');
+      const total = Math.round((s.freeTotal || 900) / 60);
+      if (left <= 0) {
+        // 額度用完是**最需要給出路**的一刻。只說「已結束」等於把人擋在門口，
+        // 而他此時正是最有意願購買的時候——狀態卡直接給連結，不必讓他自己找。
+        return setStatus('warn', '免費試看已結束',
+          `本片的免費 ${total} 分鐘已用完，原生英文字幕已恢復顯示。`,
+          '<a class="buyBtn" href="https://pitlingo.com/buy" target="_blank" rel="noopener">'
+          + '前往購買（NT$39 起）</a>'
+          + '<span class="hint">已有授權碼？請於下方「授權」區塊輸入。</span>');
+      }
+      return setStatus('ok', `免費試看　剩餘 ${mm}:${ss}`,
+        `${detail}　·　免費額度共 ${total} 分鐘`
+        + (s.playing ? '' : '　·　目前暫停中，不計時'));
+    }
+
+    setStatus('ok', '運作中', detail);
   }
 
   // ---------------------------------------------------------------------
@@ -99,16 +129,35 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
     return new Date(sec * 1000).toLocaleDateString('zh-TW');
   }
 
-  async function refreshLicense() {
-    const res = await sw({ type: 'licenseStatus' });
+  /**
+   * @param {boolean} force 向後端重新確認一次，不用等背景那 24 小時的週期。
+   *
+   * 打開這一頁的當下就是使用者在確認授權狀態的當下。若只讀本機快取，
+   * 授權在後台被停用或刪除之後，這裡最長會有 24 小時顯示錯的狀態——
+   * **畫面說「已啟用」而伺服器早就不認**，那比顯示不出來更糟。
+   */
+  async function refreshLicense(force) {
+    const res = await sw({ type: 'licenseStatus', force: !!force });
     licState = (res.ok && res.license) || null;
     const active = !!(licState && licState.active);
 
     $('licActive').hidden = !active;
     $('licInactive').hidden = active;
-    if (!active) return;
+    if (!active) {
+      // 被停用／刪除時要說明原因，否則使用者只看到「未啟用」會以為是自己弄丟了
+      const why = licState && licState.reason;
+      const el = $('licMsg');
+      if (why && el) { el.className = 'result err'; el.textContent = why; }
+      return;
+    }
 
-    $('licPlan').textContent = ({ season: '賽季方案', lifetime: '永久授權', trial: '試用' })[licState.plan] || licState.plan;
+    $('licPlan').textContent = ({
+      season: '賽季方案',
+      season_early: '賽季方案（早鳥）',
+      weekend: '單場週末方案',
+      trial: '試用',
+      comp: '客服補償',
+    })[licState.plan] || licState.plan;
     $('licExp').textContent = licState.expiresAt
       ? `有效期至 ${fmtDate(licState.expiresAt)}`
       : '無使用期限';
@@ -188,11 +237,31 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
   function renderOutputs() {
     $('fontSizeOut').textContent = settings.fontSize + ' px';
     $('bottomPctOut').textContent = settings.bottomPct + ' %';
-    $('holdMsOut').textContent = (settings.holdMs / 1000).toFixed(1) + ' 秒';
     const off = settings.subtitleOffset || 0;
     $('subtitleOffsetOut').textContent = off === 0 ? '跟隨官方字幕'
       : off < 0 ? `延後 ${(-off / 1000).toFixed(1)} 秒`
       : `提前 ${(off / 1000).toFixed(1)} 秒（僅重播）`;
+    refreshOffsetLive();
+  }
+
+  /**
+   * 問正在播放的分頁「這個設定現在真的生效了嗎」。
+   *
+   * 拿不到分頁不是錯誤——使用者可能只是在設定頁調整。
+   * 但**絕對不能靜靜地什麼都不顯示**，那會讓人分不清「沒生效」與「沒查到」。
+   */
+  let offsetLiveTimer = null;
+  function refreshOffsetLive() {
+    clearTimeout(offsetLiveTimer);
+    offsetLiveTimer = setTimeout(async () => {
+      const el = $('offsetLive');
+      if (!el) return;
+      if ((settings.subtitleOffset || 0) === 0) { el.textContent = '　'; return; }
+      const r = await toTab({ type: 'timingStatus' });
+      if (r && r.noTab) { el.textContent = '目前狀態：沒有開啟中的 F1TV 分頁，無法確認是否生效'; return; }
+      if (!r || !r.ok || !r.timing) { el.textContent = '目前狀態：查不到（請重新整理 F1TV 分頁）'; return; }
+      el.textContent = '目前狀態：' + r.timing.text;
+    }, 250);
   }
 
   function paint() {
@@ -296,7 +365,8 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
     $('onboard').hidden = !!st.onboarded;
     $('ver').textContent = `版本 ${chrome.runtime.getManifest().version}　·　後端 ${BACKEND.replace(/^https:\/\//, '')}`;
 
-    await refreshLicense();
+    // 開啟這一頁時強制向後端確認一次，不要拿最多過時 24 小時的本機狀態去顯示
+    await refreshLicense(true);
     await refreshStatus();
     // 彈出視窗開著的期間持續更新，使用者才看得到收割進度變化
     setInterval(refreshStatus, 3000);

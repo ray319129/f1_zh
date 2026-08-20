@@ -61,7 +61,10 @@
   let lastRaw = '';
   let everSawCaption = false;
 
-  const pending = new Map();       // normKey -> 原文（待送出）
+  const pending = new Map();
+  // 「現在螢幕上就要用」的鍵。直播的並發去重只讓前瞻那條路讓步，
+  // 急件一律不讓——讓路的人要等別人翻完再讀快取，而直播字幕 3~4 秒就換一句。
+  const urgentKeys = new Set();       // normKey -> 原文（待送出）
   const requested = new Set();     // 已送出、等待回應中的 normKey
   let pendingTimer = null;
   let inflight = 0;
@@ -74,6 +77,9 @@
     serverCount: -1,               // 回寫查核：後端實際有幾句（-1 = 尚未查核）
     harvestSkipped: false,         // 是否因為「已有人收割完整」而跳過整軌預抓
     dropped: 0,                    // 重試 3 次仍失敗、已放棄的句數
+    yieldCount: 0, yieldMs: 0,   // 為了讓路給影片而暫停收割的次數與總時間
+    gaps: 0, lastGap: null,        // 字幕中途缺漏（不含「本來就沒旁白」）
+    badLines: 0,                   // 長度異常而被略過的「字幕」——不是 0 就代表攔錯東西了
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -160,7 +166,24 @@
   // 而且是**回溯的**——不用提早 hook，也不需要 webRequest 那種高風險權限。
   // 播放 API（.../CONTENT/PLAY?contentId=...）一定會出現在裡面。
   // =========================================================================
+  /**
+   * 從資源計時裡找 contentId。**只在網址上找不到時才做。**
+   *
+   * ⚠️ 這個函式原本每 1.5 秒無條件跑一次，而資源計時緩衝被我們自己調到
+   *    1,000 筆——等於每 1.5 秒對一千條幾百字元的網址各跑一次正則。
+   *    F1TV 的網址還特別長（帶著 400 字元的授權 token）。
+   *    那是持續佔用主執行緒的工作，而**播放器的 ABR 決策也跑在主執行緒上**。
+   *
+   *    絕大多數情況網址本身就有 `/detail/(\d+)`，根本不需要掃。
+   *    這裡先問一次，有答案就直接返回。
+   */
   function scanContentIdFromPerformance() {
+    if (seenContentId) return;                        // 已經找到過就不必再掃
+    if (site && site.contentIdPattern) {
+      try {
+        if (new RegExp(site.contentIdPattern).test(location.pathname)) return;
+      } catch (e) { /* 設定裡的正則壞掉就往下掃 */ }
+    }
     try {
       const entries = performance.getEntriesByType('resource');
       for (let i = entries.length - 1; i >= 0; i--) {
@@ -271,12 +294,74 @@
    *     沒資料只記 Console，因為可能真的是開場動畫或宣傳片
    */
   const NO_CAPTION_WARN_MS = 45000;
+  // 中途缺漏的門檻。轉播的自然空白（換鏡頭、車手沒講話）多半在 10 秒內，
+  // 20 秒沒有任何字幕就值得記一筆——但要分辨是不是本來就沒旁白，見 checkCaptionGap。
+  const CAPTION_GAP_MS = 20000;
   let lastNonEmptyAt = Date.now();
   let hintShownAt = 0;
 
   function isActuallyPlaying() {
     const v = document.querySelector('video');
     return !!(v && !v.paused && !v.ended && v.readyState >= 2 && v.currentTime > 0);
+  }
+
+  /**
+   * 播放中卻長時間沒有字幕。**要分辨是誰的問題。**
+   *
+   * ⚠️ 舊版只在「從未看過字幕」時才警告（`if (everSawCaption) return`），
+   *    所以**比賽中途的缺漏完全是隱形的**——使用者看到字幕消失一段，
+   *    診斷報告卻什麼都沒有，我們只能用猜的。
+   *
+   * 中途缺漏有四種成因，後果完全不同，必須當場分辨：
+   *
+   *   A. 這段本來就沒有旁白（賽後訪問、頒獎、純畫面）
+   *      → **正常**。原生字幕也是空的，我們沒有東西可翻。
+   *   B. 原生字幕有，我們沒有譯文
+   *      → 翻譯沒跟上，或這句不在快取裡。可以補。
+   *   C. 原生字幕整個不見了
+   *      → CC 被關掉、選擇器失效、或播放器重建導致 observer 失聯。
+   *   D. 額度用完
+   *      → 免費模式的正常行為，但要說清楚免得被當成故障。
+   *
+   * 判斷依據是**當下重讀 DOM**，不是任何快取的變數。
+   */
+  let gapReported = 0;
+  function checkCaptionGap() {
+    if (!settings.enabled || !site || killed || tooOld) return;
+    if (!everSawCaption) return;                        // 交給下面的首次偵測處理
+    if (!isActuallyPlaying()) return;
+    if (Date.now() - lastNonEmptyAt < CAPTION_GAP_MS) return;
+    // 同一次缺漏只回報一次，恢復之後才會再記
+    if (gapReported > lastNonEmptyAt) return;
+    gapReported = Date.now();
+
+    const gapSec = Math.round((Date.now() - lastNonEmptyAt) / 1000);
+    const container = activeContainer();
+    const nativeNow = clean(collectCaption());
+
+    let kind, msg;
+    if (trialExhausted()) {
+      kind = 'quota';
+      msg = `已停止顯示 ${gapSec} 秒：免費額度已用完（這是正常行為，非故障）`;
+    } else if (nativeNow) {
+      // 原生有字幕，我們卻沒畫出來 —— 這是真的漏了
+      const k = normKey(nativeNow);
+      kind = memo.has(k) ? 'render' : 'untranslated';
+      msg = `⚠ 字幕缺漏 ${gapSec} 秒：原生字幕存在但未顯示中文`
+        + `（${memo.has(k) ? '譯文已在本機，疑似顯示層問題' : '這句尚無譯文'}）`;
+    } else if (!container) {
+      kind = 'container_gone';
+      msg = `⚠ 字幕缺漏 ${gapSec} 秒：找不到字幕容器 —— 選擇器可能已失效，或播放器重建中`;
+    } else {
+      kind = 'silent';
+      msg = `字幕空白 ${gapSec} 秒：原生字幕也是空的（賽後訪問、頒獎、純畫面時屬正常）`;
+    }
+
+    // 「本來就沒旁白」不該吵人，記成 INFO；其餘是要處理的問題
+    if (kind === 'silent' || kind === 'quota') evInfo(msg); else evWarn(msg);
+    metric('caption_gap', { kind, sessionType: sessionType() });
+    state.gaps = (state.gaps || 0) + (kind === 'silent' || kind === 'quota' ? 0 : 1);
+    state.lastGap = { kind, sec: gapSec, at: new Date().toISOString() };
   }
 
   function checkNoCaption() {
@@ -333,10 +418,55 @@
     try { pollCaption(); } finally { inObserverTick = false; }
   }
 
+  /**
+   * 播放器是不是已經被關掉了。
+   *
+   * ⚠️ **不能只看網址。** 點播放器左上角的返回鍵時網址完全不變，
+   *    播放器卻已經被拆掉（坑 #15）。判斷依據是 video 元素消失——
+   *    但要給 5 秒寬限，因為切換視角、換畫質時播放器會短暫重建，
+   *    那幾百毫秒的消失不是「離開」。
+   *
+   * 收割與顯示共用同一份判斷，兩邊的定義不一致會很難查。
+   */
+  let videoGoneLogged = false;
+  let videoMissingSince = 0;
+  function playerGone() {
+    const v = document.querySelector('video');
+    if (v) { videoMissingSince = 0; return false; }
+    if (!videoMissingSince) { videoMissingSince = Date.now(); return false; }
+    return Date.now() - videoMissingSince > 5000;
+  }
+
   function pollCaption() {
     checkPollStall();
-    tickEarlyDisplay();
+    // ⚠️ 提前顯示要放在所有停用判斷**之後**。
+    //    放前面的話 killSwitch 開著、或使用者關掉翻譯時它照樣跑：
+    //    show() 會擋住畫面所以看不出問題，但 shownEarly 已經被標記成「顯示過」，
+    //    等到恢復時那些句子再也不會提前——靜默地少一個功能，沒有任何錯誤訊息。
     if (!settings.enabled || !site || killed || tooOld) return;
+
+    // 播放器關掉了就不要再偵測字幕。網址沒變，但畫面上已經沒有影片——
+    // 這時候容器裡殘留的東西不是字幕，而疊字還留在畫面上只會擋住頁面。
+    if (playerGone()) {
+      if (!videoGoneLogged) {
+        videoGoneLogged = true;
+        evInfo('播放器已關閉（網址未變），暫停字幕偵測與顯示');
+        lastSeenCaption = ''; lastRaw = ''; currentEn = '';
+        scheduleHide();
+      }
+      return;
+    }
+    if (videoGoneLogged) {
+      videoGoneLogged = false;
+      evInfo('播放器已回來，恢復字幕偵測');
+      // 重新開始，不要沿用關掉前的去重狀態
+      lastSeenCaption = ''; lastRaw = ''; currentEn = '';
+      lastNonEmptyAt = Date.now();
+      observedNodes = new Set();
+      hookObservers();
+    }
+
+    tickEarlyDisplay();
     const cur = collectCaption();
     if (cur === lastSeenCaption) return;
     lastSeenCaption = cur;
@@ -352,7 +482,9 @@
       // currentEn 也要清。它是「補顯示」的依據，不清的話畫面上明明沒字幕了，
       // 慢回來的翻譯還是會把那句舊的重新畫出來。
       currentEn = '';
-      scheduleHide();
+      // ⚠️ 收起也要走延後佇列。只延後顯示會把每一句的顯示時間砍掉 N 毫秒，
+      //    短句直接消失、稍長的句子閃一下就沒——見 `enqueueDelayed` 的說明。
+      enqueueDelayed(scheduleHide);
       return;
     }
     lastNonEmptyAt = Date.now();
@@ -413,12 +545,63 @@
     return Math.max(0, limit - used);
   }
 
+  /**
+   * 記錄免費用量。
+   *
+   * ⚠️ **這裡要寫進 storage，不能只留在記憶體。**
+   *    舊版 `freeSpent` 是 content script 的區域變數，開新分頁就從 0 開始——
+   *    使用者只要按一下「在新分頁開啟」就重置了計時。伺服器端每日 800 句
+   *    仍然擋得住成本，但畫面上顯示「剩餘 15:00」等於在告訴他這招有效，
+   *    而**讓使用者以為自己找到漏洞，比真的有漏洞更糟**：
+   *    他會去講給別人聽，而且再也不會付錢。
+   *
+   *    storage 是整個擴充功能共用的，所以所有分頁看到同一份用量。
+   *    重播用 `currentTime` 判定，本來就跨分頁一致（同一支影片同一個位置）；
+   *    真正需要持久化的是直播的累計秒數，以及**每支影片各自的已用量**。
+   */
+  const FREE_USAGE_KEY = 'freeUsage';
+  let freeUsageSaveAt = 0;
+
   function tickFreeUsage() {
     const now = Date.now();
     if (state.isLive && !licensed && freeSession && isActuallyPlaying()) {
       if (lastTickAt) freeSpent += Math.min(5, (now - lastTickAt) / 1000);
+      // 節流寫入：每 5 秒一次就夠，chrome.storage 寫太密會拖慢
+      if (contentId && now - freeUsageSaveAt > 5000) {
+        freeUsageSaveAt = now;
+        saveFreeUsage();
+      }
     }
     lastTickAt = now;
+  }
+
+  function saveFreeUsage() {
+    try {
+      chrome.storage.local.get(FREE_USAGE_KEY, (o) => {
+        const all = (o && o[FREE_USAGE_KEY]) || {};
+        all[contentId] = { spent: Math.round(freeSpent), at: Date.now() };
+        // 只留最近 50 支，避免無界成長
+        const keys = Object.keys(all);
+        if (keys.length > 50) {
+          keys.sort((a, b) => (all[a].at || 0) - (all[b].at || 0))
+            .slice(0, keys.length - 50).forEach((k) => delete all[k]);
+        }
+        chrome.storage.local.set({ [FREE_USAGE_KEY]: all });
+      });
+    } catch (e) { /* 分頁關閉中，忽略 */ }
+  }
+
+  /** 換影片時把這支之前用掉的額度讀回來。 */
+  function loadFreeUsage(cid) {
+    try {
+      chrome.storage.local.get(FREE_USAGE_KEY, (o) => {
+        const rec = ((o && o[FREE_USAGE_KEY]) || {})[cid];
+        if (rec && Number.isFinite(rec.spent) && rec.spent > freeSpent) {
+          freeSpent = rec.spent;
+          evInfo(`本片先前已使用 ${Math.round(freeSpent)} 秒免費額度（跨分頁共用，開新分頁不會重置）`);
+        }
+      });
+    } catch (e) { /* noop */ }
   }
 
   function trialExhausted() {
@@ -437,7 +620,10 @@
     box.classList.remove('on');
     if (hideStyleEl) { hideStyleEl.remove(); hideStyleEl = null; }   // 把原生英文字幕還給使用者
     evWarn(freeSession
-      ? '⏳ 免費試看的 15 分鐘已結束。原生英文字幕已恢復顯示，購買 Season 可解除限制。'
+      // 方案名稱不要寫死在這裡——「購買 Season」在一週通行證上線後就是錯的，
+      // 而且會隨定價調整而漂掉。指向購買頁，那裡的價格永遠是對的。
+      ? '⏳ 免費試看的 15 分鐘已結束。原生英文字幕已恢復顯示。'
+        + '購買授權可解除限制：https://pitlingo.com/buy'
       : '🔒 這支影片不在免費範圍內（免費只涵蓋練習賽／衝刺賽／排位賽／正賽的前 15 分鐘）。');
   }
 
@@ -514,21 +700,99 @@
   // ⚠️ 直播只允許延後。直播的字幕清單是滑動視窗，基準點會隨著重抓而變，
   //    校準出來的值不可信——寧可不做，也不要在直播時顯示錯位的字幕。
   // =========================================================================
-  const OFFSET_MAX_MS = 2000;        // 正負上限
-  const CALIB_MIN = 8;               // 至少要這麼多樣本才敢提前顯示
+  // 兩個方向的上限**刻意不對稱**：
+  //   延後是純 setTimeout，不依賴任何推論，加多久就是多久 → 放寬到 3 秒
+  //   提前依賴校準值，誤差會直接變成「字幕顯示在錯的地方」 → 維持 2 秒
+  // 對稱看起來比較整齊，但那會讓風險最高的方向拿到最大的權限。
+  const OFFSET_LATE_MAX_MS = 3000;   // 延後（負值）的上限
+  const OFFSET_EARLY_MAX_MS = 2000;  // 提前（正值）的上限
+  const CALIB_MIN = 12;              // 至少要這麼多樣本才敢下判斷
+  const CALIB_KEEP = 40;             // 樣本保留數（滑動視窗）
+  const CUE_MAX = 20000;             // cue 時間／原文的記錄上限
+
+  // ⚠️ **離散度閘門——這是提前顯示唯一可信的依據。**
+  //
+  // `parseVtt` 的 `start` 是 cue 在**那個分段檔案內**的秒數。F1TV 的分段
+  // VTT 究竟寫絕對時間還是分段內相對時間，我們沒有實測過，而兩者的差別
+  // 是致命的：
+  //   絕對時間 → `currentTime - cue` 是常數，中位數就是基準偏移，提前顯示成立
+  //   分段相對 → 這個差值等於「該分段的起始時間」，隨播放持續變大，
+  //              中位數是垃圾，提前顯示會在隨機的時刻噴出隨機的句子
+  //
+  // 舊版直接取 8 個樣本的中位數就相信它，**沒有任何辦法分辨這兩種情況**——
+  // 那正是「用起來怪怪的、不確定有沒有效」的來源。
+  //
+  // 改成看樣本的**四分位距（IQR）**：
+  //   絕對時間的話所有樣本會擠在一起（IQR 只反映播放器畫字幕的抖動，遠小於 1 秒）
+  //   分段相對的話樣本會攤在整支影片的長度上（IQR 是幾百秒）
+  // 超過門檻就判定「cue 時間軸不可用」，自動退回只允許延後。
+  //
+  // 這樣不論 F1TV 用哪種寫法都不會出錯，而且**判斷結果會寫進診斷報告**，
+  // 不用再靠感覺猜它有沒有生效。
+  const CALIB_MAX_SPREAD_S = 1.0;
 
   const cueTimes = new Map();        // normKey -> VTT 裡的 cue 起始秒數
+  const cueText = new Map();         // normKey -> 原文。提前顯示時要一起畫出來
   const calibSamples = [];           // video.currentTime - cueTime 的樣本
-  let calibrated = null;             // 中位數，null = 尚未校準
+  let calibrated = null;             // 通過閘門的中位數，null = 不可用
+  let calibSpread = null;            // 最近一次算出來的 IQR，診斷用
+  let calibNote = '尚未取得樣本';    // 人看得懂的狀態，會進診斷報告與設定頁
   const shownEarly = new Set();      // 已經提前顯示過的鍵，避免 DOM 到時重複
+  let earlyHoldUntil = 0;            // 提前顯示期間，暫時不讓「原生字幕清空」收掉疊字
+  let lastSeekCheck = 0;             // 上次看到的 currentTime，用來偵測往回拖
 
-  /** 目前允許的偏移。直播時把正值夾成 0。 */
+  /** 把使用者設定夾進合法範圍。非數字一律當 0（跟隨官方字幕）。 */
+  function clampOffset(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return 0;
+    return Math.max(-OFFSET_LATE_MAX_MS, Math.min(OFFSET_EARLY_MAX_MS, v));
+  }
+
+  /** 目前**實際生效**的偏移。提前的條件不成立時一律回 0。 */
   function activeOffsetMs() {
-    const raw = Math.max(-OFFSET_MAX_MS, Math.min(OFFSET_MAX_MS, Number(settings.subtitleOffset) || 0));
-    if (raw <= 0) return raw;
+    const raw = clampOffset(settings.subtitleOffset);
+    if (raw <= 0) return raw;                      // 延後：任何情況都安全
     if (state.isLive) return 0;                    // 直播不提前
     if (calibrated === null) return 0;             // 沒校準好就不提前
     return raw;
+  }
+
+  /**
+   * 設定值與實際行為的落差要說出來。
+   *
+   * 使用者拉了「提前 1.5 秒」但直播不支援時，畫面上什麼都沒變——
+   * 沒有這行字他只會覺得「這個功能是不是壞的」。
+   */
+  function offsetStatusText() {
+    const raw = clampOffset(settings.subtitleOffset);
+    if (raw === 0) return '跟隨官方字幕';
+    if (raw < 0) return `延後 ${(-raw / 1000).toFixed(1)} 秒（已生效）`;
+    const want = `提前 ${(raw / 1000).toFixed(1)} 秒`;
+    if (state.isLive) return `${want} → 直播不支援，目前未生效`;
+    if (calibrated === null) return `${want} → 未生效：${calibNote}`;
+    return `${want}（已生效，${calibNote}）`;
+  }
+
+  /** 依目前樣本重算校準值與可信度。樣本不足或太散就把 `calibrated` 收回 null。 */
+  function recomputeCalibration() {
+    if (calibSamples.length < CALIB_MIN) {
+      calibrated = null; calibSpread = null;
+      calibNote = `校準中（${calibSamples.length}/${CALIB_MIN} 個樣本）`;
+      return;
+    }
+    const a = calibSamples.slice().sort((x, y) => x - y);
+    const q = (p) => a[Math.min(a.length - 1, Math.max(0, Math.floor(a.length * p)))];
+    const med = q(0.5);
+    const iqr = q(0.75) - q(0.25);
+    calibSpread = iqr;
+    if (!Number.isFinite(med) || !Number.isFinite(iqr) || iqr > CALIB_MAX_SPREAD_S) {
+      calibrated = null;
+      calibNote = `cue 時間軸不可用（離散 ${Number.isFinite(iqr) ? iqr.toFixed(1) : '?'}s`
+        + `，上限 ${CALIB_MAX_SPREAD_S}s）→ 只能延後`;
+      return;
+    }
+    calibrated = med;
+    calibNote = `基準 ${med.toFixed(2)}s、離散 ${iqr.toFixed(2)}s`;
   }
 
   /** DOM 出現一句時記一筆校準樣本。 */
@@ -537,14 +801,49 @@
     const cue = cueTimes.get(k);
     if (cue === undefined) return;
     const v = document.querySelector('video');
-    if (!v || !isFinite(v.currentTime)) return;
+    if (!v || !Number.isFinite(v.currentTime)) return;
 
     calibSamples.push(v.currentTime - cue);
-    if (calibSamples.length > 40) calibSamples.shift();
-    if (calibSamples.length >= CALIB_MIN) {
-      const a = calibSamples.slice().sort((x, y) => x - y);
-      calibrated = a[Math.floor(a.length / 2)];     // 中位數，抗離群值
-    }
+    if (calibSamples.length > CALIB_KEEP) calibSamples.shift();
+    recomputeCalibration();
+  }
+
+  /**
+   * 使用者改設定或換影片時，把所有時序狀態收乾淨。
+   *
+   * 不做這件事的具體後果：把「延後 3 秒」改成「提前 1 秒」的那一刻，
+   * 已經排進去的延後計時器還會在 3 秒後醒來補畫一次——那時畫面早就換句了。
+   * 它有 DOM 比對護著不會畫錯內容，但**提前與延後同時活著**這件事本身
+   * 就是不該存在的狀態，之後任何一次改動都可能踩到。
+   */
+  function cancelTimingTimers() {
+    // 佇列裡排的是「用舊偏移算出來的」顯示與收起，改了設定就全部作廢。
+    // 留著的話「延後 3 秒 → 改成提前」的那一刻，兩種模式會有一段時間同時活著。
+    for (const t of delayQueue) clearTimeout(t);
+    delayQueue.clear();
+    earlyHoldUntil = 0;
+  }
+
+  /**
+   * 換影片時把「字幕時機」歸零。字級與位置**不歸零**。
+   *
+   * 為什麼只有這一項要歸零：字級與位置是使用者對「我的螢幕」的偏好，跨影片一定成立。
+   * 字幕時機不是——它補的是**這一支影片的**字幕偏差，而那個偏差每支都不同
+   * （直播與重播的差別更大）。把上一支調好的值帶到下一支，等於預設就是錯的，
+   * 而且錯得很難察覺：使用者不會想到「我上禮拜調過」。
+   *
+   * 一定要寫回 storage 而不是只改記憶體裡的 `settings`——
+   * 否則設定頁的滑桿還停在 -1.5 秒，實際行為卻是 0，
+   * 那種「畫面說一套做一套」的狀態比功能不完整更糟。
+   */
+  function resetOffsetForNewVideo() {
+    if (clampOffset(settings.subtitleOffset) === 0) return;   // 已經是預設，別多寫一次
+    const next = Object.assign({}, settings, { subtitleOffset: 0 });
+    settings = sanitizeSettings(next);
+    // 寫回會觸發 storage.onChanged，那裡再 sanitize 一次得到同樣的值，
+    // 而且下一輪 clampOffset 已經是 0，不會再寫 → 不會遞迴。
+    try { chrome.storage.local.set({ settings }); } catch (e) { /* 分頁正在關閉，忽略 */ }
+    evInfo('已換影片，字幕時機回復預設（字級與位置保留）');
   }
 
   /**
@@ -556,8 +855,16 @@
   function tickEarlyDisplay() {
     const off = activeOffsetMs();
     if (off <= 0) return;
+    // 免費額度用完之後**這條路也要關**。
+    // handleCaption 有擋，但提前顯示不經過它——漏掉的話免費層等於形同虛設。
+    if (trialExhausted()) return;
     const v = document.querySelector('video');
-    if (!v || !isFinite(v.currentTime) || v.paused) return;
+    if (!v || !Number.isFinite(v.currentTime) || v.paused) return;
+
+    // 往回拖進度條時把「已提前顯示過」清掉，否則重看那一段完全不會提前。
+    // 只認明顯的倒退（2 秒），避免播放器微調 currentTime 就誤判。
+    if (v.currentTime < lastSeekCheck - 2) shownEarly.clear();
+    lastSeekCheck = v.currentTime;
 
     const target = v.currentTime - calibrated + off / 1000;
     // 找出「起始時間落在 [target-0.5, target] 這個窗內」且還沒顯示過的那句。
@@ -570,29 +877,96 @@
       shownEarly.add(k);
       if (shownEarly.size > 3000) shownEarly.clear();
       lastRaw = '';                 // 讓 DOM 到達時不會因為去重而漏掉狀態更新
-      render(zh, '');
+      // ⚠️ 原文要一起畫。舊版傳空字串，於是提前顯示時只有中文，
+      //    等原生字幕追上來才補英文——**畫面會在一兩秒內跳動一次**。
+      //    那個跳動看起來就像「時機怪怪的」，但成因是內容變了不是時機變了。
+      render(zh, settings.showEnglish ? (cueText.get(k) || '') : '');
+      // 提前顯示的這段期間，原生字幕還沒出現，輪詢會判定「字幕清空」而想收掉。
+      // 撐住到原生字幕預期抵達為止，多留一個寬限。上限就是 off，不會無限延長。
+      earlyHoldUntil = Date.now() + off + CLEAR_GRACE_MS;
       dbg(`提前 ${off}ms 顯示：${zh.slice(0, 30)}`);
       return;
     }
   }
 
-  /** 延後顯示。單純排程，任何情況都安全。 */
-  let delayTimer = null;
-  function renderWithOffset(zh, en) {
+  /**
+   * 延後顯示。
+   *
+   * ⚠️ **「顯示」與「收起」必須用同一個延遲，這是整個功能的關鍵。**
+   *
+   * 舊版只延後顯示，收起仍然跟著原生字幕即時走。後果是每一句的顯示時間
+   * 都被硬生生砍掉 N 毫秒：
+   *
+   *   原生字幕 0 ~ 1200ms、延後 1000ms
+   *     → 我們 1000ms 才畫出來，1200ms 原生就清空了，1550ms 收起
+   *     → 使用者看到的是**閃一下就不見**（只有 550ms）
+   *
+   *   原生字幕 0 ~ 800ms、延後 1000ms
+   *     → 排程到 1000ms 時原生早就沒了，舊版的 DOM 比對判定「畫面已換句」
+   *     → **這一句完全不顯示**
+   *
+   * 而轉播字幕每 3~4 秒換一句，延後 3 秒幾乎必然落在這兩種情況裡——
+   * 延後開得愈大，掉字幕愈嚴重。這就是「有些字幕顯示出來後馬上消失、
+   * 有時甚至完全沒顯示」的成因。
+   *
+   * 正解是把延後當成**整條時間軸的平移**：顯示、收起都進同一個佇列，
+   * 使用者看到的就是原生字幕往後挪 N 毫秒，長度完全不變。
+   *
+   * 舊版那個 DOM 比對是為了坑 #18（過時的譯文重新彈出）加的，但那個坑屬於
+   * **翻譯慢回來才補顯示**的路徑（`flushPending` 裡那段，仍然保留檢查）。
+   * 這裡的排程是在字幕出現當下、譯文已經在手上時就決定的，延遲量固定、
+   * 順序不會亂——它不是「遲到的結果」，是「刻意平移的結果」，不該套同一條規則。
+   */
+  const delayQueue = new Set();
+  const DELAY_QUEUE_MAX = 40;        // 字幕異常抖動時不要無限堆積
+
+  function enqueueDelayed(fn) {
     const off = activeOffsetMs();
-    if (off >= 0) { render(zh, en); return; }
-    clearTimeout(delayTimer);
-    delayTimer = setTimeout(() => {
-      // 排程期間畫面可能已經換句了。**一定要當場重讀 DOM 比對**——
-      // 這正是坑 #18（過時的譯文重新彈出）的成因。
-      const now = clean(collectCaption());
-      if (now && now === en) render(zh, en);
+    if (off >= 0) { fn(); return; }          // 沒開延後就照舊立刻執行
+
+    const cid = contentId;
+    const v0 = document.querySelector('video');
+    const at0 = v0 && Number.isFinite(v0.currentTime) ? v0.currentTime : null;
+    let t = null;
+    t = setTimeout(() => {
+      delayQueue.delete(t);
+      // 這段期間世界可能整個換掉了，逐項確認再動畫面。
+      if (cid !== contentId) return;                      // 換了影片
+      if (!settings.enabled || killed || tooOld) return;   // 中途被停用
+      if (at0 !== null) {
+        const v = document.querySelector('video');
+        // 拖了進度條就作廢。正常播放時 currentTime 會剛好前進 -off 毫秒，
+        // 差太多代表使用者跳走了，這句已經沒有意義。
+        if (v && Number.isFinite(v.currentTime)
+            && Math.abs(v.currentTime - (at0 + (-off) / 1000)) > 3) return;
+      }
+      fn();
     }, -off);
+    delayQueue.add(t);
+
+    if (delayQueue.size > DELAY_QUEUE_MAX) {
+      const oldest = delayQueue.values().next().value;
+      clearTimeout(oldest);
+      delayQueue.delete(oldest);
+    }
+  }
+
+  function renderWithOffset(zh, en) {
+    earlyHoldUntil = 0;              // 原生字幕已經到了，不需要再撐
+    enqueueDelayed(() => render(zh, en));
   }
 
   function handleCaption(raw) {
     const text = clean(raw);
     if (!text || text.length < 2 || text === lastRaw) return;
+    // DOM 路徑同樣要擋。字幕容器若被 F1TV 拿去放別的東西（實測見過整段
+    // 節目介紹），送出去只會讓整批被後端退回。
+    if (text.length > MAX_LINE_LEN) {
+      lastRaw = text;
+      state.badLines = (state.badLines || 0) + 1;
+      dbg(`略過異常長度的字幕（${text.length} 字元）`);
+      return;
+    }
     lastRaw = text;
     currentEn = text;
 
@@ -663,7 +1037,13 @@
   function scheduleFlush() {
     if (pendingTimer) return;
     if (harvestInFlight && pending.size < BATCH_MAX) return;   // 等湊滿
-    pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS);
+    // ⚠️ **直播要加抖動。** 直播時所有觀眾在同一秒看到同一批新分段，
+    //    不加抖動的話大家會在同一個毫秒送出同一批句子，伺服器端的認領
+    //    機制只能擋掉一部分（認領本身也需要時間）。
+    //    0~1.2 秒的隨機延遲把尖峰攤平，代價是直播字幕最多晚 1.2 秒——
+    //    而 worker 的提前量有 50 秒，這點延遲完全吸收得掉。
+    const jitter = state.isLive ? Math.floor(Math.random() * 1200) : 0;
+    pendingTimer = setTimeout(flushPending, PENDING_FLUSH_MS + jitter);
   }
 
   /** 收割結束時把佇列倒乾淨——不然最後不滿一批的句子會卡住 */
@@ -677,6 +1057,10 @@
   async function flushPending() {
     pendingTimer = null;
     if (!pending.size) return;
+    // 最後一道。佇列可能是額度用完**之前**排進來的，送出去仍然要花錢。
+    // 三道防線（ingestVtt／handleCaption／這裡）刻意重複——
+    // 每一條進入佇列的路都要各自擋，只擋入口會漏掉未來新增的路徑。
+    if (trialExhausted()) { pending.clear(); return; }
     if (inflight >= MAX_INFLIGHT) { scheduleFlush(); return; }
 
     const keys = Array.from(pending.keys()).slice(0, BATCH_MAX);
@@ -688,7 +1072,11 @@
     dbg(`送出批次 ${batch.length} 句（佇列剩 ${pending.size}，飛行中 ${inflight}/${MAX_INFLIGHT}）`);
     batch.forEach((t, i) => dbg(`  ${i + 1}. ${t.slice(0, 70)}`));
     try {
-      const res = await send({ type: 'translate', cid: contentId, lines: batch });
+      // 整批只要有一句是急件就整批算急件。分開送會讓批次變小、呼叫次數變多，
+      // 而批次大小直接決定成本（實測 14.3 句/批 vs 4.8 句/批＝三倍的呼叫）。
+      const isUrgent = keys.some((k) => urgentKeys.has(k));
+      keys.forEach((k) => urgentKeys.delete(k));
+      const res = await send({ type: 'translate', cid: contentId, lines: batch, urgent: isUrgent });
       const lines = (res.ok && res.result && res.result.lines) || {};
       let n = 0;
       for (const [k, zh] of Object.entries(lines)) { remember(k, zh); n++; }
@@ -699,6 +1087,22 @@
       dbg(`批次回應：送 ${batch.length} / 回 ${n} 句，耗時 ${ms}ms`
         + (n < batch.length ? `　⚠ 少了 ${batch.length - n} 句` : ''));
       for (const [k, zh] of Object.entries(lines)) dbg(`  → ${zh.slice(0, 40)}`);
+      // 直播時別人正在翻同一批句子（伺服器端的認領機制）。
+      // **不是錯誤**，把這些句子排回佇列，過幾秒再讀一次就會從共用快取拿到。
+      // 沒有這段的話，讓路的那些句子會被 `requested` 標記成「已送出」而永遠不再要，
+      // 於是直播時只有第一個到的人看得到字幕——安靜地壞掉。
+      const elsewhere = res.ok && res.result && res.result.pendingElsewhere;
+      if (elsewhere) {
+        const back = keys.filter((k) => !lines[k]);
+        back.forEach((k) => { requested.delete(k); });
+        dbg(`${back.length} 句由其他觀眾翻譯中，稍後從共用快取取得`);
+        setTimeout(() => {
+          // 排回去之前先確認還沒被別人補上，避免無意義的重送
+          back.forEach((k) => { if (!memo.has(k) && batch.length) pending.set(k, batch[keys.indexOf(k)] || ''); });
+          for (const [k, v] of pending) if (!v) pending.delete(k);
+          if (pending.size) scheduleFlush();
+        }, Number(res.result.retryAfterMs) || 3000);
+      }
       if (res.ok && res.result && res.result.error) {
         state.errors++;
         // logEvent 只吃一個參數，第二個會被靜默丟掉——實測就這樣印出
@@ -833,13 +1237,37 @@
    * 350ms 寬限是因為換句之間 F1TV 會有極短的空窗，立刻收掉會閃爍。
    */
   const CLEAR_GRACE_MS = 350;
+
+  /**
+   * 字幕停留上限。**固定值，不開放調整。**
+   *
+   * 它曾經是設定頁上的滑桿，但那是個會誤導人的旋鈕：自從「跟著原生字幕一起收掉」
+   * 之後，正常播放時這個計時器**永遠不會被觸發**——調它不會有任何可見效果。
+   * 使用者覺得字幕不同步時會去拉它，拉完沒變，於是以為整個功能壞了。
+   *
+   * 真正會用到它的只有一種情況：輪詢停擺（分頁被瀏覽器節流），那時原生字幕
+   * 清空的事件我們收不到，只剩這個計時器把疊字收掉。既然是安全網，
+   * 就該由我們決定長度，7 秒足以涵蓋任何一句正常的轉播字幕。
+   */
+  const HOLD_MS = 7000;
+
   let clearTimer = null;
   function scheduleHide() {
     clearTimeout(clearTimer);
+    // 提前顯示期間原生字幕本來就還沒出現，這時的「清空」不是真的結束。
+    // 沒有這個保護，提前顯示的句子會在 350ms 後被自己的輪詢收掉——
+    // 表現出來是「開了提前之後字幕一閃就不見」。
+    // ⚠️ 一定要先確認是有限數。`Math.max(350, Math.min(NaN, 7000))` 會得到 NaN，
+    //    而 `setTimeout(fn, NaN)` 被當成 0 —— 疊字會在下一個 tick 立刻消失。
+    //    那是「調一調就壞掉」裡最難查的一種：沒有錯誤訊息，只是字幕一閃而過。
+    const remain = earlyHoldUntil - Date.now();
+    const wait = Number.isFinite(remain)
+      ? Math.max(CLEAR_GRACE_MS, Math.min(remain, HOLD_MS))
+      : CLEAR_GRACE_MS;
     clearTimer = setTimeout(() => {
       box.classList.remove('on');
       dbg('原生字幕已清空，收起疊字');
-    }, CLEAR_GRACE_MS);
+    }, wait);
   }
 
   function show(zhText, enText, isPending) {
@@ -851,7 +1279,7 @@
     enEl.textContent = enText || '';
     box.classList.add('on');
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => box.classList.remove('on'), settings.holdMs);
+    hideTimer = setTimeout(() => box.classList.remove('on'), HOLD_MS);
   }
 
   function render(zh, en) { show(zh, en, false); }
@@ -878,9 +1306,44 @@
   //
   // 重播：一次抓完整支。直播：滑動視窗，定期重抓補新分段。
   // =========================================================================
-  const FETCH_CONCURRENCY = 3;
-  const FETCH_GAP_MS = 60;
+  // ⚠️ **收割必須讓路給影片。** 這是使用者實測回報的問題：
+  //    開著擴充功能時影片一直卡頓、自動降解析度，關掉就正常。
+  //
+  //    成因很直接——整軌預抓要抓 1,020 個 VTT 分段，而那些分段跟影片來自
+  //    **同一個 CDN 主機**。HTTP/2 之下它們共用同一條連線，我們每秒打十幾個
+  //    請求就是在跟影片分段搶頻寬與 stream 優先權。播放器的 ABR 演算法量到
+  //    吞吐量下降，就會做它該做的事：**降解析度**。
+  //    我們拿到的字幕是 40 分鐘後才要用的，影片是現在就要看的——
+  //    優先權完全相反。
+  //
+  //    三道退讓，缺一不可：
+  //      1. `priority: 'low'`（在 sw.js）——直接告訴瀏覽器這些請求排後面
+  //      2. 並發從 3 降到 1、間隔拉長
+  //      3. 播放器缺資料時**主動暫停收割**（見 `playbackHealthy`）
+  // 節奏調整（v0.18.1）：上一版為了修卡頓把並發壓到 1、間隔 120ms，
+  // 1,203 段最快也要四分半。現在退讓機制已經是**自適應**的
+  // （priority:'low' + 依緩衝存量減速 + 真卡住才暫停），
+  // 可以把健康時的節奏放回來，卡頓時仍然會自動退到 800ms 單線。
+  const FETCH_CONCURRENCY = 2;
+  const FETCH_GAP_MS = 40;
   const LIVE_REFRESH_MS = 20000;
+
+  // ⚠️ **退讓要「減速」不能「停住」。** 上一版寫成硬性閘門：緩衝低於 8 秒就
+  //    整個停下來等，最多等 30 秒。實測診斷（v0.17.0）打臉：
+  //      分段：清單 1203 / 已抓 4　　讓路給影片：2 次，共 30.2 秒
+  //    57 秒的觀看裡有 30 秒在等，只抓到 4 段——照這個速度 1,203 段要四小時，
+  //    等於**整軌預抓實質上不會完成**。收割不完就沒有人把譯文灌滿共用快取，
+  //    下一位觀眾要從頭付費翻譯，成本反而比卡頓那版更糟。
+  //
+  //    修一個問題製造另一個問題，是因為我把「讓路」做成二元的。
+  //    改成三段，任何時候都還在前進：
+  //      健康        正常速度
+  //      緩衝偏低    放慢到 SLOW（不停）
+  //      真的在等資料（readyState < 3）  才短暫暫停，且上限只有 5 秒
+  const YIELD_BUFFER_SEC = 8;        // 低於這個秒數就放慢
+  const FETCH_GAP_SLOW_MS = 800;     // 放慢時的間隔
+  const YIELD_POLL_MS = 250;
+  const YIELD_MAX_MS = 5000;         // 真的卡住時最多暫停這麼久
 
   let harvestGen = 0;
   let harvestInFlight = false;
@@ -1133,7 +1596,25 @@
       if (state.hits + state.misses > before) return;    // 這 30 秒有抓到字幕，正常
       if (collectCaption()) return;                      // 此刻畫面上有字幕，正常
 
-      evErr(`⚠ 套用設定 v${configVersion} 後 30 秒都抓不到字幕，自動退回 v${prevVersion}`);
+      // ⚠️ **兩個誤判防線，都是實際遇到才補的。**
+      //
+      // 1. 版本沒變就沒有東西可以退。使用者實際看到過
+      //    「套用設定 v1 後 30 秒都抓不到字幕，自動退回 v1」——
+      //    退回自己是個 no-op，但那行紅字看起來像出了大事。
+      if (prevVersion === configVersion) {
+        dbg('自我檢查：30 秒沒有字幕，但設定版本沒變，沒有可退回的版本');
+        return;
+      }
+      // 2. **「沒有字幕」不等於「選擇器壞了」。** 賽後訪問、頒獎、純畫面
+      //    很容易連續 30 秒沒有任何旁白，那時原生字幕本來就是空的。
+      //    選擇器真的失效時的樣子是**容器整個找不到**，而不是容器在、內容空。
+      //    只看「抓不到文字」會把安靜的片段誤判成推壞設定，然後把好的設定退掉。
+      if (captionContainers().length > 0) {
+        dbg('自我檢查：30 秒沒有字幕，但字幕容器存在 → 判定為無旁白片段，不退回設定');
+        return;
+      }
+
+      evErr(`⚠ 套用設定 v${configVersion} 後 30 秒找不到字幕容器，自動退回 v${prevVersion}`);
       site = prevSite;
       configVersion = prevVersion;
       observedNodes = new Set();
@@ -1189,22 +1670,51 @@
     }, false);
   }
 
+  /**
+   * 一句字幕的長度上限。**必須與後端的 `MAX_LINE_LEN` 一致。**
+   *
+   * 後端超過就整批退回（「單句長度不可超過 1000 字元」），所以送出去之前
+   * 就該擋掉——讓後端替我們做輸入驗證，代價是整批句子一起被丟掉。
+   *
+   * 實際發生過：worker 攔到的媒體分段被硬解成文字，其中湊出了 "-->"，
+   * `parseVtt` 於是產出一句幾萬字元的「字幕」。根因已在 inject.js 修掉
+   * （不再碰媒體分段），這裡是第二道防線——真正的口語句子不會超過 200 字元，
+   * 超過 1000 的一定不是字幕。
+   */
+  const MAX_LINE_LEN = 1000;
+
   function ingestVtt(text) {
+    // 免費額度用完就不再排任何翻譯。
+    // ⚠️ 這條路**不經過 `handleCaption`**，那裡的 `trialExhausted()` 擋不到它——
+    //    漏掉的話免費使用者看不到字幕，我們卻還在替他翻譯後面的內容。
+    if (trialExhausted()) return 0;
     let added = 0;
+    let dropped = 0;
     for (const cue of parseVtt(text)) {
       const t = clean(cue.text);
       if (!t || t.length < 2) continue;
+      if (t.length > MAX_LINE_LEN) { dropped++; continue; }
       const k = normKey(t);
       if (!k || prefetchSeen.has(k)) continue;
       prefetchSeen.add(k);
       // 已有譯文也要登記——那句確實出現在這支影片的 VTT 裡（坑 #16）
       sessionKeys.add(k);
       // 時間軸留給「提前顯示」用。上限與 memo 同級，避免無界成長。
-      if (cue.start !== null && cueTimes.size < 20000) cueTimes.set(k, cue.start);
+      // 原文也要留：提前顯示時要跟中文一起畫出來，否則英文會晚一兩秒才跳進來。
+      if (cue.start !== null && cueTimes.size < CUE_MAX) {
+        cueTimes.set(k, cue.start);
+        cueText.set(k, t);
+      }
       if (memo.has(k)) continue;          // 共用快取已有，不用再翻
       if (pending.size >= PENDING_MAX) continue;   // 佇列爆了就先不收，下輪再說
       pending.set(k, t);
       added++;
+    }
+    if (dropped) {
+      // 出現就代表有東西不對勁，要看得到。正常的 VTT 一句都不會被丟。
+      state.badLines = (state.badLines || 0) + dropped;
+      evWarn(`已略過 ${dropped} 句異常長度的字幕（超過 ${MAX_LINE_LEN} 字元），`
+        + '通常代表攔到的不是字幕檔');
     }
     if (added) scheduleFlush();
     return added;
@@ -1217,7 +1727,7 @@
    * 播放器已經被拆掉了，收割卻繼續跑完上千個請求。
    * 以「video 元素消失超過 5 秒」為訊號——5 秒是為了避開播放器重建時的短暫消失。
    */
-  let videoMissingSince = 0;
+
   function harvestShouldStop(myGen) {
     if (myGen !== harvestGen) return '影片切換';
 
@@ -1230,11 +1740,71 @@
     // 收割的唯一終止條件是**使用者真的離開了這支影片**。而「離開」不能只看網址：
     // 點播放器左上角的返回鍵時網址完全不變，播放器卻已經被拆掉（坑 #15）。
     // 所以用 video 元素消失超過 5 秒當訊號（5 秒是為了避開播放器重建的短暫消失）。
+    // 與顯示端共用同一份判斷（playerGone），兩邊定義不一致會非常難查
+    return playerGone() ? '播放器已關閉' : null;
+  }
+
+  /**
+   * 播放器現在有沒有餘裕讓我們抓東西。
+   *
+   * 判斷依據是**緩衝存量**，不是「有沒有在播」。等到 `waiting` 事件才讓路已經太晚——
+   * 那時畫面已經停住，而且 ABR 早就降過一次畫質了。緩衝掉到 8 秒就先退開。
+   *
+   * 暫停時回 true：那時頻寬是空的，正是收割的好時機。
+   */
+  /** 播放器前方還緩衝了幾秒。取不到回 null（不代表有問題）。 */
+  function bufferAheadSec() {
     const v = document.querySelector('video');
-    if (v) { videoMissingSince = 0; return null; }
-    if (!videoMissingSince) { videoMissingSince = Date.now(); return null; }
-    if (Date.now() - videoMissingSince > 5000) return '播放器已關閉';
-    return null;
+    if (!v || !Number.isFinite(v.currentTime)) return null;
+    try {
+      const b = v.buffered;
+      if (!b || !b.length) return null;
+      // 找出涵蓋目前播放位置的那一段，不能直接取最後一段——
+      // 拖過進度條之後 buffered 會有好幾段，最後一段可能離現在很遠。
+      for (let i = 0; i < b.length; i++) {
+        if (v.currentTime >= b.start(i) - 0.5 && v.currentTime <= b.end(i)) {
+          return b.end(i) - v.currentTime;
+        }
+      }
+      return 0;                        // 目前位置根本沒被緩衝到 = 正在等
+    } catch (e) { return null; }
+  }
+
+  /**
+   * 現在該用什麼節奏抓。回傳要等的毫秒數。
+   *
+   * `'stall'` 代表播放器真的在等資料，那時完全不要跟它搶。
+   */
+  function fetchPace() {
+    const v = document.querySelector('video');
+    if (!v) return FETCH_GAP_MS;                 // 沒有影片就沒有要讓的對象
+    if (v.paused || v.ended) return FETCH_GAP_MS; // 沒在播，頻寬讓給我們
+    if (v.readyState < 3) return 'stall';         // HAVE_FUTURE_DATA 以下＝正在等資料
+    const ahead = bufferAheadSec();
+    if (ahead !== null && ahead < YIELD_BUFFER_SEC) return FETCH_GAP_SLOW_MS;
+    return FETCH_GAP_MS;
+  }
+
+  /**
+   * 依播放狀況調整節奏，回傳這一輪該等多久。
+   *
+   * 只有「真的在等資料」才會暫停，而且上限 5 秒——**必須保證一直有進度**，
+   * 因為收割不完等於沒有人把譯文灌進共用快取。
+   */
+  async function paceForPlayback(myGen) {
+    let pace = fetchPace();
+    if (pace !== 'stall') return pace;
+
+    const t0 = Date.now();
+    state.yieldCount++;
+    while (fetchPace() === 'stall') {
+      if (myGen !== harvestGen) return FETCH_GAP_MS;      // 換影片了
+      if (Date.now() - t0 > YIELD_MAX_MS) break;
+      await new Promise((r) => setTimeout(r, YIELD_POLL_MS));
+    }
+    state.yieldMs += Date.now() - t0;
+    // 剛從卡住恢復，先用慢速走一段，不要立刻又搶滿
+    return FETCH_GAP_SLOW_MS;
   }
 
   async function fetchSegments(list, myGen) {
@@ -1243,6 +1813,10 @@
       while (idx < list.length) {
         const stop = harvestShouldStop(myGen);
         if (stop) { stopReason = stop; return; }
+        // 每抓一段之前都確認一次。整軌預抓會持續好幾分鐘，
+        // 播放狀況在那段期間會變——只在開頭判斷一次沒有意義。
+        const gap = await paceForPlayback(myGen);
+        if (myGen !== harvestGen) return;
         const s = list[idx++];
         if (seenSegments.has(s.url)) continue;
         seenSegments.add(s.url);
@@ -1256,7 +1830,8 @@
           lastPct = pct;
           evInfo(`預抓進度 ${pct}%（${state.segFetched}/${list.length} 段，待翻 ${pending.size} 句）`);
         }
-        if (FETCH_GAP_MS) await new Promise((r) => setTimeout(r, FETCH_GAP_MS));
+        // 用這一輪算出來的節奏，不是固定值——緩衝偏低時會自動變慢
+        if (gap) await new Promise((r) => setTimeout(r, gap));
       }
     };
     await Promise.all(new Array(FETCH_CONCURRENCY).fill(0).map(worker));
@@ -1288,7 +1863,8 @@
   function markComplete(cid, segCount, myGen) {
     setTimeout(async () => {
       if (myGen !== harvestGen || cid !== contentId) return;
-      const res = await send({ type: 'markComplete', cid, segCount });
+      // 帶上網址後綴，後台才分得出這是哪一場的哪個場次
+      const res = await send({ type: 'markComplete', cid, segCount, slug: location.pathname });
       const r = (res.ok && res.result) || {};
       if (r.ok) {
         evOk(`✅ 已標記完整收割（${segCount} 段 / 後端 ${r.lineCount || '?'} 句）`
@@ -1354,6 +1930,29 @@
    */
   async function startPrefetch(cid, attempt, force) {
     if (!cid) return;
+
+    // ⚠️ **花錢之前先確認身分。**
+    //
+    // 整軌預抓會把整支影片（這裡是 1,203 段、上千句）送去翻譯。對已付費的人
+    // 那是正確的：他要看完整場，而且順便把譯文灌滿共用快取讓所有人受惠。
+    // 但對免費使用者，他**最多只看得到 15 分鐘**，卻讓我們付了整場的翻譯費。
+    //
+    // 更糟的是它可以被反覆觸發：進一支沒人翻過的影片、等收割開始、立刻退出、
+    // 換下一支——每一輪都在燒錢。伺服器端每日 800 句的上限擋得住金額，
+    // 但擋不住「免費使用者的成本結構本身就是錯的」。
+    //
+    // 免費模式改成只用 **worker 攔到的分段**（前瞻預譯）：那是播放器自己會下載的
+    // 東西，我們搭便車、零額外請求，提前量約 50 秒，足夠涵蓋他看得到的 15 分鐘。
+    // 整軌預抓留給付費使用者。
+    //
+    // `force` 是測試指令用的，會繞過這個判斷（上線前那段測試工具要整段移除）。
+    if (!licensed && !force) {
+      evInfo('免費模式：略過整軌預抓，改用播放器自己下載的字幕分段（提前量約 50 秒）。'
+        + '購買授權後會自動改用整軌預抓，拖動進度條也不會漏字幕。');
+      setPhase('前瞻預譯中');
+      return;
+    }
+
     const myGen = harvestGen;
 
     // 上一支影片的收割可能還在收尾（等待階段最長 45 秒，切換影片時要等它讀到
@@ -1480,7 +2079,7 @@
     for (const [k, zh] of Object.entries(b.lines || {})) { if (!memo.has(k)) { remember(k, zh); n++; } }
     state.bundleCount = n;
 
-    if (n) { evOk(`☁ 從共用快取取得 ${n} 句譯文（cid ${cid}），這些不會再花錢`); return; }
+    if (n) { evOk(`☁ 已從共用譯文庫取得 ${n} 句（cid ${cid}），本片無須重新翻譯`); return; }
 
     if (b.error) {
       bundleAttempts++;
@@ -1519,14 +2118,22 @@
     //    整支翻錯還不會報錯——就是坑 #16 那種靜默污染。
     manifests = [];
     sessionKeys = new Set();
-    cueTimes.clear(); calibSamples.length = 0; calibrated = null; shownEarly.clear();
+    cueTimes.clear(); cueText.clear();
+    calibSamples.length = 0; calibrated = null; calibSpread = null;
+    calibNote = '尚未取得樣本';
+    shownEarly.clear(); lastSeekCheck = 0;
+    cancelTimingTimers();
+    resetOffsetForNewVideo();
     // 每支影片各自判定免費資格
     freeSession = self.PL.isFreeSession(location.pathname, freeTierCfg);
     freeSpent = 0; lastTickAt = 0; trialEndedShown = false;
+    loadFreeUsage(cid);   // 這支之前用掉的額度要接回來，開新分頁不會重置
     bundleSegCount = 0;
     state.manifests = 0;
     state.harvestSkipped = false;
     state.dropped = 0;
+    state.badLines = 0; state.gaps = 0; state.lastGap = null;
+    state.yieldCount = 0; state.yieldMs = 0;
     state.serverCount = -1;
     state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
     state.isLive = false; state.harvestDone = false;
@@ -1633,6 +2240,9 @@
     if (changes.settings) {
       settings = sanitizeSettings(changes.settings.newValue);
       debugOn = !!settings.debug;
+      // 時機一改，之前排好的延後計時器就作廢——它是用**舊的**偏移排的。
+      // 不清的話「延後 3 秒 → 改成提前」的那一刻，兩種模式會有一小段重疊。
+      cancelTimingTimers();
       applyHideNative();
       reposition();
       if (!settings.enabled) box.classList.remove('on');
@@ -1714,6 +2324,13 @@
     // 那才是坑 #3 真正要防的事，不需要完整權杖也能判斷。
     L.push(`字幕清單　：${maskUrl(subtitlePlaylistUrl)}`);
     L.push(`分段　　　：清單 ${state.playlistSegs} / 已抓 ${state.segFetched}（失敗 ${state.segFailed}）`);
+    // 收割與影片搶同一個 CDN 的頻寬。這兩個數字是「我們有沒有乖乖讓路」的證據——
+    // 使用者回報畫質下降時先看這裡，全 0 代表根本沒讓過。
+    const ahead = bufferAheadSec();
+    L.push(`讓路給影片：暫停 ${state.yieldCount} 次共 ${(state.yieldMs / 1000).toFixed(1)} 秒`
+      + `　目前節奏 ${fetchPace() === 'stall' ? '暫停（播放器正在等資料）' : fetchPace() + 'ms'}`);
+    L.push(`播放器緩衝：${ahead === null ? '(取不到)' : ahead.toFixed(1) + ' 秒'}`
+      + `　放慢門檻 ${YIELD_BUFFER_SEC}s、正常 ${FETCH_GAP_MS}ms／放慢 ${FETCH_GAP_SLOW_MS}ms、並發 ${FETCH_CONCURRENCY}`);
     L.push(`收割完成　：${state.harvestDone}　進行中：${harvestInFlight}　世代 ${harvestGen}`);
     L.push(`後端完整度：記錄 ${bundleSegCount} 段` + (state.harvestSkipped ? '　→ 本次已跳過整軌預抓' : (bundleSegCount ? '' : '（尚無人完整收割過）')));
     L.push('');
@@ -1735,6 +2352,23 @@
     L.push(`到上畫面　：${stat(detect.paintMs)}　← 這個才是使用者看到的`);
     L.push('※ 「JS 耗時」只到函式返回，不含版面計算與繪製。要跟 userscript 比就比「到上畫面」。');
     L.push('');
+    L.push('──── 字幕時機微調 ────');
+    // 「設定值」與「實際生效」一定要分兩行印。
+    // 只印一個數字的話，使用者設了提前 1.5 秒但條件不成立時，
+    // 報告看起來完全正常，我們也查不出他為什麼覺得沒效。
+    L.push(`設定值　　：${clampOffset(settings.subtitleOffset)} ms`
+      + `（上限：延後 ${OFFSET_LATE_MAX_MS} / 提前 ${OFFSET_EARLY_MAX_MS}）`);
+    L.push(`實際生效　：${activeOffsetMs()} ms　→ ${offsetStatusText()}`);
+    L.push(`校準　　　：${calibNote}`
+      + `　樣本 ${calibSamples.length}/${CALIB_MIN}`
+      + `　離散 ${calibSpread === null ? '-' : calibSpread.toFixed(2) + 's'}`
+      + `（上限 ${CALIB_MAX_SPREAD_S}s）`);
+    L.push(`cue 時間軸：${cueTimes.size} 句有時間`
+      + `　已提前顯示 ${shownEarly.size} 句`);
+    L.push(`延後佇列　：${delayQueue.size} 筆待執行（上限 ${DELAY_QUEUE_MAX}）`
+      + '　※ 顯示與收起都在裡面，只延後其中一邊會讓字幕閃一下就消失');
+    L.push(`停留上限　：${HOLD_MS} ms（固定值，不開放調整）`);
+    L.push('');
     L.push('──── 翻譯 ────');
     L.push(`共用快取取得：${state.bundleCount} 句`);
     L.push(`後端回寫查核：${state.serverCount < 0 ? '(尚未查核)' : state.serverCount + ' 句在後端'}`);
@@ -1749,6 +2383,18 @@
     L.push(`命中 / 未命中：${state.hits} / ${state.misses}`);
     L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}　`
       + `放棄 ${state.dropped} 句${state.dropped ? '（已重試 3 次）' : ''}`);
+    // 不是 0 就代表「攔到的東西不是字幕」。曾經因為 worker 把媒體分段
+    // 硬解成文字、其中湊出 "-->"，而送出幾萬字元的假字幕給後端。
+    // 中途缺漏。**這是「看比賽時字幕突然消失一段」的唯一線索**——
+    // 舊版看過一次字幕之後就再也不警告，那種缺漏完全是隱形的。
+    L.push(`中途缺漏　：${state.gaps || 0} 次`
+      + (state.lastGap
+        ? `　最近一次：${state.lastGap.kind} / ${state.lastGap.sec} 秒 / ${state.lastGap.at}`
+        : '（無）')
+      + `　※ kind：untranslated=無譯文、render=有譯文卻沒畫、`
+      + `container_gone=找不到字幕容器、silent=本來就沒旁白（正常）`);
+    L.push(`長度異常略過：${state.badLines || 0} 句`
+      + (state.badLines ? `　⚠ 不該大於 0，代表攔截層抓到了不是字幕的東西` : ''));
     L.push(`待送出　　：${pending.size} 句　飛行中 ${inflight} 個請求（上限 ${MAX_INFLIGHT}）`);
     L.push('');
     L.push('──── 設定 ────');
@@ -1762,7 +2408,11 @@
       + `　場次${freeSession ? '在' : '不在'}免費範圍`
       + (licensed ? '' : `　剩餘 ${Math.round(freeSecondsLeft())} 秒`)
       + `　免費層 ${(freeTierCfg && freeTierCfg.seconds) || '?'} 秒`
-      + `（${freeTierCfg === self.PL.BUILT_IN_CONFIG.freeTier ? '內建' : '遠端'}）`);
+      + `（${freeTierCfg === self.PL.BUILT_IN_CONFIG.freeTier ? '內建' : '遠端'}）`
+      + `　計時方式：${state.isLive ? '直播＝累計實際觀看秒數（暫停不計）' : '重播＝以播放位置判定前 N 分鐘'}`);
+    if (!licensed) {
+      L.push('　　※ 免費模式不執行整軌預抓，只用播放器自己下載的分段（前瞻預譯）');
+    }
     L.push(`遠端狀態：${killed ? '⛔ killSwitch 已啟用' : '正常'}`
       + `${tooOld ? '　⛔ 版本過舊，已停止翻譯' : ''}`);
     L.push('');
@@ -1783,12 +2433,36 @@
           everSawCaption, memo: memo.size, contentId,
           harvestSkipped: state.harvestSkipped,
           killed, tooOld, phase,
+          // 免費額度要讓使用者看得到，不能只寫在診斷報告裡。
+          // 「還剩多久」是他決定要不要買的唯一依據。
+          licensed,
+          freeSession,
+          freeLeft: licensed ? null : Math.round(freeSecondsLeft()),
+          freeTotal: (freeTierCfg && freeTierCfg.seconds) || 900,
+          playing: isActuallyPlaying(),
         },
       });
       return true;
     }
     if (msg && msg.type === 'collectDiagnostics') {
       sendResponse({ ok: true, report: buildDiagnostics() });
+      return true;
+    }
+    // 設定頁要能回答「我拉的這個時機，現在真的生效了嗎」。
+    // 沒有這條路的話，提前顯示的所有前置條件（重播、校準通過）都是黑箱。
+    if (msg && msg.type === 'timingStatus') {
+      sendResponse({
+        ok: true,
+        timing: {
+          text: offsetStatusText(),
+          set: clampOffset(settings.subtitleOffset),
+          active: activeOffsetMs(),
+          isLive: !!state.isLive,
+          samples: calibSamples.length,
+          spread: calibSpread,
+          note: calibNote,
+        },
+      });
       return true;
     }
     // 選項頁按「立即重新載入設定」時會打這個，不用等下一次輪詢

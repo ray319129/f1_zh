@@ -56,15 +56,37 @@
   .mbar { flex: 1; height: 8px; background: rgba(128,128,128,.15); border-radius: 4px; overflow: hidden; }
   .mbar i { display: block; height: 100%; background: #e10600; }
   .mv { width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
+  .st-paid { color: #0a7; font-weight: 600; }
+  .st-awaiting { color: #b8730a; }
+  .st-created { opacity: .6; }
+  .st-failed { color: #d33; }
+  .clickrow { cursor: pointer; }
+  .dk { opacity: .7; width: 110px; }
+  .secHead { margin: 14px 0 4px; font-size: 14px; }
+  .clickrow:hover { background: rgba(128,128,128,.12); }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; margin-left: 6px; }
+  .tab .badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 6px;
+                border-radius: 999px; background: #d33; color: #fff; font-size: 11px; font-weight: 700; }
+  /* 通知橫幅。**固定在畫面上、不隨捲動跑掉**——後台在手機上多半只看得到一小塊，
+     出現在頁面某處的提示等於沒有提示。 */
+  #toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 20px; z-index: 99;
+           background: #0a7c4a; color: #fff; padding: 12px 18px; border-radius: 10px;
+           box-shadow: 0 6px 24px rgba(0,0,0,.28); font-size: 14px; max-width: 90vw; cursor: pointer; }
+  @media (max-width: 640px) {
+    body { padding: 14px; }
+    .tabs { overflow-x: auto; }
+    .ops button, .ops select { margin-bottom: 3px; }
+    table { font-size: 13px; }
+  }
   .full { background: rgba(128,128,128,.1); padding: 12px; border-radius: 8px;
           max-height: 460px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin-top: 14px; }
 </style>
 
 <h1>PitLingo 成本後台</h1>
-<div class="sub">資料來自 <code>GET /v1/admin/stats</code>。權杖只留在這個分頁，不會被儲存。</div>
+<div class="sub">資料來自 <code>GET /v1/admin/stats</code>。權杖只留在這個分頁，不會被儲存。<br>⚠️ 這一頁託管在公開網址（跨裝置需要），<b>唯一的門是 ADMIN_TOKEN</b>——請務必用強權杖，並考慮加一層 Cloudflare Access。</div>
 
 <div class="bar">
-  <input id="base" size="42" value="https://f1zh-api.pitlingo.workers.dev" placeholder="後端網址">
+  <input id="base" size="42" value="https://api.pitlingo.com" placeholder="後端網址">
   <input id="tok" type="password" size="30" placeholder="ADMIN_TOKEN">
   <select id="days"><option value="7">近 7 天</option><option value="14">近 14 天</option><option value="31">近 31 天</option></select>
   <button id="go">查詢</button>
@@ -72,25 +94,65 @@
 
 <div class="tabs">
   <button class="tab on" data-t="cost">成本</button>
+  <button class="tab" data-t="ord">訂單<span id="ordBadge" class="badge" hidden></span></button>
   <button class="tab" data-t="lic">授權管理</button>
   <button class="tab" data-t="rep">問題回報</button>
   <button class="tab" data-t="met">產品數據</button>
+  <button class="tab" data-t="bun">翻譯清單</button>
+  <button class="tab" data-t="ops">營運設定</button>
 </div>
 
 <div id="err"></div>
+<div id="toast" hidden></div>
 
 <section id="p-cost">
   <div id="cards" class="cards"></div>
   <div id="out"></div>
 </section>
 
+<section id="p-ord" hidden>
+  <div class="panel">
+    <h3>訂單</h3>
+    <p class="hint">
+      <b>訂單在按下結帳的當下就建立</b>，不是付款成功才建立——所以這裡看得到
+      「有人結帳卻沒付成功」。那些訂單以前完全不留痕跡，使用者回報付款失敗時查無此人。<br>
+      <b>未完成付款</b>＝導去綠界後沒有下文（關掉視窗、放棄）。
+      <b>已取號</b>＝ATM／超商拿到繳費代碼，錢還沒進來，常常隔天才繳，不要當成流失。
+      <b>已付款</b>＝綠界的伺服器對伺服器通知確認收款、授權碼已發。<br>
+      ⚠️ 這裡<b>沒有</b>「手動標記為已付款」——那等於在後台開一個發碼後門。要補償請用「授權管理 → 發放授權碼 → 客服補償」。
+    </p>
+    <div class="bar">
+      <input id="or-q" size="26" placeholder="搜尋訂單編號 / email / 商品">
+      <select id="or-status">
+        <option value="all">全部狀態</option>
+        <option value="paid">已付款</option>
+        <option value="awaiting">已取號待繳費</option>
+        <option value="created">未完成付款</option>
+        <option value="failed">付款失敗</option>
+      </select>
+      <button id="or-go">重新整理</button>
+      <button id="or-notify" class="secondary">開啟新訂單通知</button>
+    </div>
+    <div id="or-cards" class="cards"></div>
+    <div id="or-out"></div>
+  </div>
+
+  <div class="panel" id="or-detailWrap" hidden>
+    <h3>訂單明細　<span id="or-dno" class="mono"></span></h3>
+    <div id="or-detail"></div>
+  </div>
+</section>
+
 <section id="p-lic" hidden>
   <div class="panel">
     <h3>發放授權碼</h3>
-    <p class="hint">期限由伺服器依方案自動計算，一律到隔年 <b>1/31</b>（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）。客服補償為 30 天。<br>GP Trial 是免費層，<b>不需要授權碼</b>——四種正式場次的前 15 分鐘自動生效。</p>
+    <p class="hint"><b>方案與價格由伺服器提供，不寫在這一頁裡。</b>寫死過一次，
+      結果定價改成「上半季 599／下半季 299／一週 39」之後，後台還在發早鳥碼——
+      發出去的東西與網站上賣的是兩套，而且完全不會報錯。<br>
+      期限由伺服器依方案自動計算，一律到隔年 <b>1/31</b>（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）。客服補償為 30 天。<br>GP Trial 是免費層，<b>不需要授權碼</b>——四種正式場次的前 15 分鐘自動生效。</p>
     <div class="bar">
       <input id="li-mail" size="24" placeholder="買家 email（強烈建議填）">
-      <select id="li-plan"><option value="season_early">Season Early Access（NT$399）</option><option value="season">Season（NT$599）</option><option value="comp">客服補償 30 天</option></select>
+      <select id="li-plan"></select>
       <input id="li-order" size="14" placeholder="訂單編號">
       <button id="li-go">發碼</button>
     </div>
@@ -143,6 +205,87 @@
   </div>
 </section>
 
+<!--
+  營運設定：**不必重新部署就能改的東西。**
+
+  使用者的要求是「整個網站我要能夠自訂」。這一頁開放的是那些會隨營運調整、
+  而每調整一次就要改程式碼重新部署的項目——價格、限量、付款方式、公告、下架。
+-->
+<!--
+  翻譯清單：哪些影片翻好了、各有幾句、屬於哪一場 GP。
+
+  只讀 KV 的 metadata，不讀 bundle 本體——一份兩千句約 200KB，
+  一百支就是 20MB，一次列表就會逾時。
+-->
+<section id="p-bun" hidden>
+  <div class="panel">
+    <h3>翻譯清單</h3>
+    <p class="hint">
+      依比賽週分組。<b>已完整</b>代表該影片被完整收割過（後續觀看者會跳過整軌預抓，
+      成本趨近於零）；只有句數而未標記完整的，表示翻了一部分但沒跑完。
+    </p>
+    <div class="bar">
+      <input id="bnQ" size="26" placeholder="搜尋網址後綴或 contentId">
+      <label class="mrow" style="gap:6px">
+        <input id="bnOnlyIncomplete" type="checkbox" style="width:auto">
+        <span class="hint">只看未完整的</span>
+      </label>
+      <button id="bnGo">重新整理</button>
+      <button id="bnFix">補齊舊資料</button>
+    </div>
+    <details style="margin:8px 0">
+      <summary class="hint">補 slug（分組用）—— 從 userscript 的收割佇列貼進來</summary>
+      <p class="hint">
+        slug <b>無法從 contentId 反推</b>（F1TV 不提供反查，也不能爬）。
+        但那份資料已經存在：userscript 的收割佇列裡就是完整路徑。<br>
+        到 F1TV 用油猴選單「📤 複製收割網址對照」，再貼到下面。一行一個。
+      </p>
+      <textarea id="bnPaths" rows="5" style="width:100%;font-family:ui-monospace;font-size:12px"
+        placeholder="/detail/1000010185/2026-australian-grand-prix"></textarea>
+      <button id="bnSlugs" style="margin-top:6px">上傳網址對照</button>
+      <div id="bnSlugOut" class="hint"></div>
+    </details>
+    <div id="bnCards" class="cards"></div>
+    <div id="bnOut"></div>
+  </div>
+</section>
+
+<section id="p-ops" hidden>
+  <div class="panel">
+    <h3>價格</h3>
+    <p class="hint">
+      留空＝使用程式碼裡的預設值。只接受 <b>1~99999 的整數</b>——
+      填 0 或負數會被伺服器忽略，那種錯誤直接等於金錢損失。<br>
+      賽季方案填的是<b>牌價</b>，實際售價仍會依剩餘比賽週末套用分段規則。
+    </p>
+    <div id="opsPrices"></div>
+    <p class="hint" id="opsEffHint"></p>
+  </div>
+
+  <div class="panel">
+    <h3>其他</h3>
+    <div class="bar">
+      <input id="opsEarly" type="number" min="0" max="9999" size="10" placeholder="早鳥限量（留空＝20）">
+      <input id="opsPay" size="14" placeholder="付款方式（留空＝ALL）">
+    </div>
+    <p class="hint">
+      綠界回報 <b>10300023「本次交易未提供任何付款方式」</b>時，付款方式填
+      <code>Credit</code> 試試。那個錯誤代表商店在綠界後台<b>一項付款方式都還沒開通</b>，
+      <code>ALL</code> 過濾之後一種都不剩。可填 Credit / WebATM / ATM / CVS / BARCODE。
+    </p>
+    <div class="bar">
+      <input id="opsNotice" size="46" maxlength="500" placeholder="購買頁公告（留空＝不顯示）">
+    </div>
+    <div id="opsHidden"></div>
+    <p class="hint">下架＝購買頁不顯示、也不能結帳。資料保留，隨時可以放回來。<br>
+      ⚠️ 這裡刻意改成<b>勾選</b>而不是填代碼：代碼打錯時伺服器會直接忽略那一筆，
+      不會報錯，於是你以為下架了、購買頁上卻還在賣。</p>
+  </div>
+
+  <button id="opsSave">儲存設定</button>
+  <div id="opsMsg" class="hint"></div>
+</section>
+
 <section id="p-rep" hidden>
   <div class="panel">
     <h3>問題回報</h3>
@@ -159,6 +302,192 @@ const $ = (id) => document.getElementById(id);
 
 // ADMIN_TOKEN 只留在這個分頁的記憶體。不寫 localStorage——
 // 寫進去的話，任何能碰到這台電腦的人都拿得到管理權限。
+// ---- 營運設定 ----
+// 這一頁的存在理由：價格、限量、付款方式這些會隨營運調整，
+// 每改一次就要動程式碼重新部署是不合理的。
+let opsPlans = [];
+
+async function opsLoad() {
+  try {
+    const d = await apiCall('/v1/admin/ops');
+    opsPlans = d.plans || [];
+    const cur = d.current || {};
+    const esc = (x) => String(x).replace(/[&<>"]/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    const groups = [['sub', '訂閱方案'], ['service', '代訂服務']];
+    $('opsPrices').innerHTML = groups.map((g) => {
+      const rows = opsPlans.filter((p) => (p.kind || 'sub') === g[0]);
+      if (!rows.length) return '';
+      return '<h4 class="secHead">' + g[1] + '</h4>' + rows.map((p) => {
+        const v = (cur.prices && cur.prices[p.key] != null) ? cur.prices[p.key] : '';
+        // 「此刻實收」與牌價不同時一定要標出來，否則改了牌價卻發現收的是別的數字
+        const diff = p.effective != null && p.effective !== (v === '' ? p.defaultPrice : Number(v));
+        return '<div class="mrow"><span class="mk">' + esc(p.label) + '</span>'
+          + '<input data-price="' + esc(p.key) + '" type="number" min="1" max="99999" size="8"'
+          + ' placeholder="' + p.defaultPrice + '" value="' + v + '">'
+          + '<span class="hint">' + esc(p.key) + '　預設 ' + adMoney(p.defaultPrice)
+          + (diff ? '　<b class="st-awaiting">此刻實收 ' + adMoney(p.effective)
+              + (p.tier ? '（' + esc(p.tier) + '）' : '') + '</b>' : '')
+          + '</span></div>';
+      }).join('');
+    }).join('');
+
+    // 下架用勾選，代碼由伺服器提供，打不錯
+    const hid = cur.hidden || [];
+    $('opsHidden').innerHTML = opsPlans.map((p) =>
+      '<label class="mrow"><input type="checkbox" data-hide="' + esc(p.key) + '"'
+      + (hid.includes(p.key) ? ' checked' : '') + '>'
+      + '<span>' + esc(p.label) + '</span>'
+      + '<span class="hint">' + esc(p.key) + '</span></label>').join('');
+
+    $('opsEffHint').innerHTML = '此刻的賽季方案售價由<b>剩餘比賽週末</b>決定，'
+      + '改牌價不會繞過那個規則——上面標紅的就是綠界實際會收的數字。';
+
+    $('opsEarly').value = cur.earlyLimit == null ? '' : cur.earlyLimit;
+    $('opsPay').value = cur.choosePayment || '';
+    $('opsNotice').value = cur.notice || '';
+    $('opsMsg').textContent = '';
+  } catch (e) {
+    $('opsMsg').textContent = '讀取失敗：' + e.message;
+  }
+}
+
+$('opsSave').onclick = async () => {
+  const prices = {};
+  document.querySelectorAll('[data-price]').forEach((el) => {
+    const v = el.value.trim();
+    if (v) prices[el.dataset.price] = Number(v);
+  });
+  const body = {
+    prices,
+    earlyLimit: $('opsEarly').value.trim() === '' ? null : Number($('opsEarly').value),
+    choosePayment: $('opsPay').value.trim(),
+    notice: $('opsNotice').value.trim(),
+    hidden: Array.from(document.querySelectorAll('[data-hide]:checked'), (el) => el.dataset.hide),
+  };
+  try {
+    const d = await apiCall('/v1/admin/ops', { method: 'POST', body: JSON.stringify(body) });
+    // ⚠️ 回報「**實際生效**的值」而不是「你送出的值」。
+    //    後端會濾掉不合理的數字（0、負數、不認得的方案），
+    //    只說「已儲存」會讓人以為填 0 也有效，等到有人用 0 元下單才發現。
+    $('opsMsg').textContent = '已儲存。實際生效：' + JSON.stringify(d.applied);
+    opsLoad();
+  } catch (e) {
+    $('opsMsg').textContent = '儲存失敗：' + e.message;
+  }
+};
+
+// ---- 翻譯清單 ----
+// 依比賽週分組，看得出哪幾場已經備妥、哪幾場還缺。
+let bnData = null;
+
+async function bnLoad() {
+  $('bnOut').innerHTML = '<p class="hint">讀取中…</p>';
+  try {
+    bnData = await apiCall('/v1/admin/bundles');
+    bnRender();
+  } catch (e) {
+    $('bnOut').innerHTML = '';
+    $('err').textContent = '讀取翻譯清單失敗：' + e.message;
+  }
+}
+
+function bnRender() {
+  if (!bnData) return;
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const q = $('bnQ').value.trim().toLowerCase();
+  const onlyIncomplete = $('bnOnlyIncomplete').checked;
+  const t = bnData.totals || {};
+
+  $('bnCards').innerHTML = [
+    ['影片數', t.videos || 0],
+    ['總句數', (t.lines || 0).toLocaleString()],
+    ['已完整', t.complete || 0],
+    ['待補資料', t.noMeta || 0],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  const parts = [];
+  for (const g of bnData.groups || []) {
+    const items = (g.items || []).filter((it) => {
+      if (onlyIncomplete && it.segCount > 0) return false;
+      if (!q) return true;
+      return (it.slug + ' ' + it.cid).toLowerCase().includes(q);
+    });
+    if (!items.length) continue;
+
+    parts.push(`<div class="day"><h3>${esc(g.label)}　`
+      + `<span class="hint">${items.length} 支 / `
+      + `${items.reduce((a, x) => a + x.lines, 0).toLocaleString()} 句 / `
+      + `已完整 ${items.filter((x) => x.segCount > 0).length}</span></h3>`
+      + '<table><tr><th>場次（網址後綴）</th><th class="num">句數</th>'
+      + '<th class="num">分段</th><th>狀態</th><th>最後更新</th></tr>'
+      + items.map((it) => {
+        // slug 去掉開頭的 /detail/<id>/，只留人看得懂的部分
+        const name = String(it.slug || '').replace(/^\/detail\/\d+\/?/, '') || `(${it.cid})`;
+        const done = it.segCount > 0;
+        return `<tr>`
+          + `<td class="mono">${esc(name)}<br><span class="hint">${esc(it.cid)}</span></td>`
+          + `<td class="num">${(it.lines || 0).toLocaleString()}</td>`
+          + `<td class="num">${it.segCount || '—'}</td>`
+          + `<td class="${done ? 'st-active' : 'st-expired'}">${done ? '已完整' : '部分'}</td>`
+          + `<td class="hint">${it.at ? esc(String(it.at).slice(0, 16).replace('T', ' ')) : '—'}</td>`
+          + `</tr>`;
+      }).join('')
+      + '</table></div>');
+  }
+
+  $('bnOut').innerHTML = parts.length ? parts.join('')
+    : '<p class="hint">沒有符合條件的項目。</p>';
+}
+
+$('bnSlugs').onclick = async () => {
+  const paths = $('bnPaths').value.split('\n').map((x) => x.trim()).filter(Boolean);
+  if (!paths.length) { $('bnSlugOut').textContent = '請先貼上路徑，一行一個。'; return; }
+  try {
+    const d = await apiCall('/v1/admin/bundles/slugs', { method: 'POST', body: JSON.stringify({ paths }) });
+    $('bnSlugOut').textContent = `收到 ${d.received} 筆：新增 ${d.updated}、已有 ${d.already}、`
+      + `${d.missing} 筆還沒有任何譯文（尚未收割過）。`;
+    bnData = null; await bnLoad();
+  } catch (e) { $('bnSlugOut').textContent = '上傳失敗：' + e.message; }
+};
+
+$('bnGo').onclick = bnLoad;
+
+// 補齊舊資料。分兩步，因為兩者的資料來源不同：
+//   1. metadata —— 讀出再寫回即可（後端每次上限 20 支，這裡迴圈直到清空）
+//   2. slug —— 後端無法反推，要由 userscript 的收割佇列提供（見選單「📤 上傳網址對照」）
+$('bnFix').onclick = async () => {
+  const btn = $('bnFix'); btn.disabled = true;
+  try {
+    let total = 0;
+    let cursor = null;
+    for (let i = 0; i < 60; i++) {
+      // 既有端點是 cursor 版：一批 25 支，回傳 cursor 讓呼叫端續跑。
+      // ⚠️ 要靠 `cursor` 判斷結束，不能靠 `done > 0`——
+      //    中間那些「已經有摘要」的批次 done 會是 0，但後面還有資料。
+      const d = await apiCall('/v1/admin/backfill', {
+        method: 'POST', body: JSON.stringify(cursor ? { cursor } : {}),
+      });
+      total += d.done || 0;
+      cursor = d.cursor || null;
+      btn.textContent = `補齊中… 已補 ${total} 支`;
+      if (!cursor) break;
+    }
+    btn.textContent = '補齊舊資料';
+    $('err').textContent = `已補齊 ${total} 支的摘要。`
+      + ' 若「其他／未分類」仍很多，請到 F1TV 用 userscript 選單的「📤 上傳網址對照」補 slug。';
+    bnData = null; await bnLoad();
+  } catch (e) {
+    btn.textContent = '補齊舊資料';
+    $('err').textContent = '補齊失敗：' + e.message;
+  }
+  btn.disabled = false;
+};
+$('bnQ').oninput = bnRender;
+$('bnOnlyIncomplete').onchange = bnRender;
+
 async function apiCall(path, opts) {
   const base = $('base').value.replace(/\/+$/, '');
   const res = await fetch(base + path, Object.assign({
@@ -180,10 +509,16 @@ document.querySelectorAll('.tab').forEach((b) => {
     document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === b));
     $('p-cost').hidden = b.dataset.t !== 'cost';
     $('p-lic').hidden = b.dataset.t !== 'lic';
+    $('p-ord').hidden = b.dataset.t !== 'ord';
     $('p-rep').hidden = b.dataset.t !== 'rep';
     $('p-met').hidden = b.dataset.t !== 'met';
+    $('p-ops').hidden = b.dataset.t !== 'ops';
+    $('p-bun').hidden = b.dataset.t !== 'bun';
+    if (b.dataset.t === 'bun' && !bnData) bnLoad();
+    if (b.dataset.t === 'ops') opsLoad();
     if (b.dataset.t === 'met') $('mt-go').click();
     if (b.dataset.t === 'lic' && !llRows.length) loadLicenses();
+    if (b.dataset.t === 'ord') { markOrdersSeen(); orLoad(); }
     if (b.dataset.t === 'rep') $('rp-go').click();
   };
 });
@@ -235,7 +570,7 @@ function renderLicenses(d) {
       <td class="st-${r.state}">${STATE_LABEL[r.state]}</td>
       <td class="ops">
         <select data-a="plan" data-i="${i}" class="planSel">
-          ${['season_early', 'season', 'comp'].map((pk) => `<option value="${pk}"${r.plan === pk ? ' selected' : ''}>${PLAN_LABEL[pk]}</option>`).join('')}
+          ${planSelOptions(r.plan)}
         </select>
         <button data-a="extend" data-i="${i}" class="secondary">+30 天</button>
         <button data-a="clear" data-i="${i}" class="secondary">清空裝置</button>
@@ -254,15 +589,70 @@ function renderLicenses(d) {
   });
 }
 
-const PLAN_LABEL = {
-  season_early: 'Early NT$399', season: 'Season NT$599', comp: '補償 30 天', trial: 'GP Trial',
+// ---- 方案清單 ----
+// ⚠️ **一個方案名稱都不寫在這一頁裡。** 後台與網站賣的必須是同一份定價，
+//    寫死的下一次改價就會漂掉，而且是靜默漂掉（見發碼區塊的說明）。
+let planList = [];
+
+async function loadAdminPlans() {
+  try {
+    const d = await apiCall('/v1/admin/plans');
+    planList = d.plans || [];
+  } catch (e) { planList = []; return; }
+
+  const sel = $('li-plan');
+  const cur = sel.value;
+  const groups = [
+    ['sub', '訂閱方案'],
+    ['service', '代訂服務'],
+    ['internal', '不公開販售'],
+  ];
+  sel.innerHTML = groups.map(function (g) {
+    const rows = planList.filter(function (p) { return p.kind === g[0]; });
+    if (!rows.length) return '';
+    return '<optgroup label="' + g[1] + '">' + rows.map(function (p) {
+      return '<option value="' + p.key + '">' + escHtml(p.label)
+        + '（' + adMoney(p.price) + '）'
+        + (p.note ? ' · ' + escHtml(p.note) : '')
+        + (p.hidden ? ' · 已下架' : '')
+        + '</option>';
+    }).join('') + '</optgroup>';
+  }).join('');
+  if (cur && planList.some(function (p) { return p.key === cur; })) sel.value = cur;
+  else if (planList.some(function (p) { return p.key === 'season'; })) sel.value = 'season';
+  // 已經畫過的授權清單要跟著換成新方案，否則下拉裡還是舊的那幾個
+  if (llRows.length) renderLicenses(null);
+}
+
+function escHtml(x) {
+  return String(x == null ? '' : x).replace(/[&<>"]/g, function (c) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+  });
+}
+
+/** 金額。整個後台共用一份格式，不要各寫各的。 */
+const adMoney = function (n) {
+  return 'NT' + '$' + Number(n || 0).toLocaleString('zh-TW');
 };
+
+function planLabelOf(key) {
+  const p = planList.find(function (x) { return x.key === key; });
+  return p ? p.label : key;
+}
+
+function planSelOptions(cur) {
+  const list = planList.length ? planList : [{ key: cur, label: cur, kind: 'sub' }];
+  return list.map(function (p) {
+    return '<option value="' + p.key + '"' + (p.key === cur ? ' selected' : '')
+      + '>' + escHtml(p.label) + '</option>';
+  }).join('');
+}
 
 async function licenseAction(action, row, btn, value) {
   const payload = { licenseKey: row.raw };
 
   if (action === 'plan') {
-    if (!confirm('把 ' + row.licenseKey + ' 改成「' + PLAN_LABEL[value] + '」？到期日會依新方案重算。')) {
+    if (!confirm('把 ' + row.licenseKey + ' 改成「' + planLabelOf(value) + '」？到期日會依新方案重算。')) {
       loadLicenses();
       return;
     }
@@ -436,6 +826,9 @@ $('go').onclick = async () => {
   $('cards').innerHTML = '查詢中…';
   try {
     render(await apiCall('/v1/admin/stats?days=' + $('days').value));
+    // 權杖此刻確定可用，才去載方案與開始輪詢——太早做只會拿到 401
+    loadAdminPlans();
+    startOrdPoll();
   } catch (e) {
     $('cards').innerHTML = '';
     $('err').textContent = String(e.message || e);
@@ -478,4 +871,260 @@ function render(d) {
       + '低於門檻時 cache_control 會靜默失效，每次全額計費。</div>');
   }
 }
+// ---------------------------------------------------------------------------
+// 訂單管理
+// ---------------------------------------------------------------------------
+const OR_LABEL = { paid: '已付款', awaiting: '已取號待繳費', created: '未完成付款', failed: '付款失敗' };
+
+function orTime(sec) {
+  if (!sec) return '—';
+  // 一律用台北時間。後台是給人看的，UTC 會讓「昨天下午的訂單」看起來是今天。
+  return new Date(sec * 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
+}
+
+let orRows = [];
+
+async function orLoad() {
+  $('err').textContent = '';
+  $('or-out').innerHTML = '載入中…';
+  try {
+    const d = await apiCall('/v1/admin/orders?q=' + encodeURIComponent($('or-q').value.trim())
+      + '&status=' + $('or-status').value);
+    orRows = d.rows || [];
+    orRender(d);
+  } catch (e) { $('or-out').innerHTML = ''; $('err').textContent = String(e.message || e); }
+}
+
+function orRender(d) {
+  const paid = orRows.filter((r) => r.status === 'paid');
+  const rev = paid.reduce((a, r) => a + (r.price || 0), 0);
+  $('or-cards').innerHTML = [
+    ['顯示中', d.shown + ' / ' + d.total],
+    ['已付款', paid.length],
+    ['營收（顯示中）', adMoney(rev)],
+    ['待處理代訂', paid.filter((r) => r.manual).length],
+    ['信沒寄出去', paid.filter((r) => !r.mailed).length],
+  ].map((x) => '<div class="card"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>').join('');
+
+  if (!orRows.length) { $('or-out').innerHTML = '<div class="hint">沒有符合條件的訂單。</div>'; return; }
+
+  $('or-out').innerHTML = '<table>'
+    + '<tr><th>時間</th><th>訂單編號</th><th>商品</th><th class="num">金額</th><th>email</th><th>狀態</th></tr>'
+    + orRows.map((r, i) => '<tr class="clickrow" data-i="' + i + '">'
+      + '<td>' + orTime(r.at) + '</td>'
+      + '<td class="mono">' + escHtml(r.no) + '</td>'
+      + '<td>' + escHtml(r.summary || '—')
+      + (r.status === 'paid' && r.manual ? '<span class="tag st-awaiting">代訂待處理</span>' : '')
+      + (r.status === 'paid' && !r.mailed ? '<span class="tag st-failed">信未寄出</span>' : '')
+      + '</td>'
+      + '<td class="num">' + adMoney(r.price) + '</td>'
+      + '<td class="mail">' + escHtml(r.email || '—') + '</td>'
+      + '<td class="st-' + r.status + '">' + (OR_LABEL[r.status] || r.status) + '</td>'
+      + '</tr>').join('')
+    + '</table>'
+    + (d.truncated ? '<div class="hint">訂單超過 5,000 筆，只載入最近的部分，請用搜尋縮小範圍。</div>' : '');
+
+  $('or-out').querySelectorAll('tr[data-i]').forEach((tr) => {
+    tr.onclick = () => orDetail(orRows[Number(tr.dataset.i)].no);
+  });
+}
+
+async function orDetail(no) {
+  $('or-detailWrap').hidden = false;
+  $('or-dno').textContent = no;
+  $('or-detail').innerHTML = '載入中…';
+  let d;
+  try { d = await apiCall('/v1/admin/orders/get?no=' + encodeURIComponent(no)); }
+  catch (e) { $('or-detail').innerHTML = '<div class="hint">' + escHtml(e.message) + '</div>'; return; }
+
+  const o = d.order;
+  const rows = [
+    ['狀態', (OR_LABEL[o.status] || o.status) + (o.paidAt ? '　付款時間 ' + orTime(o.paidAt) : '')],
+    ['建立時間', orTime(o.at)],
+    ['email', escHtml(o.email || '—')],
+    ['金額', adMoney(o.price)],
+    ['授權碼', o.licenseKey ? '<span class="mono">' + escHtml(o.licenseKey) + '</span>' : '—'],
+    ['金流模式', o.mode === 'production' ? '正式' : '測試（stage）'],
+  ];
+  if (o.failMsg) rows.push(['失敗原因', escHtml(o.failCode + ' ' + o.failMsg)]);
+  if (d.payInfo) {
+    rows.push(['繳費資訊', escHtml([
+      d.payInfo.bank && ('銀行 ' + d.payInfo.bank),
+      d.payInfo.vAccount && ('虛擬帳號 ' + d.payInfo.vAccount),
+      d.payInfo.payNo && ('超商代碼 ' + d.payInfo.payNo),
+      d.payInfo.expire && ('繳費期限 ' + d.payInfo.expire),
+    ].filter(Boolean).join('　'))]);
+  }
+  if (o.status === 'paid') {
+    rows.push(['授權碼信', o.mailed
+      ? '<span class="okmsg">已寄出</span>'
+      : '<span class="st-failed">沒有寄出</span>　<span class="hint">'
+        + escHtml((d.mailFail && d.mailFail.reason) || o.mailReason || '原因不明') + '</span>']);
+  }
+
+  const items = (o.items || []).map((i) =>
+    '<tr><td>' + escHtml(i.label || i.key) + '</td><td class="num">' + (i.qty || 1)
+    + '</td><td class="num">' + adMoney(i.unit) + '</td></tr>').join('')
+    + (o.adjustments || []).map((a) =>
+      '<tr><td>' + escHtml(a.label) + '</td><td class="num"></td><td class="num">'
+      + adMoney(a.amount) + '</td></tr>').join('');
+
+  const svc = (o.services || []).length
+    ? '<h4 class="secHead">代訂服務</h4>'
+      + '<p class="hint">代訂是人工作業，付款只代表「已收款、待處理」。'
+      + '沒有這個清單的話，代訂訂單付完款就沒人知道處理了沒。</p>'
+      + '<table>' + o.services.map((v, i) =>
+        '<tr class="' + (v.status === 'done' ? 'done' : '') + '">'
+        + '<td>' + escHtml(v.label || v.key) + (v.qty > 1 ? ' × ' + v.qty : '') + '</td>'
+        + '<td>' + (v.status === 'done' ? '已完成 ' + orTime(v.doneAt) : '待處理') + '</td>'
+        + '<td class="ops"><button data-svc="' + i + '" class="secondary">'
+        + (v.status === 'done' ? '改回待處理' : '標記完成') + '</button></td></tr>').join('')
+      + '</table>'
+    : '';
+
+  $('or-detail').innerHTML =
+    '<table>' + rows.map((x) => '<tr><td class="dk">' + x[0] + '</td><td>' + x[1] + '</td></tr>').join('') + '</table>'
+    + (items ? '<h4 class="secHead">項目</h4><table>'
+      + '<tr><th>商品</th><th class="num">數量</th><th class="num">金額</th></tr>' + items + '</table>' : '')
+    + svc
+    + '<div class="bar" style="margin-top:14px">'
+    + '<input id="or-note" size="34" placeholder="客服備註（例如：已用 email 聯繫）" value="' + escHtml(o.note || '') + '">'
+    + '<button id="or-saveNote" class="secondary">儲存備註</button>'
+    + (o.status === 'paid' && o.licenseKey
+      ? '<input id="or-mailTo" size="24" placeholder="改寄到別的信箱（留空用原信箱）">'
+        + '<button id="or-resend">補寄授權碼信</button>' : '')
+    + '</div>';
+
+  $('or-detail').querySelectorAll('button[data-svc]').forEach((b) => {
+    b.onclick = () => orPatch({ no: no, serviceDone: Number(b.dataset.svc) }, b);
+  });
+  $('or-saveNote').onclick = () => orPatch({ no: no, note: $('or-note').value }, $('or-saveNote'));
+  if ($('or-resend')) {
+    $('or-resend').onclick = () => {
+      const to = $('or-mailTo').value.trim() || o.email;
+      // 寄信是寄到外面去的，寄錯信箱等於把授權碼送給別人——一定要再問一次。
+      if (!confirm('把訂單 ' + no + ' 的授權碼信寄到 ' + to + '？')) return;
+      orPatch({ no: no, resendMail: true, email: to }, $('or-resend'));
+    };
+  }
+}
+
+async function orPatch(body, btn) {
+  btn.disabled = true;
+  try {
+    const d = await apiCall('/v1/admin/orders/patch', { method: 'POST', body: JSON.stringify(body) });
+    if (d.mail) toast(d.mail.sent ? '已寄出' : '寄不出去：' + (d.mail.reason || '原因不明'), !d.mail.sent);
+    else toast('已更新');
+    await orDetail(body.no);
+    orLoad();
+  } catch (e) { $('err').textContent = String(e.message || e); btn.disabled = false; }
+}
+
+$('or-go').onclick = orLoad;
+$('or-status').onchange = orLoad;
+$('or-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') orLoad(); });
+
+// ---------------------------------------------------------------------------
+// 新訂單通知
+// ---------------------------------------------------------------------------
+//
+// ⚠️ **輪詢用的是 ?feed=1，不是整張清單。** feed 模式在伺服器端只做一次
+//    KV list（讀 metadata，不逐筆 get），回應只有幾十位元組——
+//    每 45 秒一次不會動到額度。拿整張清單去輪詢就會很貴。
+//
+// 「看過了」記在 localStorage，那只是一個時間戳。
+// ⚠️ ADMIN_TOKEN 一律不寫進任何儲存空間。
+let ordSeen = Number(localStorage.getItem('pl_ordSeen') || 0);
+let ordTimer = null;
+let ordNotify = false;
+let ordAudio = null;
+
+function toast(text, isErr) {
+  const el = $('toast');
+  el.textContent = text;
+  el.style.background = isErr ? '#b3261e' : '#0a7c4a';
+  el.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.hidden = true; }, 6000);
+  el.onclick = () => { el.hidden = true; };
+}
+
+/** 嗶一聲。刻意用 WebAudio 合成，不外連音檔——後台是單一 HTML，沒有地方放資產。 */
+function beep() {
+  if (!ordAudio) return;
+  try {
+    const o = ordAudio.createOscillator();
+    const g = ordAudio.createGain();
+    o.frequency.value = 880;
+    g.gain.value = 0.12;
+    o.connect(g); g.connect(ordAudio.destination);
+    o.start(); o.stop(ordAudio.currentTime + 0.18);
+  } catch (e) { /* 不能響就算了 */ }
+}
+
+$('or-notify').onclick = async () => {
+  // ⚠️ 這兩件事**都必須在使用者按下按鈕的當下做**：
+  //    瀏覽器只在使用者手勢裡才允許要求通知權限、才允許解鎖音訊。
+  //    寫在載入時會被靜默忽略，於是「通知」看起來就是壞的。
+  try {
+    ordAudio = new (window.AudioContext || window.webkitAudioContext)();
+    await ordAudio.resume();
+  } catch (e) { ordAudio = null; }
+  let perm = 'denied';
+  try { perm = await Notification.requestPermission(); } catch (e) { /* 不支援 */ }
+  ordNotify = true;
+  $('or-notify').textContent = perm === 'granted' ? '通知已開啟' : '通知已開啟（僅頁內提示）';
+  $('or-notify').disabled = true;
+  toast(perm === 'granted' ? '有新訂單時會跳桌面通知' : '瀏覽器不給桌面通知，改用頁內提示與音效');
+  startOrdPoll();
+};
+
+function markOrdersSeen() {
+  const latest = Number($('ordBadge').dataset.at || 0);
+  if (latest > ordSeen) { ordSeen = latest; localStorage.setItem('pl_ordSeen', String(ordSeen)); }
+  paintOrdBadge();
+}
+
+function paintOrdBadge() {
+  const b = $('ordBadge');
+  const n = Number(b.dataset.todo || 0) + (Number(b.dataset.at || 0) > ordSeen ? 1 : 0);
+  b.hidden = !n;
+  b.textContent = n;
+}
+
+async function pollOrders() {
+  if (!$('tok').value) return;
+  let d;
+  // 背景輪詢失敗**不可以**去寫 #err：那會蓋掉使用者正在看的錯誤訊息，
+  // 而且網路抖一下就閃紅字，久了就沒人看錯誤訊息了。
+  try { d = await apiCall('/v1/admin/orders?feed=1'); } catch (e) { return; }
+
+  const b = $('ordBadge');
+  b.dataset.todo = String((d.pendingManual || 0) + (d.mailFailed || 0));
+  const at = d.latest ? d.latest.at : 0;
+  const prev = Number(b.dataset.at || 0);
+  b.dataset.at = String(at);
+  paintOrdBadge();
+
+  // 第一次輪詢只是建立基準線，不然一開後台就會跳出「新訂單」
+  if (!prev || !at || at === prev || at <= ordSeen) return;
+
+  const msg = '新訂單 ' + adMoney(d.latest.price) + '　' + (d.latest.summary || '')
+    + (d.latest.email ? '　' + d.latest.email : '');
+  toast(msg);
+  beep();
+  if (ordNotify && window.Notification && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('PitLingo 新訂單', { body: msg, tag: 'pl-order-' + d.latest.no });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch (e) { /* 有些平台不給 */ }
+  }
+}
+
+function startOrdPoll() {
+  if (ordTimer) return;
+  pollOrders();
+  ordTimer = setInterval(pollOrders, 45000);
+}
+
 </script>

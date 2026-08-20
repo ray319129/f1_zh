@@ -13,7 +13,28 @@ function esc(s) { return String(s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>':
 
 function render(html) { out.innerHTML = html; }
 
+// 綠界失敗時會由 Worker 帶 failed=1 轉回來（見 /v1/payment/result）。
+// **失敗一定要給回去的路**——只說「失敗」而把人留在死路上，
+// 那筆生意就結束了，而多數失敗（卡片被拒、額度不足）換個方式就能成功。
+function failedInfo() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('failed') !== '1') return null;
+  return { msg: q.get('msg') || '' };
+}
+
 async function check() {
+  const fail = failedInfo();
+  if (fail) {
+    return render(`<h1>付款未完成</h1>
+      <p class="lead">這筆交易沒有成功，<b>沒有扣款、也沒有建立訂單</b>。</p>
+      ${fail.msg ? `<p>銀行或金流回覆：<code>${esc(fail.msg)}</code></p>` : ''}
+      <p>常見原因：卡片被發卡行拒絕、額度不足、3D 驗證逾時。
+         換一張卡或改用 ATM／超商代碼通常就能完成。</p>
+      <p><a class="btn" href="/buy">回到購買頁重試</a></p>
+      <p class="hint">若重複失敗，請走
+      <a href="/contact">聯絡我們</a>，附上這個時間點，我們幫你查。</p>`);
+  }
+
   const no = orderNo();
   if (!no) {
     return render(`<h1>找不到訂單</h1>

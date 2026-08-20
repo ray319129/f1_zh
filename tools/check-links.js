@@ -33,6 +33,7 @@ const FILES = [
   ['legal/terms.html', '使用條款'],
   ['legal/buy.html', '購買頁'],
   ['legal/paid.html', '付款結果頁'],
+  ['legal/contact.html', '聯絡我們'],
   ['extension/src/options/options.html', '擴充功能設定頁'],
 ];
 
@@ -45,6 +46,8 @@ const ROUTES = {
   '/terms': 'legal/terms.html',
   '/buy': 'legal/buy.html',
   '/paid': 'legal/paid.html',
+  '/contact': 'legal/contact.html',
+  '/admin': 'legal/admin.html',
 };
 
 const external = new Set();
@@ -56,7 +59,7 @@ for (const [rel, label] of FILES) {
   const html = fs.readFileSync(p, 'utf8');
   const hrefs = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((m) => m[1]);
 
-  for (const h of hrefs) {
+  for (let h of hrefs) {
     if (h.startsWith('mailto:')) {
       /^mailto:[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(h)
         ? internalOk++
@@ -71,6 +74,8 @@ for (const [rel, label] of FILES) {
     }
     if (h.startsWith('#') || h.startsWith('data:')) continue;
 
+    // 快取破壞用的 ?v= 要先剝掉，否則 /buy.js?v=3.8 會被當成不存在的檔案。
+    h = h.split('?')[0].split('#')[0];
     // 站內：可能是路由（/privacy）或相對路徑（options.css）
     if (h.startsWith('/')) {
       const target = ROUTES[h] || path.join('legal', h.replace(/^\//, ''));

@@ -37,9 +37,25 @@
   try{
     var BC=null; try{ BC=new BroadcastChannel(${JSON.stringify(CHANNEL)}); }catch(e){}
     function send(o){ try{ if(BC) BC.postMessage(o); }catch(e){} }
+    // 解碼出來的東西到底像不像文字。
+    // 影片與音訊分段用 TextDecoder 硬解會得到一堆控制字元，其中偶爾就會
+    // 湊出 "-->" 三個位元組（0x2D 0x2D 0x3E）——那時整段二進位垃圾會被
+    // 當成 VTT 送進翻譯佇列，最後變成後端的「單句長度不可超過 1000 字元」。
+    // 只看前 256 字元，成本可忽略。
+    function looksText(t){
+      var n=Math.min(256,t.length), ctrl=0;
+      for(var i=0;i<n;i++){
+        var c=t.charCodeAt(i);
+        if(c===0) return false;                                   // NUL＝一定不是文字
+        if(c<32 && c!==9 && c!==10 && c!==13) ctrl++;
+        if(c===0xFFFD) ctrl++;                                    // 解碼失敗的替代字元
+      }
+      return ctrl <= n*0.05;
+    }
     function emit(t,u){
       try{
         if(!t || typeof t!=='string') return;
+        if(!looksText(t)) return;
         // ⚠️ 網址絕不截斷。F1TV 的 master m3u8 路徑帶著很長的 base64 授權
         //    token，切掉之後相對路徑解析會把整段 token 吃掉，抓分段一律 400。
         //    （userscript 坑 #3，這裡曾經寫成 slice(0,300)）
@@ -51,12 +67,35 @@
         if(/#EXTM3U|<MPD/i.test(t.slice(0,400))) send({manifest:t.slice(0,600000), url:url});
       }catch(e){}
     }
-    // 只碰小的、文字類的回應。絕不 clone 影片分段。
+    // 只碰小的、文字類的回應。**絕不 clone 影片與音訊分段。**
+    //
+    // ⚠️ 這個函式修過一次，原因是使用者實際回報「影片時不時轉圈圈」。
+    //    舊版最後一行是 \`return n>0 && n<300000\`——**只看大小不看型別**，
+    //    而 HLS 的音訊分段與低位元率的影片分段幾乎都落在 300KB 以內。
+    //    於是每一個媒體分段都被 clone 一份、用 TextDecoder 整個解成字串、
+    //    再對那串二進位垃圾做 indexOf 掃描，最後才丟掉。
+    //    後果有三個，全部不會報錯：
+    //      1. 每個分段的記憶體加倍，長時間觀看累積成 GC 壓力 → **播放卡頓**
+    //      2. clone 出來的分支要被讀完，對播放器的下載造成背壓
+    //      3. 二進位垃圾偶爾湊出 "-->" → 被當成字幕送去翻譯（見 looksText）
+    //    註解一直寫著「只 clone 小的文字類回應」，但程式碼的第三條規則
+    //    根本沒有檢查型別——這正是坑 #7 說的那件事。
+    //
+    // 順序有意義：**先排除，再納入**，最後才是那條保守的大小規則。
     function interesting(url,ct,len){
-      if(/text|vtt/i.test(ct||'')) return true;
-      if(/\\.vtt|\\.webvtt|\\.m3u8|\\.mpd|subtitle|caption|\\bsub\\b/i.test(String(url||''))) return true;
+      var u=String(url||''), c=String(ct||'');
+      // 1. 確定是媒體的一律不碰
+      if(/^(video|audio|image)\\//i.test(c)) return false;
+      if(/octet-stream|mp4|iso\\.segment/i.test(c) && !/vtt|text/i.test(c)) return false;
+      if(/\\.(m4s|mp4|m4v|m4a|ts|aac|mp3|cmf[av]|init|jpe?g|png|webp)(\\?|$)/i.test(u)) return false;
+      // 2. 確定是文字／字幕／清單的才要
+      if(/text\\/|vtt|dash\\+xml|mpegurl/i.test(c)) return true;
+      if(/\\.(vtt|webvtt|m3u8|mpd)(\\?|$)|subtitle|caption|\\bsub\\b/i.test(u)) return true;
+      // 3. 兩邊都判斷不出來時只接受**很小**的回應。
+      //    一段 6 秒的字幕 VTT 只有幾百到幾 KB，64KB 已經非常寬鬆；
+      //    而 300KB 會把整批音訊分段掃進來，那就是上面說的那個 bug。
       var n=parseInt(len||'0',10);
-      return n>0 && n<300000;
+      return n>0 && n<65536;
     }
     var of=self.fetch;
     if(typeof of==='function'){

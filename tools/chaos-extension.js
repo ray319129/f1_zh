@@ -88,7 +88,15 @@ const sandbox = {
   },
   MutationObserver: class { observe() {} disconnect() {} },
   setTimeout: (fn, ms) => { timers.push({ fn, at: now + (ms || 0) }); return timers.length; },
-  setInterval: (fn) => { timers.push({ fn, at: now + 1e9 }); return timers.length; },
+  // ⚠️ 這裡原本是 `at: now + 1e9`，等於**所有 setInterval 永遠不會觸發**。
+  //    後果是這支測試從來沒有跑過任何定期迴圈：字幕輪詢、結構性檢查、
+  //    換影片偵測、遠端設定重讀、免費額度計時——全部沒被測到，
+  //    而每一個情境的 `advance(1600)` 註解都寫著「觸發結構性檢查」。
+  //    測試綠燈但根本沒測到，比紅燈更危險。
+  setInterval: (fn, ms) => {
+    timers.push({ fn, at: now + (ms || 0), every: Math.max(1, Number(ms) || 1) });
+    return timers.length;
+  },
   clearTimeout() {}, clearInterval() {},
   requestAnimationFrame: (fn) => { timers.push({ fn, at: now }); return 0; },
   Date, Math, JSON, Map, Set, Promise, RegExp, URL, Error,
@@ -122,10 +130,26 @@ for (const f of ['extension/src/shared/normalize.js', 'extension/src/shared/defa
 const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
 /** 把已到期的計時器跑掉，模擬時間流逝 */
+/**
+ * 把假時鐘往前推，途中該醒的計時器都要醒。
+ *
+ * 週期性計時器（`every`）跑完要重新排程，否則只會觸發一次。
+ * 迴圈上限是防呆：一次推 60 秒 × 100ms 輪詢 = 600 次是正常的，
+ * 但如果哪天有人寫出 `setInterval(fn, 0)`，沒有上限這裡會直接卡死。
+ */
+const MAX_TIMER_FIRES = 20000;
 function advance(ms) {
-  now += ms;
-  const due = timers.filter((t) => t.at <= now);
-  for (const t of due) { timers.splice(timers.indexOf(t), 1); try { t.fn(); } catch (e) { crashes.push(`計時器：${e.message}`); } }
+  const until = now + ms;
+  let fired = 0;
+  for (;;) {
+    const next = timers.filter((t) => t.at <= until).sort((a, b) => a.at - b.at)[0];
+    if (!next || ++fired > MAX_TIMER_FIRES) break;
+    now = Math.max(now, next.at);
+    timers.splice(timers.indexOf(next), 1);
+    if (next.every) timers.push({ fn: next.fn, at: next.at + next.every, every: next.every });
+    try { next.fn(); } catch (e) { crashes.push(`計時器：${e.message}`); }
+  }
+  now = until;
 }
 
 function fire(type, data) {
@@ -242,7 +266,12 @@ step('設定被塞入不合理的值', async () => {
   const bad = [
     { fontSize: -5 }, { fontSize: 99999 }, { fontSize: 'big' },
     { bottomPct: -100 }, { bottomPct: 1e9 },
+    // holdMs 已經不是設定項（改成固定的 HOLD_MS）。舊 storage 裡還會有，
+    // 必須確認它被無視而不是被沿用——沿用的話等於偷偷保留一個廢棄旋鈕。
     { holdMs: 0 }, { holdMs: -1 }, { holdMs: 'forever' },
+    { subtitleOffset: 999999 }, { subtitleOffset: -999999 },
+    { subtitleOffset: 'fast' }, { subtitleOffset: NaN }, { subtitleOffset: Infinity },
+    { subtitleOffset: null }, { subtitleOffset: [] }, { subtitleOffset: {} },
     { enabled: 'yes' }, { showEnglish: null }, { hideNativeCC: 1 },
     null, undefined, 'nonsense',
   ];
@@ -260,8 +289,76 @@ step('設定被塞入不合理的值', async () => {
   const s = sandbox.__pitlingo.t.settings();
   if (!Number.isFinite(s.fontSize) || s.fontSize < 12 || s.fontSize > 72) throw new Error('fontSize 沒有被清洗：' + s.fontSize);
   if (!Number.isFinite(s.bottomPct) || s.bottomPct < 0) throw new Error('bottomPct 沒有被清洗：' + s.bottomPct);
-  if (!Number.isFinite(s.holdMs) || s.holdMs < 1000) throw new Error('holdMs 沒有被清洗：' + s.holdMs);
   if (typeof s.enabled !== 'boolean') throw new Error('enabled 沒有被轉成布林：' + typeof s.enabled);
+  // holdMs 必須被丟掉。留著的話 main.js 用固定值、設定卻還帶著舊欄位，
+  // 下一個人看到會以為它還有效——那是最容易寫出的一種 bug。
+  if ('holdMs' in s) throw new Error('holdMs 應該已經不是設定項，卻仍出現在清洗結果中');
+
+  // subtitleOffset 的夾值是**不對稱**的：延後 3 秒、提前 2 秒。
+  // 這個不對稱一旦被寫成對稱，提前方向就會拿到超出校準精度的權限。
+  const offCase = (v) => {
+    sandbox.__onSettings({ settings: { newValue: { subtitleOffset: v } } }, 'local');
+    return sandbox.__pitlingo.t.settings().subtitleOffset;
+  };
+  if (offCase(999999) !== 2000) throw new Error('subtitleOffset 正向沒有夾在 +2000：' + offCase(999999));
+  if (offCase(-999999) !== -3000) throw new Error('subtitleOffset 負向沒有夾在 -3000：' + offCase(-999999));
+  for (const junk of ['fast', NaN, Infinity, null, [], {}, undefined]) {
+    const got = offCase(junk);
+    if (got !== 0) throw new Error(`subtitleOffset 遇到 ${String(junk)} 應退回 0，實得 ${got}`);
+  }
+  sandbox.__onSettings({ settings: { newValue: {} } }, 'local');
+});
+
+step('字幕時機：播放中反覆亂調，且換影片必須回到預設', async () => {
+  const api = sandbox.__pitlingo;
+
+  // 前一個情境刻意推過壞掉的遠端設定，此刻的 site 可能沒有 contentIdPattern。
+  // 這裡要驗的是換影片的行為，先把設定復原成正常的，否則測到的是別的東西。
+  swResponder = () => ({
+    ok: true,
+    config: {
+      version: 99,
+      sites: [{
+        host: 'f1tv.formula1.com',
+        captionRoot: ['.tm-subtitle-region-container'],
+        captionLabel: ['.tm-ui-subtitle-label'],
+        contentIdPattern: '/detail/(\\d+)',
+      }],
+    },
+    settings: {}, bundle: { lines: {} }, result: {}, text: '',
+  });
+  await api.t.reloadConfig().catch(() => {});
+  await settle();
+
+  videoEl = { paused: false, ended: false, readyState: 4, currentTime: 30,
+    getBoundingClientRect: () => ({ width: 1280, height: 720 }) };
+
+  // 在延後與提前之間來回橫跳，每次都餵字幕。
+  // 舊版切換時不會清掉已排程的延後計時器，兩種模式會有一小段同時活著。
+  const seq = [-3000, 2000, -1500, 0, 2000, -3000, 1, -1, 0];
+  for (const off of seq) {
+    sandbox.__onSettings({ settings: { newValue: { subtitleOffset: off } } }, 'local');
+    api.t.feed(`Timing test line at offset ${off} from the commentary`);
+    advance(120);
+    await settle();
+  }
+  advance(5000);            // 讓所有可能殘留的計時器都醒過來
+  await settle();
+
+  // 換影片：時機必須回到 0，而字級與位置必須原封不動。
+  sandbox.__onSettings({ settings: { newValue: { subtitleOffset: -2500, fontSize: 40, bottomPct: 20 } } }, 'local');
+  const before = api.t.settings();
+  if (before.subtitleOffset !== -2500) throw new Error('前置條件不成立，設定沒吃進去');
+
+  sandbox.location.pathname = '/detail/1000019999/timing-reset-check';
+  advance(1600);            // 讓 checkContentChange 跑到
+  await settle();
+
+  const after = api.t.settings();
+  if (after.subtitleOffset !== 0) throw new Error('換影片後字幕時機沒有回復預設：' + after.subtitleOffset);
+  if (after.fontSize !== 40) throw new Error('換影片後字級被誤重設：' + after.fontSize);
+  if (after.bottomPct !== 20) throw new Error('換影片後位置被誤重設：' + after.bottomPct);
+
   sandbox.__onSettings({ settings: { newValue: {} } }, 'local');
 });
 

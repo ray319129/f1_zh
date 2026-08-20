@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const root = path.join(__dirname, '..');
 
-const html = fs.readFileSync(path.join(root, 'backend/admin.html'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'legal/admin.html'), 'utf8');
 const api = fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
 
 const errors = [];
@@ -77,14 +77,52 @@ for (const [pat, label] of DANGEROUS) {
 }
 confirmed === DANGEROUS.length && ok(`${confirmed} 個危險操作都有二次確認`);
 
-// --- 4. 方案名稱要與後端一致 ------------------------------------------------
+// --- 4. 方案與價格一律由伺服器提供，後台不可以自己寫一份 ---------------------
+//
+// 舊版是把方案選項寫死在 HTML 裡，並用「寫死的名稱都存在於後端」來把關。
+// 那個把關擋不住真正發生的事：定價從「早鳥 399／正式 599」改成
+// 「上半季 599／下半季 299／一週 39」之後，**名稱依然存在**，
+// 所以檢查照樣通過，而後台還在發早鳥碼——賣的東西與網站上的是兩套。
+//
+// 所以現在反過來檢查：後台**不准**出現寫死的方案選項或價格。
 const planBlock = api.match(/const PLANS = \{([\s\S]*?)\n\};/)[1];
 const backendPlans = [...planBlock.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]);
-const uiPlans = [...html.matchAll(/value="(season_early|season|comp|trial|lifetime)"/g)].map((m) => m[1]);
-const ghost = [...new Set(uiPlans)].filter((p) => !backendPlans.includes(p));
-ghost.length
-  ? bad(`後台有後端不存在的方案：${ghost.join('、')} —— 選了會發不出碼`)
-  : ok(`後台的方案選項都存在於後端（${backendPlans.join('、')}）`);
+
+const hardPlan = [...html.matchAll(/<option value="([a-z_0-9]+)"/g)]
+  .map((m) => m[1]).filter((k) => backendPlans.includes(k));
+hardPlan.length
+  ? bad(`後台把方案寫死在 HTML 裡：${[...new Set(hardPlan)].join('、')} —— 改價之後會靜默漂掉`)
+  : ok('後台沒有寫死任何方案選項');
+
+// 價格同理。任何 NT$ 後面直接跟數字都是寫死的價格。
+const hardPrice = [...html.matchAll(/NT\$\s?[0-9][0-9,]*/g)].map((m) => m[0]);
+hardPrice.length
+  ? bad(`後台寫死了價格：${[...new Set(hardPrice)].join('、')} —— 應該由 /v1/admin/plans 提供`)
+  : ok('後台沒有寫死任何價格');
+
+html.includes('/v1/admin/plans')
+  ? ok(`方案下拉由伺服器提供（後端目前有 ${backendPlans.length} 個方案）`)
+  : bad('後台沒有向 /v1/admin/plans 取方案 —— 下拉一定是寫死的');
+
+// --- 4b. 訂單狀態要與後端的狀態機一致 ---------------------------------------
+// 後端多一個狀態而後台沒有對應標籤時，畫面會直接顯示英文代碼，
+// 而那看起來只像是「有一筆奇怪的訂單」，不像是漏了東西。
+{
+  const rank = api.match(/const ORDER_RANK = \{([^}]*)\}/);
+  if (!rank) bad('後端找不到 ORDER_RANK —— 訂單狀態機不見了');
+  else {
+    const states = [...rank[1].matchAll(/(\w+):/g)].map((m) => m[1]);
+    const labels = html.match(/const OR_LABEL = \{([^}]*)\}/);
+    if (!labels) bad('後台找不到 OR_LABEL —— 訂單狀態會顯示成英文代碼');
+    else {
+      const have = [...labels[1].matchAll(/(\w+):/g)].map((m) => m[1]);
+      const miss = states.filter((x) => !have.includes(x));
+      miss.length
+        ? bad(`後台沒有這些訂單狀態的中文標籤：${miss.join('、')}`)
+        : ok(`${states.length} 個訂單狀態都有中文標籤`);
+    }
+  }
+}
 
 // --- 5. 不可以把 ADMIN_TOKEN 存進 localStorage ------------------------------
 /localStorage[^\n]*(tok|token)/i.test(html)

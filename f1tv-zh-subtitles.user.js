@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.8.0
+// @version      4.10.3
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -43,7 +43,13 @@
                                  // 固定值是瞎猜：等太短批次湊不大，等太長漏接率飆升反而更貴
 
     fullPrefetch: true,          // 重播模式：從 HLS manifest 找出字幕播放清單，整軌抓下來一次翻完
-    fetchConcurrency: 3,         // 同時抓幾個分段（別開太大，避免對 CDN 造成突發負載）
+    // 同時抓幾個分段。收割時無人觀看，可以比擴充功能大方——
+    // 但仍別開太大：F1TV 有 Imperva，突發負載沒有好處。
+    fetchConcurrency: 6,
+    // 同時跑幾個翻譯批次。**這是收割速度的主要決定因素**——
+    // 實測 57 批平均 3.4 秒，串行要 192 秒、4 條並行約 48 秒。
+    // 超過 Anthropic 的速率限制會開始回 429，重試反而更慢，所以不要無限加大。
+    translateConcurrency: 4,
     fetchGapMs: 60,              // 每抓一段之間的間隔
     progressive: false,          // 英文先上、中文後補。語速快時舊句譯文會被判過期而不顯示，預設關閉
     workerInject: true,          // 攔截 blob worker，把 hook 注入播放器的 worker 內部
@@ -657,7 +663,16 @@ sorry mate → 抱歉
   // ---- 事件時間軸 ----
   // 所有重要狀態變化都經過這裡：印到 Console 讓人知道現在在做什麼，
   // 同時存進環形緩衝區，「匯出完整診斷」時一併帶出，回報問題不用再翻 Console。
-  const VERSION = '4.7.2';
+  // ⚠️ **這個值必須與檔案開頭 `// @version` 完全一致。**
+  //
+  // 兩邊各有用途：`@version` 是 Tampermonkey 判斷要不要更新的依據，
+  // `VERSION` 是診斷報告與事件時間軸顯示的版本。
+  // 漂掉之後**診斷報告會說謊**——實測就發生過：`@version` 已是 4.9.2，
+  // 診斷卻一路回報 v4.7.2，於是所有「使用者跑的是哪一版」的判斷全部錯誤，
+  // 而那是我們排查問題的第一個依據。
+  //
+  // 由 `tools/check-userscript-version.js` 把關。
+  const VERSION = '4.10.3';
   const eventLog = [];
   function logEvent(level, msg) {
     const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;
@@ -954,6 +969,17 @@ sorry mate → 抱歉
 
     if (CFG.progressive) showPending(text);   // 英文先上，中文稍後覆蓋
 
+    // ⚠️ **後端有 1,000 字元的單句上限，這裡一定要先擋。**
+    //    擴充功能早就有這道防線，userscript 一直沒有——同一條規則只套用在
+    //    一個產物上，正是坑 #21 那一類的漏法（規則學到了卻沒有橫向確認）。
+    //    F1TV 偶爾會把整段節目介紹塞進字幕容器，那一句送出去就會
+    //    讓整批被退回，畫面上出現「單句長度不可超過 1000 字元」。
+    if (text.length > MAX_LINE_LEN) {
+      stats.badLines = (stats.badLines || 0) + 1;
+      log('略過異常長度的字幕（' + text.length + ' 字元）');
+      return;
+    }
+
     queue.push(text);
     while (queue.length > CFG.maxQueue) queue.shift();
     drain();
@@ -1143,7 +1169,9 @@ sorry mate → 抱歉
 
     uploadInFlight = true;
     try {
-      const payload = { cid, lines };
+      // slug 讓後台分得出這是哪一場的哪個場次——只有 contentId 的話，
+      // 清單上會是一整排看不出意義的數字。
+      const payload = { cid, lines, slug: location.pathname };
       // 只有「整軌抓完且零失敗」才標記 segCount。這是給後續觀看者的完整度保證，
       // 有了它他們就能完全跳過整軌預抓（省上千次 CDN 請求）。
       if (harvestComplete && stats.playlistSegs > 0) payload.segCount = stats.playlistSegs;
@@ -1616,6 +1644,13 @@ sorry mate → 抱歉
     return out;
   }
 
+  /**
+   * 一句字幕的長度上限。**必須與後端的 MAX_LINE_LEN 一致。**
+   * 真正的口語句子不會超過 200 字元；會超過 1,000 的一定不是字幕
+   * （實測見過整段節目介紹被塞進字幕容器）。
+   */
+  const MAX_LINE_LEN = 1000;
+
   function onVttPayload(raw, url) {
     if (!CFG.prefetch || !enabled) return;
     stats.vttSeen++;
@@ -1629,9 +1664,13 @@ sorry mate → 抱歉
     }
 
     let added = 0;
+    let tooLong = 0;
     for (const c of cues) {
       const t = clean(c);
       if (!t || t.length < 2) continue;
+      // 與後端的 MAX_LINE_LEN 一致。整軌預抓一次送幾百句，
+      // 一句超長就會拖垮整批——而收割時沒有人在看畫面，會靜默少掉一段。
+      if (t.length > MAX_LINE_LEN) { tooLong++; continue; }
       const k = normKey(t);
       // 分段 VTT 前後會重疊，且同一句可能已翻過
       if (!k || prefetchSeen.has(k)) continue;
@@ -1647,6 +1686,10 @@ sorry mate → 抱歉
       enqueuedAt.set(k, Date.now());
       if (enqueuedAt.size > 3000) enqueuedAt.delete(enqueuedAt.keys().next().value);
       added++;
+    }
+    if (tooLong) {
+      stats.badLines = (stats.badLines || 0) + tooLong;
+      evWarn('已略過 ' + tooLong + ' 句異常長度的字幕（超過 ' + MAX_LINE_LEN + ' 字元）');
     }
     if (added) { log('VTT +' + added + ' 句，佇列 ' + prefetchQueue.length); scheduleFlush(); }
   }
@@ -1758,16 +1801,36 @@ sorry mate → 抱歉
     }
     let done = 0, lastPct = -1;
     try {
-      while (prefetchQueue.length && enabled) {
-        const batch = prefetchQueue.splice(0, CFG.batchSize);
-        await translateBatch(batch);
-        done += batch.length;
-        const pct = Math.floor((done / total) * 10) * 10;
-        if (total > CFG.batchSize && pct > lastPct && pct > 0 && pct < 100) {
-          lastPct = pct;
-          evInfo(`翻譯進度 ${pct}%（${done}/${total} 句，剩 ${prefetchQueue.length} 句）`);
+      // ⚠️ **這裡原本是嚴格串行的** —— `while` 迴圈裡 `await` 一批再拿下一批。
+      //    實測（390 段 / 815 句）：抓分段 91 秒、翻譯 **192 秒**，
+      //    57 批 × 平均 3.4 秒全部排隊等。翻譯才是收割慢的主因，不是抓取。
+      //
+      //    改成 N 條並行。批次之間彼此獨立（結果各自寫進 memo），
+      //    沒有順序需求，所以並行是安全的。
+      //
+      //    並發數不宜過大：Anthropic 有速率限制，而**超過之後會開始回 429**，
+      //    重試反而更慢。4 是實測甜蜜點附近的保守值，可由設定調整。
+      const workers = Math.max(1, Math.min(8, CFG.translateConcurrency || 4));
+      const runOne = async () => {
+        while (prefetchQueue.length && enabled) {
+          const batch = prefetchQueue.splice(0, CFG.batchSize);
+          if (!batch.length) return;
+          try {
+            await translateBatch(batch);
+          } catch (e) {
+            // 單一批次失敗不該拖垮其他並行的工作者
+            stats.errors++;
+            evWarn(`批次翻譯失敗（${batch.length} 句）：${e.message}`);
+          }
+          done += batch.length;
+          const pct = Math.floor((done / total) * 10) * 10;
+          if (total > CFG.batchSize && pct > lastPct && pct > 0 && pct < 100) {
+            lastPct = pct;
+            evInfo(`翻譯進度 ${pct}%（${done}/${total} 句，剩 ${prefetchQueue.length} 句）`);
+          }
         }
-      }
+      };
+      await Promise.all(new Array(workers).fill(0).map(runOne));
       if (total > CFG.batchSize) {
         evOk(`翻譯完成：${done} 句`);
         setPhase('就緒');
@@ -2226,6 +2289,314 @@ sorry mate → 抱歉
     alert('已啟動整軌預抓（' + sp.how + '）。\n進度請看 Console 與統計面板。');
   });
 
+
+  // ===========================================================================
+  // 自動收割佇列（管理員專用）
+  //
+  // 目的：把 F1TV 上的重播內容**在賽前一次跑完**，讓第一位觀眾的成本
+  //       由你在離峰時段付掉。直播無法預跑（內容還不存在），但一個週末
+  //       只有 4 場是真直播，其餘重播、賽後節目、集錦全部可以。
+  //
+  // ⚠️ **為什麼不寫成爬蟲或無頭瀏覽器**：F1TV 有 Imperva 機器人防護
+  //    （`reese84` cookie）。任何「不是真人在真瀏覽器裡操作」的模式都有被
+  //    擋掉的風險，而被擋掉之後連你自己都看不了。
+  //
+  //    這裡的做法是**讓同一個分頁自我導覽**：頁面載入 → 收割 → 換下一個網址。
+  //    對 F1TV 而言，那與你自己一支一支點開完全沒有區別——
+  //    因為它就是你自己的瀏覽器、你自己的登入狀態、你自己的分頁。
+  //
+  // 狀態存在 GM storage，所以**跨頁面導覽不會遺失**，關掉瀏覽器也還在。
+  // ===========================================================================
+  const HQ_KEY = 'harvestQueue';
+  const HQ_SETTLE_MS = 8000;      // 頁面載入後先等播放器起來
+  const HQ_POLL_MS = 3000;
+  const HQ_MAX_MS = 15 * 60000;   // 單支影片最多花這麼久，避免卡死整個佇列
+
+  /**
+   * 一筆佇列資料合不合法。
+   *
+   * 唯一能用的形式是 **`/detail/<數字>/<slug>`**。
+   * F1TV 少了 slug 一律 404，而 slug **無法從 id 反推**——
+   * `/detail/<id>` 不會轉址到正確網址，只會給你 404 頁面。
+   */
+  const HQ_VALID = /^\/detail\/\d+\/[A-Za-z0-9\-_]+$/;
+
+  function hqLoad() {
+    let d = null;
+    try { d = JSON.parse(GM_getValue(HQ_KEY, 'null')); } catch (e) { d = null; }
+    if (!d || !Array.isArray(d.queue)) {
+      return { queue: [], done: [], failed: [], running: false, startedAt: 0 };
+    }
+    // ⚠️ **自我修復舊格式。** 早期版本只存 contentId（例如 `1000010530`），
+    //    拿去組網址會變成 `f1tv.formula1.com1000010530/?action=play`——
+    //    連網域都拼錯，瀏覽器直接 ERR_NAME_NOT_RESOLVED。
+    //    與其要使用者自己記得清空佇列，不如在讀取時就把不合法的丟掉：
+    //    **舊資料留在儲存裡而程式碼假設它是新格式，是最難查的一種錯。**
+    const before = d.queue.length;
+    d.queue = d.queue.filter((x) => typeof x === 'string' && HQ_VALID.test(x));
+    if (d.queue.length !== before) {
+      d.dropped = (d.dropped || 0) + (before - d.queue.length);
+      hqSave(d);
+      log(`[自動收割] 清掉 ${before - d.queue.length} 筆舊格式資料（只有編號、沒有網址後綴）`);
+    }
+    return d;
+  }
+  function hqSave(d) { GM_setValue(HQ_KEY, JSON.stringify(d)); }
+
+  /**
+   * 要略過的內容（使用者指定）。
+   *
+   * 判斷依據是網址的 slug，因為那是唯一在列表頁就拿得到的分類資訊。
+   * 略過這些不是為了省事，是**這些內容的翻譯價值低而收割成本一樣高**——
+   * 一場記者會照樣要抓上千個分段。
+   */
+  const HQ_SKIP = [
+    /press-conference/i,
+    /\bf2\b|formula-2|formula2/i,
+    /\bf3\b|formula-3|formula3/i,
+    // Shows & Analysis 整類略過，但 weekend warm-up 要留（那是正式賽事週的節目）。
+    // ⚠️ `highlights` 刻意**不在**這裡——F1 精華是要收割的（使用者指定）。
+    //    支援賽事的精華（Carrera Cup 等）仍會被下面的規則擋掉。
+    /(show|analysis|preview|review|best-of|top-10|recap)/i,
+    // 保時捷超級盃與 F1 Academy／F1 Kids —— 支援賽事與兒童節目，
+    // 與 F2／F3 同理：翻譯價值低，但收割成本一樣是上千個分段。
+    /porsche|supercup|carrera-cup/i,
+    /f1-?kids|kids/i,
+  ];
+  const HQ_KEEP_ANYWAY = /weekend-warm-up/i;
+  // From The Archive 只收 2024 以後。年份通常出現在 slug 裡（例如 2024-monaco-gp-race）
+  const HQ_ARCHIVE = /archive/i;
+
+  function hqShouldSkip(href) {
+    const u = String(href || '').toLowerCase();
+    if (HQ_KEEP_ANYWAY.test(u)) return false;
+
+    // 典藏內容：抓得到年份就用年份判斷，抓不到就保守略過
+    if (HQ_ARCHIVE.test(u)) {
+      const y = (u.match(/\b(19|20)\d{2}\b/) || [])[0];
+      return !(y && Number(y) >= 2024);
+    }
+    // 一般內容：slug 裡有年份且早於 2024 也不要（舊賽季的重播）
+    const y = (u.match(/\b(19|20)\d{2}\b/) || [])[0];
+    if (y && Number(y) < 2024) return true;
+
+    return HQ_SKIP.some((re) => re.test(u));
+  }
+
+  /**
+   * 從目前頁面刮出影片連結。
+   *
+   * ⚠️ **一定要保留完整路徑，不能只存 contentId。**
+   *    F1TV 的網址是 `/detail/<id>/<slug>`，少了 slug 會直接 404——
+   *    第一版只存了 id，自動收割每一支都跳到 404 頁面。
+   */
+  function hqScrape() {
+    const map = new Map();     // path -> true（用 Map 去重且保順序）
+    const add = (raw) => {
+      const m = String(raw || '').match(/\/detail\/(\d+)(\/[A-Za-z0-9\-_]+)?/);
+      if (!m) return;
+      // 有 slug 就用完整路徑；沒有的話仍記下來，後面會提示那些抓不到。
+      // **沒有 slug 的絕不能進佇列**——F1TV 少了它一律 404，
+      // 而 slug 無法從 id 反推（`/detail/<id>` 不會轉址，只會給 404 頁面）。
+      const path = `/detail/${m[1]}${m[2] || ''}`;
+      if (hqShouldSkip(path)) return;
+      if (!map.has(path)) map.set(path, HQ_VALID.test(path));
+    };
+    document.querySelectorAll('a[href*="/detail/"]').forEach((a) => add(a.getAttribute('href')));
+    // SPA 有時把連結畫在別的屬性上，整頁掃一次當備援
+    (document.body.innerHTML.match(/\/detail\/\d+(?:\/[A-Za-z0-9\-_]+)?/g) || []).forEach(add);
+
+    const withSlug = [...map].filter(([, ok]) => ok).map(([p]) => p);
+    const noSlug = [...map].filter(([, ok]) => !ok).map(([p]) => p);
+    return { withSlug, noSlug };
+  }
+
+  GM_registerMenuCommand('📥 收集本頁影片到收割佇列', () => {
+    const { withSlug, noSlug } = hqScrape();
+    if (!withSlug.length && !noSlug.length) {
+      alert('這一頁找不到任何影片連結。\n\n請在 F1TV 的節目列表頁（例如某一場 GP 的頁面）再試一次，\n並先往下捲到底讓所有項目都載入。');
+      return;
+    }
+    const d = hqLoad();
+    const known = new Set([...d.queue, ...d.done, ...d.failed]);
+    const added = withSlug.filter((x) => !known.has(x));
+    d.queue.push(...added);
+    hqSave(d);
+    alert(`本頁找到 ${withSlug.length} 支可收割影片，新增 ${added.length} 支。\n\n`
+      + `目前佇列：${d.queue.length} 支待收割、${d.done.length} 支已完成。\n\n`
+      + (noSlug.length
+        ? `⚠️ 另有 ${noSlug.length} 個連結只抓到編號、沒有網址後綴，已略過\n`
+          + `　（那種網址會 404）。捲到底讓項目完整載入後再按一次通常就有了。\n\n`
+        : '')
+      + `已自動略過：記者會、F2、F3、Shows & Analysis（weekend warm-up 除外）、\n`
+      + `2024 年以前的內容。`);
+  });
+
+  GM_registerMenuCommand('▶ 開始 / 暫停自動收割', () => {
+    const d = hqLoad();
+    if (d.running) {
+      d.running = false; hqSave(d);
+      alert('已暫停。目前進度保留，隨時可以再按一次繼續。');
+      return;
+    }
+    if (!d.queue.length) { alert('佇列是空的。請先用「📥 收集本頁影片到收割佇列」。'); return; }
+    if (!GM_getValue('adminToken', '')) {
+      alert('未設定 ADMIN_TOKEN。\n\n自動收割會把譯文寫進共用快取，需要管理員權杖。');
+      return;
+    }
+    d.running = true; d.startedAt = Date.now(); hqSave(d);
+    alert(`開始自動收割，佇列 ${d.queue.length} 支。\n\n`
+      + `【可以切走，但有條件】\n`
+      + `Chrome 會把「背景分頁」的計時器節流到每分鐘一次，那會讓收割幾乎停住。\n`
+      + `不受影響的做法（擇一）：\n`
+      + `　1. 把這個分頁拉成獨立視窗，讓它保持可見（可以縮到角落，不要最小化）\n`
+      + `　2. 用 --disable-background-timer-throttling 啟動 Chrome\n\n`
+      + `影片持續播放通常能豁免部分節流，但**不保證**——\n`
+      + `隔一段時間回來看「📊 收割佇列狀態」確認有在前進。\n\n`
+      + `隨時可以再按選單暫停。`);
+    hqNext();
+  });
+
+  GM_registerMenuCommand('📊 收割佇列狀態', () => {
+    const d = hqLoad();
+    alert(`狀態：${d.running ? '執行中' : '已暫停'}\n\n`
+      + `待收割：${d.queue.length} 支\n已完成：${d.done.length} 支\n失敗：${d.failed.length} 支\n`
+      + (d.dropped ? `已自動清除的舊格式資料：${d.dropped} 筆（只有編號、缺網址後綴）\n` : '')
+      + '\n'
+      + (d.failed.length ? `失敗的 contentId：\n${d.failed.slice(0, 20).join(', ')}\n\n` : '')
+      + `清空佇列請用下一個選單項。`);
+  });
+
+  GM_registerMenuCommand('📤 複製收割網址對照（給後台補 slug）', () => {
+    // 後端無法從 contentId 反推 slug（F1TV 不提供反查，也不能爬），
+    // 但這份資料就在收割佇列裡——已完成、待收割、失敗的路徑全都是完整的。
+    // 貼到後台「翻譯清單 → 補 slug」就能把舊資料分組。
+    const d = hqLoad();
+    const all = [...new Set([...d.done, ...d.queue, ...d.failed])].filter((x) => HQ_VALID.test(x));
+    if (!all.length) {
+      alert('佇列裡沒有可用的網址。\n\n請先用「📥 收集本頁影片到收割佇列」收集，或跑過幾支收割。');
+      return;
+    }
+    const text = all.join('\n');
+    try {
+      GM_setClipboard(text);
+      alert(`已複製 ${all.length} 筆網址到剪貼簿。\n\n`
+        + `貼到後台的「翻譯清單 → 補 slug」欄位，按「上傳網址對照」即可。`);
+    } catch (e) {
+      // 剪貼簿失敗時至少讓他看得到內容
+      console.log('[PitLingo] 收割網址對照：\n' + text);
+      alert(`複製到剪貼簿失敗，內容已印在 Console（F12）。共 ${all.length} 筆。`);
+    }
+  });
+
+  GM_registerMenuCommand('🗑 清空收割佇列', () => {
+    if (!confirm('清空整個佇列（含已完成與失敗的紀錄）？')) return;
+    hqSave({ queue: [], done: [], failed: [], running: false, startedAt: 0 });
+    alert('已清空。');
+  });
+
+  /** 前往佇列裡的下一支影片。 */
+  function hqNext() {
+    const d = hqLoad();
+    if (!d.running) return;
+    const path = d.queue.shift();
+    if (!path) {
+      d.running = false; hqSave(d);
+      alert(`✅ 佇列跑完了。\n\n完成 ${d.done.length} 支、失敗 ${d.failed.length} 支。`);
+      return;
+    }
+    hqSave(d);
+
+    // 最後一道防線。`hqLoad` 已經濾過一次，但佇列也可能被別處寫入，
+    // 而導覽到一個拼錯的網址是**看起來像網路壞掉**的那種失敗——
+    // 使用者會去查 DNS，而真正的原因在這一行。
+    if (!HQ_VALID.test(path)) {
+      log(`[自動收割] 跳過不合法的項目：${path}`);
+      const cur = hqLoad(); cur.failed.push(path); hqSave(cur);
+      setTimeout(hqNext, 200);
+      return;
+    }
+
+    log(`[自動收割] 前往 ${path}（佇列剩 ${d.queue.length}）`);
+    // ⚠️ 一定要用完整路徑（含 slug）。只給 `/detail/<id>` 會 404，
+    //    而少了開頭的斜線會連網域都拼錯（ERR_NAME_NOT_RESOLVED）。
+    // `action=play` 讓播放器直接開始，否則要等人按播放。
+    location.href = `https://f1tv.formula1.com${path}?action=play`;
+  }
+
+  /**
+   * 這一支收割完了沒。
+   *
+   * 三個結束條件，缺一不可：
+   *   1. 收割不在進行中
+   *   2. 待翻佇列清空（否則譯文還沒回來就換頁，那些句子白抓了）
+   *   3. 已上傳完畢（`pendingUpload().n === 0`）
+   *
+   * ⚠️ 第 2、3 點是這裡最容易漏的：`harvestInFlight` 變成 false 只代表
+   *    「分段都抓完了」，那時翻譯可能還有幾百句在飛。太早換頁 =
+   *    抓了 1,000 個分段卻只上傳一半，下一個人還是要付費。
+   */
+  function hqDone() {
+    // ⚠️ **共用快取已經涵蓋整支影片時要立刻結束。**
+    //
+    // 這是最常見、也最該快的情況：第二次跑同一份佇列、或別人已經收割過。
+    // 舊版的結束條件是 `stats.segFetched > 0`，但這種情況**根本不會去抓分段**
+    // （`harvestSkipped++` 之後直接閒置），於是 segFetched 永遠是 0 →
+    // 判定成「還沒好」→ 白等 15 分鐘逾時 → 記成失敗。
+    //
+    // 實測診斷：`已跳過 1 次`、`清單/已抓 1203 / 0 段`、`快取完整度 1203 段 / 2216 句`
+    // ——資料明明齊全，佇列卻卡在那一支。
+    if (stats.harvestSkipped > 0) return true;
+    if (bundleSegCount > 0 && bundleLineCount > 0) return true;
+
+    if (harvestInFlight) return false;
+    if (prefetchQueue.length) return false;
+    try { if (pendingUpload().n > 0) return false; } catch (e) { /* 沒設 token 就略過 */ }
+    // 完全沒抓到東西也算結束（可能是沒有字幕的影片），但要能分辨
+    return stats.segFetched > 0 || stats.playlistSegs === 0;
+  }
+
+  /** 頁面載入後，若佇列在執行中就自動盯著這一支跑完。 */
+  function hqWatch() {
+    const d = hqLoad();
+    if (!d.running) return;
+
+    // ⚠️ 這裡曾經是 `const cid = currentContentId()` 而底下用 `path`——
+    //    **`path` 未定義，第一行 log 就拋 ReferenceError，整個盯梢迴圈當場死掉。**
+    //    而它在 `setTimeout` 的回呼裡，例外被吞掉、Console 也不一定看得到，
+    //    表現出來是「收割明明完成了，佇列就是不動」——完全沒有徵兆。
+    //    （實測診斷：390/390 段抓完、815 句已上傳，一分鐘後還停在同一頁）
+    const path = location.pathname;
+    if (!/\/detail\/\d+/.test(path)) return;
+
+    const t0 = Date.now();
+    log(`[自動收割] 盯著 ${path}，最長等 ${HQ_MAX_MS / 60000} 分鐘`);
+
+    const tick = () => {
+      const cur = hqLoad();
+      if (!cur.running) return;                       // 中途被暫停
+
+      if (hqDone()) {
+        cur.done.push(path); hqSave(cur);
+        log(`[自動收割] ${path} 完成（${stats.segFetched} 段 / 已上傳）`);
+        setTimeout(hqNext, 1500);
+        return;
+      }
+      if (Date.now() - t0 > HQ_MAX_MS) {
+        // 逾時不是災難——已翻的部分早就寫進共用快取了，只是這支沒跑完。
+        cur.failed.push(path); hqSave(cur);
+        log(`[自動收割] ${path} 逾時，跳過（已抓 ${stats.segFetched}/${stats.playlistSegs} 段）`);
+        setTimeout(hqNext, 1500);
+        return;
+      }
+      setTimeout(tick, HQ_POLL_MS);
+    };
+    setTimeout(tick, HQ_SETTLE_MS);
+  }
+
+  // 等頁面與播放器起來再開始盯
+  setTimeout(hqWatch, 3000);
+
   GM_registerMenuCommand('🧬 開 / 關 Worker 注入', () => {
     CFG.workerInject = !CFG.workerInject;
     GM_setValue('workerInject', CFG.workerInject);
@@ -2301,7 +2672,8 @@ sorry mate → 抱歉
     L.push('');
     L.push('──── 設定 ────');
     ['model', 'batchSize', 'flushDelayMs', 'adaptiveFlush', 'fullPrefetch', 'prefetch',
-     'workerInject', 'fetchConcurrency', 'captionPollMs', 'captionRoot', 'captionLabel']
+     'workerInject', 'fetchConcurrency', 'translateConcurrency',
+     'captionPollMs', 'captionRoot', 'captionLabel']
       .forEach(k => L.push(`${k} = ${JSON.stringify(CFG[k])}`));
     L.push('');
     L.push(`──── 事件時間軸（最近 ${Math.min(eventLog.length, 120)} 筆）────`);

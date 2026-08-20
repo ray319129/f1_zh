@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>聯絡我們 — PitLingo</title>
+<!--
+  https://pitlingo.com/contact
+
+  設計取捨：使用者原本想要「即時對話窗口」。改成**工單制**，理由：
+
+  1. 即時對話需要有人在線。一個人的規模做不到，而**掛著一個沒人回的
+     聊天視窗，比明確說「一個工作日內回覆」更傷信任**。
+  2. 送出後給一組工單編號，使用者有東西可以追、客服有鍵可以查。
+     這套機制擴充功能的診斷回報已經在用，後台不必再做第二份介面。
+  3. 技術問題請走擴充功能的「傳送診斷資訊」——那份帶著完整運作狀態，
+     比使用者用文字描述有效得多（已經抓出 6 個肉眼看不到的 bug）。
+-->
+<link rel="stylesheet" href="/site.css?v=4.4">
+</head>
+<body>
+<main class="narrow">
+
+<a class="back" href="/">← PitLingo</a>
+<h1>聯絡我們</h1>
+
+<div class="notice">
+  <strong>技術問題請改用擴充功能內建的診斷回報</strong>
+  <p>
+    字幕沒出現、翻譯有誤、播放異常 —— 請點擴充功能圖示 →「回報問題」→
+    <b>傳送診斷資訊</b>。那份回報帶著完整的運作狀態，
+    比用文字描述快得多，也準得多。
+  </p>
+</div>
+
+<p class="lead">
+  訂單、退款、代訂進度或其他問題，請填寫下方表單。
+  送出後會得到一組<b>工單編號</b>，後續詢問報這組編號即可。
+</p>
+
+<form id="form" novalidate>
+  <label class="field">
+    <span>Email</span>
+    <input id="contact" type="email" required autocomplete="email"
+           placeholder="我們會回覆到這個信箱">
+    <em>沒有 email 我們無法回覆你，這欄必填。</em>
+  </label>
+
+  <label class="field">
+    <span>訂單編號<em class="opt">選填</em></span>
+    <input id="orderId" maxlength="40" placeholder="PL26081812AB34CD">
+    <em>與訂單、退款、代訂有關時請填寫，可加快處理。</em>
+  </label>
+
+  <label class="field">
+    <span>問題描述</span>
+    <textarea id="message" rows="6" maxlength="4000" required
+              placeholder="請說明你遇到的狀況。與訂單有關時，附上購買時使用的 email 會更快。"></textarea>
+  </label>
+
+  <button id="go" type="submit" disabled>送出</button>
+  <p id="msg" class="msg"></p>
+</form>
+
+<div id="done" class="notice" hidden>
+  <strong>已收到，工單編號 <span id="ticket"></span></strong>
+  <p>
+    請記下這組編號。我們會在<b>一個工作日內</b>回覆到你填寫的信箱；
+    若超過期限仍未收到，請直接來信
+    <a href="mailto:pitlingo.office@gmail.com">pitlingo.office@gmail.com</a> 並附上編號。
+  </p>
+</div>
+
+<div class="faq">
+  <h2>常見問題</h2>
+  <details>
+    <summary>買了之後多久會收到授權碼？</summary>
+    <p>信用卡付款後立即寄出。ATM 或超商代碼繳費者，需待實際繳費完成後才會發送
+       —— 取號成功不等於付款完成。</p>
+  </details>
+  <details>
+    <summary>代訂服務多久完成？</summary>
+    <p>收款後三個工作日內。<b>觀看時仍需自備 VPN</b>，這點無法由代訂解決。</p>
+  </details>
+  <details>
+    <summary>可以退款嗎？</summary>
+    <p>數位服務於授權碼寄出後不適用七天鑑賞期（購買時已勾選同意）。
+       但若因我方原因無法使用，請走這裡的表單，我們會處理。</p>
+  </details>
+</div>
+
+<p class="hint">
+  <a href="/terms">使用條款</a>　·
+  <a href="/privacy">隱私權政策</a>　·
+  <a href="/buy">購買</a>
+</p>
+
+</main>
+<script src="/contact.js?v=4.4"></script>
+</body>
+</html>

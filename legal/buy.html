@@ -13,7 +13,7 @@
      沒有這個勾選，排除條款無效，使用者仍可主張無條件退貨。
      所以 checkout 端點也會再驗一次 agreed，不是只靠前端擋。
 -->
-<link rel="stylesheet" href="/site.css">
+<link rel="stylesheet" href="/site.css?v=4.4">
 </head>
 <body>
 <main class="narrow">
@@ -25,7 +25,95 @@
   每一場練習賽、衝刺賽、排位賽、正賽都有，不需註冊。
 </p>
 
+<p id="notice" class="notice" hidden></p>
+
+<!--
+  購買頁也要放示範影片。買家在掏錢之前最想確認的就是「實際長什麼樣」，
+  而這比任何文案都直接。`preload="none"` 同首頁：不點就不下載。
+-->
+<figure class="demo">
+  <video controls preload="none" playsinline
+         poster="/demo-poster.jpg" width="1280" height="720">
+    <source src="/demo.mp4" type="video/mp4">
+    您的瀏覽器不支援影片播放。
+  </video>
+  <figcaption>實際運作畫面（30 秒，含英文原聲）。字級與位置皆可自行調整。</figcaption>
+</figure>
+
+<h2 class="secTitle">字幕翻譯</h2>
 <div id="plans" class="plans"></div>
+
+<h2 class="secTitle">F1TV 代訂服務</h2>
+<p class="hint">
+  代為完成 F1TV 訂閱手續。<b>觀看時仍需自備 VPN</b>——F1TV 在台灣未提供服務，
+  這點無法由代訂解決，請務必先確認。
+</p>
+<div id="services" class="plans"></div>
+
+<!--
+  Pro 與 Premium 的差異。**表格與官方截圖並存**，兩者用途不同：
+    · 表格是主要內容——可搜尋、可翻譯、螢幕閱讀器讀得出來、手機不會糊
+    · 截圖是佐證——讓買家確認我們沒有寫錯官方的方案內容
+  只放截圖的話，手機使用者要放大才看得清楚；只放表格的話，
+  買家沒有辦法對照官方原文。
+-->
+<details class="compare">
+  <summary>Pro 與 Premium 差在哪？</summary>
+  <div class="compareBody">
+    <p class="hint">
+      兩者的直播、賽事內容與計時功能<b>完全相同</b>，
+      差別只在下方「Ultimate Live Immersion」這三項。
+    </p>
+
+    <div class="shots">
+      <figure>
+        <img src="/f1tv_pro_plan.jpg" alt="F1TV Pro 方案內容：Ultimate Live Immersion 三項為叉，其餘為勾" loading="lazy">
+        <figcaption>F1TV Pro（官方頁面）</figcaption>
+      </figure>
+      <figure>
+        <img src="/f1tv_premium_plan.jpg" alt="F1TV Premium 方案內容：全部項目皆為勾" loading="lazy">
+        <figcaption>F1TV Premium（官方頁面）</figcaption>
+      </figure>
+    </div>
+    <table>
+      <thead>
+        <tr><th>項目</th><th>Pro</th><th>Premium</th></tr>
+      </thead>
+      <tbody>
+        <tr class="grp"><td colspan="3">Ultimate Live Immersion</td></tr>
+        <tr><td>Multiview 多視角自訂畫面<em>Android 不支援</em></td><td class="no">✕</td><td class="yes">✓</td></tr>
+        <tr><td>4K UHD／HDR 畫質</td><td class="no">✕</td><td class="yes">✓</td></tr>
+        <tr><td>最多 6 台裝置同時觀看</td><td class="no">✕</td><td class="yes">✓</td></tr>
+
+        <tr class="grp"><td colspan="3">Official Live Stream</td></tr>
+        <tr><td>所有場次無廣告直播與隨選</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>車上鏡頭直播</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>車隊無線電直播</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>F2、F3、F1 學院、保時捷超級盃</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>比賽週末獨家節目與內容</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+
+        <tr class="grp"><td colspan="3">Essential Live Timing</td></tr>
+        <tr><td>即時計時、遙測、輪胎使用、車手位置圖</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>延遲重播</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>車隊無線電精選</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+        <tr><td>獨家節目、紀錄片與賽事典藏</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+      </tbody>
+    </table>
+    <p class="hint">以上為 F1TV 官方方案內容，如與官方公告不符以官方為準。</p>
+  </div>
+</details>
+
+<!--
+  購物車。**金額一律由後端 /v1/quote 算**——前端自己加總的話，
+  折抵規則一改就會跟結帳收的錢漂掉，而那是最直接的糾紛。
+-->
+<section id="cart" class="cart" hidden>
+  <h2 class="secTitle">購物車</h2>
+  <div id="cartLines"></div>
+  <div id="cartAdj" class="cartAdj"></div>
+  <div class="cartTotal"><span>應付金額</span><strong id="cartTotal">—</strong></div>
+  <p id="cartNote" class="hint"></p>
+</section>
 
 <form id="form" novalidate>
   <label class="field">
@@ -33,6 +121,24 @@
     <input id="email" type="email" required autocomplete="email"
            placeholder="授權碼會寄到這裡">
     <em>這是日後補發授權碼的唯一依據，請填寫常用信箱。</em>
+  </label>
+
+  <!--
+    升級補差價。要先填 email 才算得出來——抵扣是以 email 為鍵查本賽季
+    已付的一週通行證。放在 email 後面，順序本身就是說明。
+  -->
+  <label class="agree" id="upgradeWrap" hidden>
+    <input id="upgrade" type="checkbox">
+    <span>
+      我先前買過<b>一週通行證</b>，要升級為賽季通行證
+      <em>勾選後請填入那組授權碼憑證。</em>
+    </span>
+  </label>
+
+  <label class="field" id="upgradeKeyWrap" hidden>
+    <span>一週通行證授權碼</span>
+    <input id="upgradeKey" placeholder="PL-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+    <em id="creditNote"></em>
   </label>
 
   <label class="agree">
@@ -67,9 +173,14 @@
      詳見<a href="/terms">使用條款</a>。</p>
 </div>
 
+<p class="hint">
+  訂單、退款或代訂進度的問題，請走
+  <a href="/contact">聯絡我們</a>（會給你一組工單編號可以追蹤）。
+</p>
+
 </main>
 
 <form id="ecpay" method="post" hidden></form>
-<script src="/buy.js"></script>
+<script src="/buy.js?v=4.4"></script>
 </body>
 </html>

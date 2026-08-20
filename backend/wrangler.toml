@@ -48,6 +48,14 @@ DAILY_USD_CAP = "5"
 # REPORT_WEBHOOK = "https://..."
 REPORT_TO = "pitlingo.office@gmail.com"
 
+# 授權碼信的寄件者。網域必須先在 Resend 驗證（SPF/DKIM），否則會進垃圾桶。
+#   wrangler secret put RESEND_API_KEY
+# ⚠️ 沒設 RESEND_API_KEY 時**不會報錯，只是不寄信**——付款完成頁仍看得到授權碼，
+#    後台的訂單會標成「信未寄出」，可以用「補寄授權碼信」補。
+MAIL_FROM = "PitLingo <noreply@pitlingo.com>"
+SITE_URL = "https://pitlingo.com"
+API_URL = "https://api.pitlingo.com"
+
 # 金流回呼的驗簽。**沒設定任何一組時 webhook 會拒絕處理**——
 # 寧可不發碼，也不要開一個誰都能 POST 一筆假訂單來領授權的窗口。
 #   wrangler secret put ECPAY_HASH_KEY
@@ -63,3 +71,30 @@ REPORT_TO = "pitlingo.office@gmail.com"
 
 [observability]
 enabled = true
+
+# ---------------------------------------------------------------------------
+# Durable Objects：直播的並發去重
+#
+# 每支影片一個實例，負責「誰去翻哪幾句」。Cache API 與 KV 都沒有 CAS，
+# check-then-act 在同時抵達時完全失效（實測 10 個並發 → 10 次模型呼叫）；
+# DO 是單執行緒，認領因此是原子操作。
+#
+# ⚠️ **第一次帶著 migration 部署時，必須用 `wrangler deploy`，不能用
+#    `wrangler versions upload`。** Cloudflare 會直接拒絕：
+#      code 10211 — migrations must be fully applied via a non-versioned deployment
+#    原因是漸進式部署會讓新舊版本同時存在，而 DO migration 是全域一次性的狀態變更，
+#    兩者在語意上衝突。migration 套用完之後，後續版本才能恢復用 versions upload。
+#
+# ⚠️ **migrations 是不可逆的。** class 一旦部署就不能隨便改名或刪除，
+#    要改都必須再寫一次 migration。這是這個專案第一個
+#    「部署錯了不能單純回滾」的東西，改動前先想清楚。
+#
+# 用 new_sqlite_classes 而不是 new_classes：SQLite 後端是目前建議的預設值，
+# 而且我們只用它做協調，不存資料，兩者在這個用途上沒有差別。
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "SubtitleRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SubtitleRoom"]

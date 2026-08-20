@@ -22,7 +22,15 @@ const fail = (label, detail) => { errors.push(label + (detail ? '：' + detail :
 
 // --- 把 index.js 載進來（去掉 export default，其餘原封不動）-----------------
 let src = fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
-src = src.replace(/export default \{[\s\S]*\};\s*$/, '');
+// ⚠️ 只剝掉 `export default { ... };` 這一塊，**不要貪婪吃到檔案結尾**。
+//    原本寫成 `[\s\S]*\};\s*$`，假設 export 是檔案的最後一段；
+//    CORS 重構把 `handleRequest` 移到 export 後面之後這個假設就不成立，
+//    正則整個比對不到 → `export default` 留著 → 在 CommonJS 沙箱裡直接語法錯誤。
+//    症狀是這支檢查自己爆掉，而不是回報後端有問題。
+src = src.replace(/export default \{[\s\S]*?\n\};\r?\n/, '');
+// Durable Object 的 `export class` 也要剝，否則沙箱在那一行語法錯誤，
+// 而錯誤訊息指向 index.js 的行號，看起來像後端壞掉而不是檢查工具壞掉。
+src = src.replace(/\bexport\s+class\s+/g, 'class ');
 
 const sandbox = {
   crypto: require('crypto').webcrypto,
@@ -38,7 +46,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, SEASON_TIERS };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -478,32 +486,212 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     }
   }
 
-  // ---- 19. 賽季中的分段定價 ----
-  // 8 月才加入的人付 599 卻只看得到剩下 8 場，會覺得不划算——
-  // 而「覺得不划算」不會變成客訴，會變成不買。
+  // ---- 19. Season Pass 的分段定價 ----
+  //
+  // 依據在 2026-08-17 從「月份」改成「剩餘比賽週末」。月份原本是剩餘量的
+  // 代理指標，但 2026 因中東戰事少了兩場、四月整月空白，代理就失效了：
+  // 舊規則在 8/17 會收 399 元賣 10 個週末，比單買 Weekend Pass 還貴。
+  //
+  // **這裡驗的是「使用者算得出來的那件事」**：整季永遠要比單買便宜。
   {
-    const at = (m) => A.seasonPriceNow(599, Date.UTC(2026, m - 1, 15));
-    const rows = [1, 3, 6, 9, 11].map((m) => [m, at(m)]);
-    rows.forEach(([m, r]) => console.log(`     ${String(m).padStart(2)} 月　NT$${String(r.price).padStart(3)}　${r.tier}`));
+    const WEEKEND = 39;
+    const at = (d) => A.seasonPriceNow(A.PRICE_FIRST_HALF, Date.parse(d + 'T12:00:00Z'));
+    const days = ['2026-02-01', '2026-03-07', '2026-06-01', '2026-07-20',
+      '2026-08-01', '2026-08-17', '2026-08-25', '2026-09-20', '2026-11-25'];
+    const rows = days.map((d) => [d, at(d)]);
+    rows.forEach(([d, r]) => console.log(`     ${d}　剩 ${String(r.weekendsLeft).padStart(2)} 週末`
+      + `　NT$${String(r.price).padStart(3)}　${r.tier}`));
 
-    at(3).price === 599 ? ok('分段定價：季初全價') : fail('分段定價：季初不是全價', String(at(3).price));
-    at(11).price < at(3).price ? ok('分段定價：越晚越便宜') : fail('分段定價：季末沒有比較便宜');
-    // 價格必須單調不遞增，否則會出現「早買比較貴」的荒謬情況
+    // 1. **只能有三個價格。** 選項一多使用者就猶豫，猶豫的結果是不買。
+    const distinct = [...new Set(rows.map(([, r]) => r.price))].sort((a, b) => b - a);
+    distinct.length <= 2 && distinct.includes(A.PRICE_FIRST_HALF)
+      ? ok(`定價：整季只出現 ${distinct.length} 種價格（${distinct.join(' / ')}）＋單場 ${WEEKEND}`)
+      : fail('定價：整季出現太多種價格 —— 使用者會混亂', distinct.join('/'));
+
+    // 2. 夏休前是上半季價、夏休起是下半季價。分界用 F1 的夏休，不是月份。
+    at('2026-06-01').price === A.PRICE_FIRST_HALF
+      ? ok('定價：夏休前收上半季價') : fail('定價：夏休前價格不對', String(at('2026-06-01').price));
+    // 夏休前的最後幾週剩餘變少，守門會提早套用下半季價（見 seasonPriceNow 的說明）。
+    // 這不是 bug 而是刻意的：599 元賣 11 個週末會比買 11 張單場票（429）貴 40%。
+    at('2026-07-20').price === A.PRICE_SECOND_HALF
+      ? ok('定價：夏休前所剩不多時提早套用下半季價（避免比單買貴）')
+      : fail('定價：守門沒有生效，599 會賣得比單買貴', String(at('2026-07-20').price));
+    at('2026-08-01').price === A.PRICE_SECOND_HALF
+      ? ok('定價：夏休期間已是下半季價') : fail('定價：夏休期間價格不對', String(at('2026-08-01').price));
+    at('2026-08-25').price === A.PRICE_SECOND_HALF
+      ? ok('定價：夏休後收下半季價') : fail('定價：夏休後價格不對', String(at('2026-08-25').price));
+    // 分界必須在夏休，不能被四月那個更長的空檔騙走（巴林與沙烏地取消造成 33 天空檔）
+    at('2026-04-15').price === A.PRICE_FIRST_HALF
+      ? ok('定價：四月的長空檔沒有被誤判成夏休')
+      : fail('定價：分界被四月的空檔騙走了 —— 上半季會整段賣錯價');
+
+    // 3. **核心約束**：整季票在每一段**剛開始生效時**要明顯划算。
+    //
+    //    只有兩個整季價的必然結果：一段價格要涵蓋很長的區間，
+    //    到那一段的尾巴時剩餘週末已經變少，每個週末的單價自然變高。
+    //    所以驗的是「這一段開始時划不划算」，而不是「整段從頭到尾都划算」——
+    //    後者用兩段價格在數學上做不到，寫成檢查只會逼出第三段價格。
+    //    尾巴變貴的那段區間由**升級補差價**接手：使用者先買單場，
+    //    之後升級只補差額，不會吃虧。
+    const thisSeason = rows.filter(([, r]) => !r.nextSeason && r.weekendsLeft > 0);
+    const entry = [
+      ['上半季', at('2026-02-01')],
+      ['下半季', at('2026-08-01')],
+    ];
+    const badEntry = entry.filter(([, r]) => r.price / r.weekendsLeft > WEEKEND * 0.8);
+    badEntry.length
+      ? fail('定價：某一段一開始就不划算', badEntry.map(([n, r]) =>
+        `${n} NT$${(r.price / r.weekendsLeft).toFixed(1)}/週末`).join('、'))
+      : ok('定價：兩段整季價在生效當下都比單買便宜 20% 以上　'
+        + entry.map(([n, r]) => `${n} NT$${(r.price / r.weekendsLeft).toFixed(1)}`).join('　'));
+
+    // 3b. **絕對底線**：任何時候整季票都不可以比「單場 × 剩餘週末」還貴。
+    //     這條沒有例外——出現一次就是把使用者當傻子。
+    const worse = thisSeason.filter(([, r]) => r.price > WEEKEND * r.weekendsLeft);
+    worse.length
+      ? fail('定價：整季票竟然比一場一場買還貴', worse.map(([d, r]) =>
+        `${d}（${r.price} > ${WEEKEND}×${r.weekendsLeft}）`).join('、'))
+      : ok('定價：任何時候整季票都不比一場一場買貴');
+
+    // 3c. 資訊性：每一段從哪一天起「不再明顯划算」，給定價決策參考
+    const crossover = (price) => Math.ceil(price / (WEEKEND * 0.8));
+    console.log(`     參考：NT$${A.PRICE_FIRST_HALF} 需 ≥${crossover(A.PRICE_FIRST_HALF)} 個週末才算明顯划算；`
+      + `NT$${A.PRICE_SECOND_HALF} 需 ≥${crossover(A.PRICE_SECOND_HALF)} 個`);
+
+    // 4. 本賽季內不會早買反而比較貴
     let mono = true, prev = Infinity;
-    for (let m = 3; m <= 12; m++) { const p = at(m).price; if (p > prev) mono = false; prev = p; }
-    mono ? ok('分段定價：3~12 月單調不遞增（不會早買比較貴）') : fail('分段定價：中途變貴了');
-    // 1~2 月買的是即將開始的新賽季，該收全價
-    at(1).price === 599 ? ok('分段定價：1~2 月算新賽季，收全價') : fail('分段定價：跨年處理不對');
-    // 折扣價取整到 10 元（牌價本身是 599，不在此限）。
-    // 而且**折扣價永遠不可高於牌價**——round 會讓 599×1.0 變成 600，那很荒謬。
-    const discounted = rows.filter(([, r]) => r.price !== 599);
-    discounted.every(([, r]) => r.price % 10 === 0)
-      ? ok('分段定價：折扣價一律取整到 10 元') : fail('分段定價：折扣價出現零頭');
-    rows.every(([, r]) => r.price <= 599)
-      ? ok('分段定價：任何時候都不高於牌價') : fail('分段定價：折扣價竟然高於牌價');
+    for (const [, r] of thisSeason) { if (r.price > prev) mono = false; prev = r.price; }
+    mono ? ok('定價：本賽季內單調不遞增（不會早買比較貴）') : fail('定價：中途變貴了');
+
+    // 5. 剩不到 NEXT_SEASON_MIN_WEEKENDS 個週末時改賣下一季，而且**必須標示出來**
+    const late = at('2026-11-25');
+    late.nextSeason && late.price === A.PRICE_FIRST_HALF
+      ? ok(`定價：剩不到 ${A.NEXT_SEASON_MIN_WEEKENDS} 個週末時改賣下一賽季`)
+      : fail('定價：季末沒有切到下一賽季', JSON.stringify(late));
+    late.until > at('2026-06-01').until
+      ? ok('定價：下一賽季的效期確實比本賽季晚')
+      : fail('定價：下一賽季的效期沒有往後 —— 使用者付了錢卻拿到今年的');
+    // 切換點必須就在「整季票開始不划算」之前，不能晚
+    A.PRICE_SECOND_HALF <= WEEKEND * A.NEXT_SEASON_MIN_WEEKENDS
+      ? ok(`定價：切換門檻 ${A.NEXT_SEASON_MIN_WEEKENDS} 個週末，在那之前整季票都不會比單買貴`)
+      : fail('定價：切換太晚 —— 會有一段時間整季票比單買貴');
+
+    // 6. 任何時候都不高於上半季牌價
+    rows.every(([, r]) => r.price <= A.PRICE_FIRST_HALF)
+      ? ok('定價：任何時候都不高於上半季牌價') : fail('定價：價格竟然高於牌價');
   }
 
-  // ---- 20. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
+  // ---- 19b. Weekend Pass 綁的是比賽週末，不是購買時間 ----
+  // 舊版是「發碼後 4 天」，提前一週買的人會在比賽開始前就過期——
+  // 付了錢什麼都看不到，而且不會有任何錯誤訊息。
+  if (typeof A.weekendWindow === 'function') {
+    const w = A.weekendWindow(Date.parse('2026-08-17T12:00:00Z'));
+    if (!w) { fail('Weekend Pass：算不出比賽週末 —— 賽程可能沒讀到'); } else {
+      const d = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+      console.log(`     下一場：${w.gp.name}　生效 ${d(w.startsAt)}　到期 ${d(w.expiresAt)}`);
+      // 2026 荷蘭站：練習賽 8/21（五）、正賽 8/23（日）
+      d(w.startsAt) === '2026-08-20'
+        ? ok('Weekend Pass：從該比賽週的星期四起生效') : fail('Weekend Pass：生效日不是星期四', d(w.startsAt));
+      w.expiresAt > A.dayStartSec(w.gp.end)
+        ? ok('Weekend Pass：效期蓋過正賽當天（涵蓋各站時區）') : fail('Weekend Pass：正賽當天就過期了');
+      const buyEarly = Date.parse('2026-08-10T12:00:00Z');
+      A.weekendWindow(buyEarly).expiresAt > buyEarly / 1000 + 4 * 86400
+        ? ok('Weekend Pass：提前一週購買仍涵蓋到比賽（舊的「4 天」會過期）')
+        : fail('Weekend Pass：提前購買會在比賽前過期 —— 這正是要修掉的那個 bug');
+    }
+  }
+
+  // ---- 19b. 代訂不可以變成一張永久字幕授權 ----
+  //
+  // 這是**送錢出去的漏洞**，而且完全靜默：購物車裡全是代訂時，
+  // quoteCart 的 primary 會取到代訂方案本身，而代訂方案沒有 days／
+  // untilSeasonEnd／weekBound，planExpiry 回 null ＝ 無期限。
+  // 買一次 79 元的五天代訂，拿到的是永遠不會過期的字幕授權。
+  {
+    const envQ = { SUBS: { get: async () => null, put: async () => {}, list: async () => ({ keys: [], list_complete: true }) } };
+
+    const onlySvc = await A.quoteCart(envQ, [{ key: 'svc_pro_1m_own', qty: 1 }], {});
+    onlySvc.primary === 'week_svc'
+      ? ok('代訂（附贈一週）：主方案是 week_svc，不是代訂方案本身')
+      : fail('代訂（附贈一週）：主方案是 ' + onlySvc.primary + ' —— 會發出無期限授權');
+
+    const noBundle = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }], {});
+    noBundle.primary === 'svc_none'
+      ? ok('代訂（不附贈）：主方案是 svc_none')
+      : fail('代訂（不附贈）：主方案是 ' + noBundle.primary);
+
+    // 真正要擋的是這件事：這兩個方案都不可以算出「無期限」
+    for (const k of ['week_svc', 'svc_none', 'svc_pro_5d', 'svc_pro_1m_own']) {
+      const e = A.planExpiry(k);
+      e != null
+        ? ok('方案 ' + k + ' 有明確期限（不是無期限）')
+        : fail('方案 ' + k + ' 的 planExpiry 回 null ＝ 永久授權');
+    }
+    A.planExpiry('svc_none') < Math.floor(Date.now() / 1000)
+      ? ok('svc_none 立刻到期（不含字幕授權）')
+      : fail('svc_none 竟然還沒到期');
+
+    // 混合購物車：有正常方案時，主方案還是那個正常方案
+    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }, { key: 'week', qty: 1 }], {});
+    mixed.primary === 'week'
+      ? ok('混合購物車：主方案取非代訂的那個')
+      : fail('混合購物車：主方案是 ' + mixed.primary);
+
+    // 內部方案不可以被拿去結帳
+    const bad = await A.quoteCart(envQ, [{ key: 'week_svc', qty: 1 }], {});
+    bad.error
+      ? ok('內部方案不能結帳（week_svc 被擋下）')
+      : fail('內部方案竟然可以結帳 —— 等於 0 元買到一週');
+
+    // 代訂送的那一週不可以拿來折抵賽季票
+    A.PLANS.week_svc.fromService === true
+      ? ok('代訂附贈的一週有 fromService 標記（不列入升級折抵）')
+      : fail('代訂附贈的一週沒有 fromService 標記');
+  }
+
+  // ---- 20. 訂單狀態機不可以倒退 ----
+  //
+  // 這是**資安檢查，不是資料整潔檢查**。付款結果的導回頁是使用者的瀏覽器送的，
+  // 內容可以偽造；如果 patchOrder 允許把已付款的訂單改回 failed，
+  // 任何人都能拿別人的訂單編號去把那筆標成失敗。
+  {
+    const store = new Map();
+    const env = {
+      SUBS: {
+        get: async (k) => (store.has(k) ? store.get(k) : null),
+        put: async (k, v) => { store.set(k, v); },
+        delete: async (k) => { store.delete(k); },
+      },
+    };
+    await A.patchOrder(env, 'PLTEST1', { status: 'created', price: 39, email: 'a@b.c' });
+    await A.patchOrder(env, 'PLTEST1', { status: 'paid', licenseKey: 'AAAA-BBBB-CCCC' });
+    await A.patchOrder(env, 'PLTEST1', { status: 'failed', failMsg: '偽造的導回' });
+    const o = await A.readOrder(env, 'PLTEST1');
+    o.status === 'paid'
+      ? ok('訂單：已付款之後不可能被改回失敗（導回頁可偽造）')
+      : fail('訂單：已付款被改成了 ' + o.status + ' —— 任何人都能把別人的訂單標成失敗');
+    o.licenseKey === 'AAAA-BBBB-CCCC' && o.email === 'a@b.c'
+      ? ok('訂單：後來的更新不會洗掉先前的欄位')
+      : fail('訂單：欄位被覆寫掉了');
+
+    // 前進方向要放行，否則取號、付款都寫不進去，後台永遠停在「未完成付款」
+    await A.patchOrder(env, 'PLTEST2', { status: 'created' });
+    await A.patchOrder(env, 'PLTEST2', { status: 'awaiting' });
+    (await A.readOrder(env, 'PLTEST2')).status === 'awaiting'
+      ? ok('訂單：狀態可以往前推進')
+      : fail('訂單：往前推進被擋掉了');
+
+    // metadata 是後台列表唯一的資料來源（不逐筆 get），超過 1024 bytes 會被 KV 拒絕
+    const meta = A.ordMeta({
+      status: 'paid', at: 1, price: 599, email: 'x'.repeat(200),
+      summary: '很長的商品名稱'.repeat(40), services: [{ status: 'pending' }], mailed: true,
+    });
+    JSON.stringify(meta).length <= 1024
+      ? ok('訂單：metadata 在 KV 的 1024 bytes 上限內')
+      : fail('訂單：metadata 太大，KV 會拒絕寫入', JSON.stringify(meta).length + ' bytes');
+  }
+
+  // ---- 21. normKey 仍與其他兩份一致（這裡只確認函式還在且可執行）----
   A.normKey('Box, BOX!') === 'box box' ? ok('normKey：行為未被改動') : fail('normKey：行為改變了', A.normKey('Box, BOX!'));
 
   console.log('');

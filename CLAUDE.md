@@ -11,9 +11,9 @@
 
 | 產物 | 角色 | 版本 |
 |---|---|---|
-| `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取） | v4.8.0 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取** | v2.7 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.15.0 |
+| `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取，v4.9.0 起可自動跑整個佇列） | v4.10.3 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v4.6 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.19.2 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -29,6 +29,7 @@
 | `BUSINESS.md` | **定價、免費層、代訂服務的決策紀錄**（含我提過但未採納的保留意見） | 談商業時 |
 | `legal/` | **隱私權政策與使用條款**。已部署到 Cloudflare Pages（專案 `pitlingo`），部署指令：`wrangler pages deploy legal --project-name pitlingo --branch main` | 上架前 |
 | `AUDIT-2026-08-16.md` | **全面審查報告**：已修缺陷、刻意接受的風險、尚未驗證的部分、上線前阻擋項 | **接手或上線前必讀** |
+| `LIVE-TEST.md` | **直播實測計畫**：五個要量的數字、三個 Chrome 設定檔的做法、判斷要不要做 DO 步驟 4~5 的準則 | **測直播前必讀** |
 | `P3-PLAN.md` | **分階段推送、成本後台、金流比較、介面規劃、上線檢查清單** | **做 P3 時從這裡開始** |
 | `F1TV_即時繁體中文字幕工具_產品與Launch整合企劃.md` | 品牌、定價、Landing Page、Launch 時程（使用者與 ChatGPT 討論的產物） | 談品牌／定價時 |
 
@@ -66,6 +67,11 @@
 | 17 | **移植 userscript 的能力時，逐項確認它在沒有 ADMIN_TOKEN 的世界裡還成立**（坑 #25） |
 | 18 | **折扣價的取整一律用 floor**。round 會讓 599×1.0 變成 600，比牌價還貴 |
 | 19 | **新增設定時問「這會不會關掉某個預設值」**。加 `[[routes]]` 會靜默關閉 workers.dev，所有安裝同時斷線（坑 #32） |
+| 20 | **過濾條件不可以只看大小、不看型別**。`n < 300000` 把 HLS 音訊分段全掃進來，clone + 解碼每個分段 → **播放卡頓**，而註解還寫著「只 clone 小的文字類回應」（坑 #33）|
+| 22 | **我們的背景請求要讓路給影片**。整軌預抓與影片打同一個 CDN，不標 `priority:'low'`、不看緩衝存量就會讓 ABR 降解析度（坑 #34）|
+| 23 | **`node --check` 對 ESM 有盲點**。後端是 ESM 卻用 `.js` 副檔名，尾端多一個逗號它會放行而 wrangler 爆掉 → check-all 已加「以 ESM 解析」（坑 #35）|
+| 24 | **正則字面量是延遲編譯的**。`node --check`、`new Function`、`vm.Script`、`esbuild` **四者全部放行**無效的正則，只在執行到那一行才爆炸 → `node tools/check-regex.js`（坑 #36）|
+| 21 | **字串裡的程式碼要單獨編譯過**。注入 worker 的那段是樣板字串，`node --check` 看不到它，壞掉時字幕完全不出現且不報錯 → `node tools/check-inject.js` |
 
 ## 關鍵技術事實（已實測，不要重新驗證）
 
@@ -98,6 +104,7 @@
 |---|---|---|---|
 | `normKey()` | 3（backend／extension／userscript） | 同一句算出不同快取鍵，共用快取整個失效 | `node tools/check-normkey.js` |
 | `SYSTEM_PROMPT` | 2（backend／userscript） | 兩個產物翻出不同結果；低於 4,096 tokens 還會讓 prompt 快取失效 | `node tools/check-prompt.js` |
+| userscript 版本號 | 2（`@version`／`const VERSION`） | **診斷報告會說謊**——回報的版本不是實際跑的版本，排查全部被誤導 | `node tools/check-userscript-version.js` |
 
 userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用模組，只能靠檢查工具擋漂移。
 
@@ -115,8 +122,17 @@ userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用
 
 - Windows、PowerShell（Bash 工具也可用）
 - 後端：`cd backend && wrangler deploy`。**上線後改用 `wrangler versions upload` + `wrangler versions deploy`**（按比例切流，回滾秒級）
+  ⚠️ **但帶 DO migration 的那一次必須用 `wrangler deploy`**——Cloudflare 會用 code 10211 拒絕 versions upload（migration 是全域一次性狀態變更，與漸進式部署語意衝突）
 - 擴充功能：`chrome://extensions` → 載入未封裝項目 → `extension/`。**改 manifest 後必須按「重新載入」**
 - API key 存在 Cloudflare secrets 與 Tampermonkey `GM_setValue`，**不在程式碼裡**
+- **後台已移到 `legal/admin.html`**，隨網站部署到 `https://pitlingo.com/admin`（跨裝置用）。
+  唯一的門是 `ADMIN_TOKEN`——**上線前務必輪換，並考慮加 Cloudflare Access**
+- 寄信用 Resend：`wrangler secret put RESEND_API_KEY`，`MAIL_FROM` 放 vars，網域要在 Resend 驗證
+- **後台的方案與價格一律由 `/v1/admin/plans` 提供，不准寫死在 `admin.html` 裡**——
+  寫死過一次，改價之後後台還在發早鳥碼，而且完全不報錯（`check-admin.js` 現在會擋）
+- **後台已移到 `legal/admin.html`**，隨網站部署到 `https://pitlingo.com/admin`（跨裝置用）。
+  唯一的門是 `ADMIN_TOKEN`——**上線前務必輪換，並考慮加 Cloudflare Access**
+- 寄信用 Resend：`wrangler secret put RESEND_API_KEY`，`MAIL_FROM` 放 vars，網域要在 Resend 驗證
 - `.gitignore` 已排除機密與 `.wrangler/`
 
 ## 測試工具（v0.5.0 起，**上線前必須移除**）

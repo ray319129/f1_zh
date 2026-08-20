@@ -184,3 +184,17 @@ button.secondary { background: transparent; color: inherit; border-color: var(--
 .notice p { margin: 0 0 6px; color: var(--dim); }
 .notice p:last-child { margin-bottom: 0; }
 .notice b { color: inherit; font-weight: 600; }
+
+/* 購買入口。做成明顯的按鈕而不是文字連結——
+   免費額度用完的人打開這一頁，第一眼要看得到出路。 */
+.buyBox {
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px solid var(--line, rgba(128,128,128,.25));
+  text-align: center;
+}
+.buyBtn {
+  display: block; margin: 8px 0; padding: 11px 16px;
+  background: var(--accent, #e10600); color: #fff;
+  border-radius: 8px; text-decoration: none; font-weight: 600;
+}
+.buyBtn:hover { filter: brightness(1.1); }

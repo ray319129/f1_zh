@@ -23,16 +23,6 @@ h3 { font-size: 16px; margin: 20px 0 4px; }
 code { background: rgba(128,128,128,.14); padding: 1px 6px; border-radius: 4px; font-size: .9em; }
 
 /* 方案選擇 */
-.plans { display: grid; gap: 12px; margin-bottom: 28px; }
-.plan {
-  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px;
-  text-align: left; padding: 16px 18px; border: 1px solid var(--line);
-  border-radius: 12px; background: transparent; color: inherit; cursor: pointer;
-  font: inherit; position: relative;
-}
-.plan:hover:not(.out) { border-color: var(--accent); }
-.plan.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.plan.out { opacity: .45; cursor: default; }
 .pname { font-weight: 600; }
 .pprice { font-size: 20px; font-weight: 600; grid-row: 1 / 3; align-self: center; }
 .pnote { font-size: 13px; color: var(--dim); }
@@ -69,3 +59,115 @@ table.pay th { width: 130px; font-size: 14px; color: var(--dim); font-weight: 40
 table.pay td { font-family: ui-monospace, monospace; }
 .faq h3 { margin-top: 18px; }
 .faq p { margin: 4px 0 0; color: var(--dim); font-size: 15px; }
+
+/* ---- 購物車（v3.5 購買頁改版）---- */
+/* 金額一律由後端算，這裡只負責排版；樣式不含任何計算邏輯。 */
+.secTitle { font-size: 1.05rem; margin: 1.6rem 0 .6rem; }
+
+.cart { border: 1px solid var(--line, #d4d4d8); border-radius: 8px; padding: 1rem; margin: 1.5rem 0; }
+.cartRow { display: flex; justify-content: space-between; gap: 1rem; padding: .35rem 0; }
+.cartRow em { display: block; font-size: .8rem; opacity: .75; font-style: normal; }
+/* 折抵是好消息，用綠色（--ok）；--accent 是品牌紅，會看起來像錯誤 */
+.cartRow.adj { color: var(--ok); }
+.cartTotal {
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-top: 1px solid var(--line, #d4d4d8); margin-top: .6rem; padding-top: .6rem;
+}
+.cartTotal strong { font-size: 1.4rem; }
+
+/* 聯絡我們＝工單入口。做成按鈕是為了讓它明顯不同於一般文字連結，
+   避免與頁尾的 email 備援被當成同一件事。 */
+nav a.cta {
+  border: 1px solid currentColor; border-radius: 999px;
+  padding: .3rem .9rem; text-decoration: none;
+}
+nav a.cta:hover { background: currentColor; color: Canvas; }
+
+/* 折抵失敗的原因文字。要看得出是警告，但不必紅到像壞掉。 */
+.warnText { color: var(--warn, #b45309); }
+
+/* ⚠️ `hidden` 屬性一定要壓過元素自己的 display。
+   `.field { display: flex }` 這類規則的優先度高於瀏覽器預設的 `[hidden]{display:none}`，
+   結果是「藏起來的欄位照樣顯示」——授權碼欄位在沒勾選升級時就這樣露了出來。
+   這是 HTML 的 hidden 屬性最常見的失效方式。 */
+[hidden] { display: none !important; }
+
+/* ---- 方案卡片（v4.1 改成可展開）----
+   12 個方案每張都攤開完整說明時整頁會變成幾千字，
+   標題與價格被擠成一團，使用者連「有哪些方案」都看不出來。
+   收合時只給名稱＋價格＋一行重點，細節放進 <details>。 */
+.plans { display: grid; gap: .75rem; }
+
+.plan {
+  border: 1px solid var(--line, #d4d4d8);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.plan.on { border-color: var(--accent, #16a34a); box-shadow: inset 0 0 0 1px var(--accent, #16a34a); }
+
+/* 選取用的按鈕。整塊可點，但不含 <details>——
+   想看說明卻把方案加進購物車是最容易踩到的誤操作。 */
+.planHead {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
+  width: 100%; padding: .9rem 1rem; background: none; border: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.planHead:hover { background: rgba(128, 128, 128, .07); }
+.plan.on .planHead::before { content: "✓ "; color: var(--accent, #16a34a); font-weight: 700; }
+
+.planName { font-weight: 600; line-height: 1.4; }
+.planPrice { font-size: 1.25rem; font-weight: 600; white-space: nowrap; }
+
+.planNote {
+  padding: 0 1rem .7rem; font-size: .82rem; line-height: 1.6; opacity: .85;
+}
+.planNote .warn { color: var(--warn, #b45309); }
+
+.planMore { border-top: 1px solid var(--line, #d4d4d8); }
+.planMore > summary {
+  padding: .55rem 1rem; font-size: .82rem; cursor: pointer; opacity: .75;
+  list-style: none;
+}
+.planMore > summary::-webkit-details-marker { display: none; }
+.planMore > summary::before { content: "▸ "; }
+.planMore[open] > summary::before { content: "▾ "; }
+.planMore > div {
+  padding: 0 1rem 1rem; font-size: .85rem; line-height: 1.75; opacity: .9;
+}
+
+/* ---- Pro / Premium 對照表 ---- */
+.compare { border: 1px solid var(--line, #d4d4d8); border-radius: 10px; margin: .75rem 0 1.5rem; }
+.compare > summary { padding: .8rem 1rem; cursor: pointer; font-weight: 600; }
+.compareBody { padding: 0 1rem 1rem; }
+/* 窄螢幕不要讓表格把整頁撐寬，改成表格自己捲 */
+.compareBody { overflow-x: auto; }
+.compare table { width: 100%; border-collapse: collapse; font-size: .85rem; min-width: 320px; }
+.compare th, .compare td { padding: .45rem .5rem; border-bottom: 1px solid var(--line, #d4d4d8); text-align: left; }
+.compare th:not(:first-child), .compare td:not(:first-child) { text-align: center; width: 4.5rem; }
+.compare td em { display: block; font-style: normal; font-size: .78rem; opacity: .7; }
+.compare tr.grp td { font-weight: 600; background: rgba(128, 128, 128, .08); }
+/* ⚠️ 這裡要用 --ok 不是 --accent。--accent 是品牌紅（#e10600），
+   拿來畫「有這個功能」的勾勾會變成紅勾，跟旁邊的紅叉同色，整欄看不出差別。
+   `var(--accent, #16a34a)` 的綠色後備永遠不會生效，因為 --accent 有定義。 */
+.compare .yes { color: var(--ok); font-weight: 700; }
+.compare .no { color: var(--err); font-weight: 700; }
+
+/* 官方方案截圖。兩張並排比對，窄螢幕自動疊成上下。
+   `max-width:100%` 是必要的——原圖 437px 寬，手機上不加會撐破版面。 */
+.shots { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin: .75rem 0 1rem; }
+.shots figure { margin: 0; }
+.shots img {
+  width: 100%; max-width: 100%; height: auto; display: block;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.shots figcaption { font-size: .78rem; color: var(--dim); text-align: center; margin-top: .35rem; }
+@media (max-width: 520px) { .shots { grid-template-columns: 1fr; } }
+
+/* 示範影片。`aspect-ratio` + `height:auto` 讓它在任何寬度都不變形，
+   也不會在載入前造成版面跳動（CLS）。 */
+.demo { margin: 0 0 1.75rem; }
+.demo video {
+  width: 100%; height: auto; aspect-ratio: 16 / 9;
+  border: 1px solid var(--line); border-radius: 10px; background: #000;
+}
+.demo figcaption { font-size: .82rem; color: var(--dim); margin-top: .5rem; }
