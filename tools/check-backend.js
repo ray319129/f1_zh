@@ -46,7 +46,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, dayStartSec, UPGRADE_CREDIT_MAX, weekCreditFor, seasonEndSec, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -724,6 +724,76 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     many.count <= A.racesLeft(new Date('2026-08-19T12:00:00Z').getTime())
       ? ok(`通行證：數量上限被夾在本賽季剩餘場次內（${many.count} 站）`)
       : fail('通行證：買 999 張竟然算出跨賽季的效期', String(many.count));
+  }
+
+  // ---- 19a4. 效期切在「下一個比賽週開始的前一天」 ----
+  //
+  // 使用者的決定：比賽週的**星期四就有 warm-up 直播**，所以切在那之前
+  // 是「兩站之間的重播全給他、一秒都不碰到下一站」的精確位置。
+  // ⚠️ 有兩站是**星期四開始**（亞塞拜然、拉斯維加斯），
+  //    所以規則要寫成「下一站 start 的前一天」，不能寫死星期三。
+  {
+    const sched = A.REMOTE_CONFIG.schedule.slice()
+      .sort((x, y) => new Date(x.start) - new Date(y.start));
+    const wrong = [];
+    for (let i = 0; i < sched.length - 1; i++) {
+      const g = sched[i];
+      const next = sched[i + 1];
+      // 在這一站的比賽週星期三購買
+      const buyAt = new Date(g.start + 'T00:00:00Z').getTime() - 2 * 86400000;
+      const w = A.weekWindow(buyAt);
+      if (!w || w.gp.name !== g.name) continue;          // 不是這一站就跳過
+      const want = A.dayStartSec(next.start) - 86400;
+      if (w.expiresAt !== want) {
+        wrong.push(`${g.name} 效期 ${new Date(w.expiresAt * 1000).toISOString().slice(0, 10)}`
+          + ` 應為 ${new Date(want * 1000).toISOString().slice(0, 10)}`);
+      }
+    }
+    wrong.length
+      ? fail('通行證：效期沒有切在下一個比賽週開始的前一天', wrong.slice(0, 3).join('、'))
+      : ok('通行證：效期一律切在下一個比賽週開始的前一天（含星期四開賽的兩站）');
+
+    // 最後一站沒有「下一站」，要有退路
+    const last = sched[sched.length - 1];
+    const wLast = A.weekWindow(new Date(last.start + 'T00:00:00Z').getTime());
+    wLast && wLast.expiresAt > A.dayStartSec(last.end)
+      ? ok('通行證：本賽季最後一站仍有合理效期')
+      : fail('通行證：最後一站算不出效期');
+  }
+
+  // ---- 19a5. 升級折抵有上限 ----
+  //
+  // 通行證可以一次買多站之後，**沒有上限就會出事**：
+  // 12 站（NT$468）的折抵超過賽季票本身，等於免費拿到還倒賺。
+  {
+    const store = new Map();
+    const env = {
+      SUBS: {
+        get: async (k) => (store.has(k) ? store.get(k) : null),
+        put: async (k, v) => { store.set(k, v); },
+        delete: async (k) => { store.delete(k); },
+      },
+    };
+    const mail = 'x@y.com';
+    const keys = [];
+    // 塞 6 張已付款的一週通行證（本賽季內）
+    const exp = A.seasonEndSec(Date.now()) - 86400;
+    for (let i = 0; i < 6; i++) {
+      const k = 'AAAABBBBCCC' + i;
+      keys.push(k);
+      store.set('lic:' + k, JSON.stringify({
+        plan: 'week', email: mail, acct: mail, paid: 39,
+        expiresAt: exp, devices: [], revoked: false,
+      }));
+    }
+    store.set('licmail:' + mail, JSON.stringify(keys));
+    const c = await A.weekCreditFor(env, mail, Date.now(), keys[0]);
+    c.credit === A.UPGRADE_CREDIT_MAX
+      ? ok(`升級折抵：6 張通行證仍夾在上限 NT$${A.UPGRADE_CREDIT_MAX}`)
+      : fail('升級折抵：上限沒有生效', 'credit=' + c.credit);
+    A.UPGRADE_CREDIT_MAX >= 78
+      ? ok('升級折抵：上限不低於兩站的實付金額（78）')
+      : fail('升級折抵：上限比兩站還低，說好折兩站卻少折');
   }
 
   // ---- 19b. 代訂不可以變成一張永久字幕授權 ----

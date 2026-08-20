@@ -69,7 +69,17 @@
     // 才用得到的東西，是最糟的那種體驗。
     if (p.nextSeason) bits.push('<b class="warn">此為次一賽季通行證，本賽季剩餘場次一併附贈</b>');
     else if (p.tier) bits.push(p.tier);
-    if (p.gp) bits.push(`即刻可用，效期至 ${fmt(p.gp.expiresAt)}（涵蓋${p.gp.name}大獎賽）`);
+    if (p.gp) {
+      bits.push(`即刻可用，涵蓋${esc(p.gp.name)}大獎賽　·　效期至 ${fmt(p.gp.expiresAt)}`);
+      // ⚠️ **正賽當天購買要提醒。** 賽程只有日期沒有時間，伺服器分不出
+      //    「正賽剛開始」與「正賽已結束」；使用者自己知道，所以把選擇權給他。
+      //    不講的話，正賽結束後買的人會以為自己買到了下一站。
+      if (p.gp.raceDayPassed && p.gp.nextName) {
+        bits.push(`<b class="warn">今天是${esc(p.gp.name)}的正賽日。`
+          + `若正賽已結束、您想要的是下一站（${esc(p.gp.nextName)}），請明天再購買，`
+          + `或直接把站數改成 2。</b>`);
+      }
+    }
     if (p.limit) bits.push(`限量 ${p.limit} 組`);
     if (p.vpn) bits.push('<b class="warn">觀看時需自備 VPN</b>');
     if (p.bundleWeek) bits.push('隨附一個比賽週的字幕翻譯');
@@ -255,7 +265,13 @@
     const notes = [];
     if (quote.needsVpn) notes.push('代訂方案觀看時需自備 VPN，本服務不包含 VPN。');
     if (quote.hasManual) notes.push('代訂為人工服務，將於收款後三個工作日內完成。');
-    if (quote.freeUpgrade) notes.push('差額低於 NT$30，將直接為您升級，不另行收費。');
+    // ⚠️ 這句話以前寫的是「將直接為您升級，不另行收費」，
+    //    但程式碼並沒有那條流程，照樣會把人送去綠界收款——**畫面在說謊**。
+    //    在真的做出自動免費升級之前，這裡只能說實話。
+    if (quote.freeUpgrade) {
+      notes.push('差額低於 NT$30，低於金流的最低收款金額，'
+        + '請來信 pitlingo.office@gmail.com 附上授權碼，我們會直接為您升級。');
+    }
     $('cartNote').textContent = notes.join(' ');
     // **折抵失敗一定要說出原因。** 只看到金額沒變，使用者會以為系統壞了。
     const cn = $('creditNote');

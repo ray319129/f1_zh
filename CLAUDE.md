@@ -12,8 +12,8 @@
 | 產物 | 角色 | 版本 |
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取，v4.9.0 起可自動跑整個佇列） | v4.10.4 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v4.8 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.19.3 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v4.9 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.19.4 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -132,6 +132,26 @@ Account（= 正規化過的 email，accountKey()）
 
 Ray 的決定：帳號系統要用 **Google 一鍵註冊／登入**。現在不做，但以下四件事
 會決定日後能不能無痛接上，其中兩件**現在就必須成立**。
+
+**實作方式（Ray 指定）：串 Google Identity Services，按一個按鈕就登入。**
+
+前端放官方的 One Tap／按鈕（`accounts.google.com/gsi/client`），
+取得 ID token 後 POST 給後端；後端用 Google 的 JWKS 驗簽，
+驗 `aud`（我們的 client ID）、`iss`、`exp`、以及 **`email_verified`**。
+
+⚠️ **驗簽一定要在後端做。** 前端拿到的 token 是使用者可以換掉的東西，
+   前端「驗過了」等於沒驗。Workers 可以用 `crypto.subtle` 驗 RS256，
+   JWKS 快取一小時即可（Google 的金鑰輪替頻率遠低於此）。
+
+⚠️ **不要在擴充功能裡跑 OAuth。** MV3 的 `chrome.identity` 會把流程綁在
+   Chrome 帳號上，Edge 與其他 Chromium 瀏覽器行為不一致。
+   做在網站上（`pitlingo.com/account`），登入後產生授權碼／權杖，
+   使用者貼進擴充功能——**與現在的流程完全一樣，擴充功能一行都不用改**。
+
+事前準備（這一步只有你能做）：到 Google Cloud Console 建立專案 →
+OAuth 同意畫面 → 建立「網頁應用程式」用戶端 ID →
+授權來源填 `https://pitlingo.com`。client ID 不是機密，可以寫在前端；
+**不需要** client secret（ID token 流程用不到）。
 
 **現在就要成立的：**
 

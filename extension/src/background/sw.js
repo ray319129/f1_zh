@@ -284,7 +284,8 @@ async function licenseStatus(force) {
     const { licenseKey } = await chrome.storage.local.get('licenseKey');
     if (licenseKey) await licenseRenew().catch(() => {});
   }
-  const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan', 'licExpiresAt', 'entCheckedAt']);
+  const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan',
+    'licPlanLabel', 'licGpName', 'licGpCount', 'licExpiresAt', 'entCheckedAt']);
   if (!st.entitlement || !st.entExp) {
     const { licRevokedReason } = await chrome.storage.local.get('licRevokedReason');
     return { active: false, reason: licRevokedReason || '' };
@@ -308,6 +309,9 @@ async function licenseStatus(force) {
   return {
     active: true,
     plan: st.licPlan || 'season',
+    planLabel: st.licPlanLabel || '',
+    gpName: st.licGpName || '',
+    gpCount: st.licGpCount || 0,
     expiresAt: st.licExpiresAt || null,
     licenseKey: st.licenseKey || '',
   };
@@ -321,7 +325,9 @@ async function licenseActivate(licenseKey) {
     if (!d || !d.ok) return d || { ok: false, error: '啟用失敗' };
     await chrome.storage.local.set({
       licenseKey: key, entitlement: d.entitlement, entExp: d.exp,
-      licPlan: d.plan, licExpiresAt: d.expiresAt || null,
+      licPlan: d.plan, licPlanLabel: d.planLabel || '',
+      licGpName: d.gpName || '', licGpCount: d.gpCount || 0,
+      licExpiresAt: d.expiresAt || null,
       entCheckedAt: Date.now(), licRevokedReason: '',
     });
     return d;
@@ -365,6 +371,7 @@ async function licenseRenew() {
     if (res.ok && d && d.ok) {
       await chrome.storage.local.set({
         entitlement: d.entitlement, entExp: d.exp, licPlan: d.plan,
+        licPlanLabel: d.planLabel || '', licGpName: d.gpName || '', licGpCount: d.gpCount || 0,
         entCheckedAt: Date.now(), licRevokedReason: '',
       });
     }

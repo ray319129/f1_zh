@@ -681,7 +681,9 @@ function renderLicenses(d) {
     <tr><th>授權碼</th><th>方案</th><th>到期</th><th class="num">裝置</th><th>email</th><th>狀態</th><th>操作</th></tr>
     ${llRows.map((r, i) => `<tr>
       <td class="mono">${r.licenseKey}</td>
-      <td>${r.planLabel}</td>
+      <td>${r.planLabel}${r.gpCount > 1
+        ? `<span class="tag">${r.gpCount} 站</span>` : ''}${r.gpName
+        ? `<div class="hint">${escHtml(r.gpName)}</div>` : ''}</td>
       <td>${fmtDay(r.expiresAt)}</td>
       <td class="num">${r.devices}</td>
       <td class="mail">${r.email || '—'}</td>
@@ -1404,7 +1406,10 @@ $('ac-go').onclick = async () => {
       + '<tr><th>授權碼</th><th>方案</th><th>狀態</th><th>到期</th><th class="num">裝置</th><th>訂單</th></tr>'
       + d.licenses.map((l) => '<tr>'
         + '<td class="mono">' + escHtml(l.licenseKey) + '</td>'
-        + '<td>' + escHtml(l.planLabel) + (l.fromService ? '<span class="tag">代訂贈送</span>' : '') + '</td>'
+        + '<td>' + escHtml(l.planLabel)
+        + (l.gpCount > 1 ? '<span class="tag">' + l.gpCount + ' 站</span>' : '')
+        + (l.fromService ? '<span class="tag">代訂贈送</span>' : '')
+        + (l.gpName ? '<div class="hint">' + escHtml(l.gpName) + '</div>' : '') + '</td>'
         + '<td class="st-' + (l.state === 'active' ? 'paid' : l.state === 'expired' ? 'awaiting' : 'failed') + '">'
         + (l.state === 'active' ? '有效' : l.state === 'expired' ? '已過期' : '已停用') + '</td>'
         + '<td>' + fmtDay(l.expiresAt) + '</td>'

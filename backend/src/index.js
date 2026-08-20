@@ -1447,6 +1447,22 @@ function seasonPriceNow(base, from, cfg) {
  */
 const UPGRADE_FREE_BELOW = 30;
 
+/**
+ * 升級折抵的上限。
+ *
+ * 使用者的決定（2026-08-19）：**最多折兩站，78 直接算 80**。
+ *
+ * 為什麼要有上限——原本是「全額折抵，買滿就免費升級」，那在
+ * 通行證可以一次買多站之後會出事：一個人買 12 站（NT$468）再升級賽季票，
+ * 折抵金額超過賽季票本身，等於免費拿到賽季票還倒賺。
+ * 取整用 80 而不是 78，是因為**折抵金額要好記**，
+ * 而且往上取對使用者有利——往下取會變成「說好折兩站卻少折」。
+ *
+ * ⚠️ 這個數字改動時要同時改 legal/terms.html 的折抵條款，
+ *    check-legal.js 會比對兩邊。
+ */
+const UPGRADE_CREDIT_MAX = 80;
+
 async function weekCreditFor(env, email, from, licenseKey) {
   const mail = String(email || '').trim().toLowerCase();
   if (!mail || !env.SUBS) return { credit: 0, keys: [] };
@@ -1494,6 +1510,9 @@ async function weekCreditFor(env, email, from, licenseKey) {
     credit += Number(lic.paid || p.price) || 0;
     keys.push(k);
   }
+  // ⚠️ **一定要夾上限。** 通行證可以一次買多站之後，
+  //    12 站（NT$468）的折抵會超過賽季票本身。
+  if (credit > UPGRADE_CREDIT_MAX) credit = UPGRADE_CREDIT_MAX;
   return { credit, keys };
 }
 
@@ -1622,15 +1641,27 @@ function weekWindow(from, cfg, count) {
   if (monday < now) monday = now;
   const graceStart = Math.max(now, monday - WEEK_GRACE_MAX_SEC);
 
-  // 涵蓋到最後一站結束的隔天（各站時區 + 賽後內容）
-  let expiresAt = dayStartSec(last.end) + WEEKEND_PAD_SEC;
-  // 保底：買得再晚都至少 MIN_PASS_SEC
-  expiresAt = Math.max(expiresAt, now + MIN_PASS_SEC);
-  // ⚠️ **安全優先於慷慨**：夾在最後。保底若把效期推進了範圍外的下一站，
-  //    仍然要砍掉——不然就回到「一張票看兩場」的老問題。
-  //    實務上碰不到（見 MIN_PASS_SEC 的算式），但這裡不靠算式，靠把關。
+  // 效期的終點：**下一個比賽週的星期三結束**（＝星期四 00:00）。
+  //
+  // 使用者的決定（2026-08-19）：比賽週的**星期四就開始有 warm-up 直播**，
+  // 所以切在星期四 00:00 是「把兩站之間的所有重播都給他，
+  // 但一秒都不碰到下一站的內容」的精確位置。
+  //
+  // schedule 的 start 是練習賽第一天（星期五），往回一天就是星期四 00:00。
   const after = list[idx + n];
-  if (after) expiresAt = Math.min(expiresAt, dayStartSec(after.start));
+  let expiresAt = after
+    ? dayStartSec(after.start) - 86400
+    // 本賽季最後一站：沒有「下一個比賽週」，就給到該站結束的隔天。
+    // 加一天是因為**各站時區不同**——拉斯維加斯的正賽在當地星期六深夜，
+    // 換算 UTC 已經是星期日，只算到 end 當天會讓那一站看不完。
+    : dayStartSec(last.end) + WEEKEND_PAD_SEC;
+
+  // 保底：買得再晚都至少 MIN_PASS_SEC。
+  // 正賽快結束時買，若只算到該站結束等於花 39 元買十分鐘。
+  expiresAt = Math.max(expiresAt, now + MIN_PASS_SEC);
+  // ⚠️ **安全優先於慷慨**：夾在最後。保底若把效期推進了下一站的比賽週，
+  //    仍然要砍掉——不然就回到「一張票看兩場」的老問題。
+  if (after) expiresAt = Math.min(expiresAt, dayStartSec(after.start) - 86400);
 
   return {
     gp,
@@ -1837,7 +1868,18 @@ async function handleLicenseActivate(request, env, auth) {
   await unvoidEntitlements(env, [iid]);
 
   const ent = await issueEntitlement(env, iid, lic.plan || 'season', lic.expiresAt);
-  return json({ ok: true, plan: lic.plan || 'season', expiresAt: lic.expiresAt, devices: lic.devices.length, ...ent });
+  // 涵蓋的站名要一起回。買 3 站的人在擴充功能裡只看到一個日期時，
+  // 根本分不出自己買的是 1 站還是 3 站——那是他付過錢的東西。
+  return json({
+    ok: true, plan: lic.plan || 'season',
+    // ⚠️ **方案名稱由伺服器給，用戶端不要自己維護一份對照表。**
+    //    options.js 曾經寫死過，於是加了 week／season_next／week_svc 之後，
+    //    使用者的設定頁直接顯示英文鍵名（"week"），而且完全不報錯。
+    planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+    expiresAt: lic.expiresAt,
+    gpName: lic.gpName || null, gpCount: lic.gpCount || null,
+    devices: lic.devices.length, ...ent,
+  });
 }
 
 /** 解除裝置。換電腦、賣掉舊電腦、或撞到上限時自己處理。 */
@@ -1869,7 +1911,13 @@ async function handleLicenseRenew(request, env, auth) {
   if (!d) return err('這台裝置尚未啟用此授權', 403);
   d.lastSeen = nowSec();
   await env.SUBS.put(licKey(key), JSON.stringify(lic));
-  return json({ ok: true, ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', lic.expiresAt)) });
+  return json({
+    ok: true,
+    plan: lic.plan || 'season',
+    planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+    gpName: lic.gpName || null, gpCount: lic.gpCount || null,
+    ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', lic.expiresAt)),
+  });
 }
 
 /** 列出這組授權碼底下的裝置。純查詢，不會改動任何東西。 */
@@ -2522,9 +2570,17 @@ async function handleCheckout(request, env, url) {
   if (quote.error) return err(quote.error);
   const price = quote.total;
   const finalPlan = quote.primary;
-  if (price < 1) {
-    // 綠界不收 0 元。差額被抵光時走的是「直接發碼」那條路，不該進到這裡。
-    return err('本次應付金額為 0，請改用免費升級流程', 400);
+  // ⚠️ **小額差額不可以送進綠界。**
+  //    綠界超商代收一筆固定 25 元、ATM 10~15 元，收 20 元的淨得是負的。
+  //    但更重要的是：購買頁對這種情況顯示的是「將直接為您升級，不另行收費」，
+  //    若這裡照樣收款，**畫面上的承諾就成了謊話**。
+  //    目前沒有自動發碼的免費升級流程（那是一條不經付款就發出授權的路，
+  //    要另外設計防濫用），所以這裡誠實擋下並導向客服。
+  //    以現行定價（折抵上限 80、賽季票 299/599）這條路實際上碰不到，
+  //    留著是為了日後改價時不會靜默地開始收負毛利的錢。
+  if (price < UPGRADE_FREE_BELOW) {
+    return err(`本次應付金額僅 NT$${price}，低於金流最低收款金額。`
+      + '請來信 pitlingo.office@gmail.com 並附上您的授權碼，我們會直接為您升級。', 400, 'E14');
   }
 
   const conf = ecpayConf(env, body.mode === 'stage' ? 'stage' : 'production');
@@ -2894,6 +2950,10 @@ async function handleLicenseList(request, env, url) {
       raw: key,
       plan: lic.plan,
       planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
+      // 買多站的通行證要看得出來。少了這兩個欄位，後台上「一週通行證 ×3」
+      // 與「一週通行證 ×1」長得一模一樣，客服完全分不出來。
+      gpCount: lic.gpCount || null,
+      gpName: lic.gpName || null,
       email: lic.email || '',
       orderId: lic.orderId || '',
       createdAt: lic.createdAt || null,
@@ -3265,6 +3325,7 @@ const ERR_CODES = {
   E11: '缺少必要欄位',
   E12: '一次送出的句數超過上限',
   E13: '單句長度超過上限（整批都超過才會擋）',
+  E14: '應付金額低於金流最低收款金額，需人工處理',
   E20: '安裝權杖無效或已過期',
   E21: '這個安裝已被封鎖',
   E22: '授權碼有問題（不存在／已停用／已過期／尚未生效）',
@@ -4079,6 +4140,8 @@ async function handleAccount(env, url) {
       paid: lic.paid || 0,
       // 代訂送的那一週要標出來——它與使用者自己買的意義完全不同
       fromService: !!(PLANS[lic.plan] && PLANS[lic.plan].fromService),
+      gpCount: lic.gpCount || null,
+      gpName: lic.gpName || null,
     });
   }
 
@@ -5072,7 +5135,24 @@ async function handleRequest(request, env) {
               nextSeason: !!(sp && sp.nextSeason),
               until: sp ? sp.until : null,
               // 一週通行證涵蓋的是哪一場、到什麼時候
-              gp: v.weekBound && w ? { name: w.gp.name, weekFrom: w.weekFrom, expiresAt: w.expiresAt } : null,
+              // ⚠️ **買在正賽當天或之後的人要看得到自己買的是什麼。**
+              //    賽程只有日期沒有時間，所以伺服器分不出「正賽剛開始」與
+              //    「正賽已結束」——兩者都落在同一天。與其猜錯，不如**講清楚**：
+              //    把涵蓋的站名、到期日、以及下一站是誰全部給購買頁，
+              //    正賽當天再加一句提醒。使用者自己知道比賽跑完了沒有。
+              gp: v.weekBound && w ? {
+                name: w.gp.name,
+                weekFrom: w.weekFrom,
+                expiresAt: w.expiresAt,
+                raceDay: w.gp.end,
+                // 正賽當天（含）之後購買時要提醒
+                raceDayPassed: dayStartSec(w.gp.end) <= dayStartSec(new Date().toISOString().slice(0, 10)),
+                nextName: (() => {
+                  const l = scheduleList().slice().sort((x, y) => dayStartSec(x.start) - dayStartSec(y.start));
+                  const j = l.findIndex((g) => g.name === w.gp.name);
+                  return (j >= 0 && l[j + 1]) ? l[j + 1].name : null;
+                })(),
+              } : null,
               // 通行證可以一次買多站。上限是本賽季剩餘的比賽週。
               maxQty: v.weekBound ? Math.max(1, racesLeft()) : 1,
               vpn: !!v.vpn,

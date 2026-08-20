@@ -36,6 +36,7 @@ const CHECKS = [
   ['後台與後端一致（端點都有 UI、危險操作有確認）', 'tools/check-admin.js'],
   ['法律文件與程式碼一致（權限／保存期限／價格／法規要件）', 'tools/check-legal.js'],
   ['所有超連結指向正確位置', 'tools/check-links.js'],
+  ['跨產物一致（免費層／長度上限／快取版本／條款數字）', 'tools/check-consistency.js'],
   ['翻譯品質沒有靜默退化（固定測試資料）', 'tools/check-fixtures.js'],
 ];
 

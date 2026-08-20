@@ -151,16 +151,15 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
       return;
     }
 
-    $('licPlan').textContent = ({
-      season: '賽季方案',
-      season_early: '賽季方案（早鳥）',
-      weekend: '單場週末方案',
-      trial: '試用',
-      comp: '客服補償',
-    })[licState.plan] || licState.plan;
-    $('licExp').textContent = licState.expiresAt
-      ? `有效期至 ${fmtDate(licState.expiresAt)}`
-      : '無使用期限';
+    // ⚠️ **方案名稱一律用伺服器回的 planLabel。**
+    //    這裡本來寫死一份對照表，裡面還有一個根本不存在的鍵（weekend），
+    //    而真正的鍵是 week——所以買一週通行證的人在這一頁看到的是
+    //    英文鍵名「week」，而且完全不報錯。
+    //    寫死的對照表在方案增減時一定會漂，這是第二次了（後台也發生過）。
+    $('licPlan').textContent = licState.planLabel || licState.plan;
+    // 買多站的人要看得出自己買了幾站——只顯示一個日期他分不出 1 站與 3 站
+    $('licExp').textContent = (licState.gpName ? `${licState.gpName}　` : '')
+      + (licState.expiresAt ? `有效期至 ${fmtDate(licState.expiresAt)}` : '無使用期限');
   }
 
   $('licActivate').onclick = async () => {
