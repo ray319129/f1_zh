@@ -1,4 +1,10 @@
 /* PitLingo 網站共用樣式。刻意極簡——沒有建置流程，一個檔案服務所有頁面。 */
+/* 站數選擇。放在卡片標題下方，收合時也看得到——
+   買多站是一個要主動發現的選項，藏在展開裡等於沒有。 */
+.planQty { display: flex; align-items: center; gap: 10px; padding: 6px 14px 10px; flex-wrap: wrap; }
+.planQty select { padding: 4px 8px; border-radius: 6px; }
+.plan.locked .planQty { display: none; }
+
 /* 鎖住的方案：看得到、看得懂為什麼，但點不下去。 */
 .plan.locked { opacity: .6; }
 .plan.locked .planHead { cursor: not-allowed; }

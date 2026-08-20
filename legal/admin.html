@@ -240,9 +240,9 @@
   <div class="panel">
     <h3>所有授權碼</h3>
     <p class="hint">
-      只留客服真的會用到的四個動作。<b>「換方案」已經移除</b>——
-      買錯方案的正解是退款後重發，就地改方案會讓訂單金額與授權內容對不起來，
-      而且 12 個方案的下拉在壓力下很容易選錯，選錯完全不報錯。<br>
+      只留客服真的會用到的動作。<b>換方案</b>會依新方案重算到期日，
+      但<b>訂單金額不會跟著改</b>——帳目上那張碼的實付金額仍是原來的數字，
+      所以退款與升級折抵請以訂單為準。下拉只列「發了有用」的方案。<br>
       <b>停用</b>留紀錄（退款、爭議時需要），<b>刪除</b>不留（只用來清測試碼）。
     </p>
     <div class="bar">
@@ -687,6 +687,9 @@ function renderLicenses(d) {
       <td class="mail">${r.email || '—'}</td>
       <td class="st-${r.state}">${STATE_LABEL[r.state]}</td>
       <td class="ops">
+        <select data-a="plan" data-i="${i}" class="planSel">
+          ${planSelOptions(r.plan)}
+        </select>
         <button data-a="extend" data-i="${i}" class="secondary">+30 天</button>
         <button data-a="clear" data-i="${i}" class="secondary">清空裝置</button>
         <button data-a="toggle" data-i="${i}" class="${r.state === 'revoked' ? 'secondary' : 'danger'}">${r.state === 'revoked' ? '恢復' : '停用'}</button>
@@ -697,6 +700,10 @@ function renderLicenses(d) {
 
   $('ll-out').querySelectorAll('button[data-a]').forEach((b) => {
     b.onclick = () => licenseAction(b.dataset.a, llRows[Number(b.dataset.i)], b);
+  });
+  // 換方案：改完立刻套用並依新方案重算到期日
+  $('ll-out').querySelectorAll('select[data-a="plan"]').forEach((sel) => {
+    sel.onchange = () => licenseAction('plan', llRows[Number(sel.dataset.i)], sel, sel.value);
   });
 }
 
@@ -746,6 +753,23 @@ const adMoney = function (n) {
   return 'NT' + '$' + Number(n || 0).toLocaleString('zh-TW');
 };
 
+function planSelOptions(cur) {
+  // ⚠️ 只列「發了有用」的方案（issuable）。代訂方案本身發出去是一張
+  //    **立刻到期**的碼——字幕使用權是靠附贈的 week_svc 給的。
+  //    列進來只會讓客服在壓力下選到它，而選錯完全不報錯：
+  //    使用者拿到一張看起來正常、貼上去卻說已過期的碼。
+  const list = planList.filter(function (p) { return p.issuable; });
+  if (!list.length) return '<option value="' + cur + '">' + escHtml(cur) + '</option>';
+  // 目前的方案若已不在販售清單裡（例如舊訂單的方案），仍要顯示出來，
+  // 否則下拉會自動跳到別的方案，看起來像「這張碼被改過了」。
+  const has = list.some(function (p) { return p.key === cur; });
+  return (has ? '' : '<option value="' + cur + '" selected>' + escHtml(planLabelOf(cur)) + '（已停售）</option>')
+    + list.map(function (p) {
+      return '<option value="' + p.key + '"' + (p.key === cur ? ' selected' : '')
+        + '>' + escHtml(p.label) + '</option>';
+    }).join('');
+}
+
 function planLabelOf(key) {
   const p = planList.find(function (x) { return x.key === key; });
   return p ? p.label : key;
@@ -754,6 +778,22 @@ function planLabelOf(key) {
 
 async function licenseAction(action, row, btn, value) {
   const payload = { licenseKey: row.raw };
+
+  if (action === 'plan') {
+    // ⚠️ **換方案會依新方案重算到期日**，所以要問清楚再做。
+    //    我曾建議移除這個功能（買錯的正解是退款重發，就地改方案會讓
+    //    訂單金額與授權內容對不起來）；使用者評估後決定保留——
+    //    客服現場確實會遇到「補償時直接升級」這種需求。
+    //    保留的前提是：下拉只列 issuable 的方案，而且每次都二次確認。
+    if (!confirm('把 ' + row.licenseKey + ' 改成「' + planLabelOf(value) + '」？\n\n'
+      + '到期日會依新方案重算。訂單金額不會跟著改，'
+      + '所以帳目上這張碼的實付金額仍是原來的數字。')) {
+      loadLicenses();
+      return;
+    }
+    payload.plan = value;
+    payload.recalcExpiry = true;
+  }
 
 
   if (action === 'delete') {

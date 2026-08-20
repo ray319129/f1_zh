@@ -667,6 +667,65 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       ? fail("一週通行證：一張票涵蓋了兩個比賽週末", leaks.join("、"))
       : ok("一週通行證：任何購買時間點都只涵蓋一個比賽週末");
   }
+  // ---- 19a3. 通行證：保底效期與多站購買 ----
+  //
+  // 錨定賽程之後最容易出的兩個問題：
+  //   · 買得太晚 → 只剩幾小時（等於詐欺）
+  //   · 買多站 → 效期沒跟著延長，安靜地少給使用者付過錢的東西
+  {
+    const sched = A.REMOTE_CONFIG.schedule.slice()
+      .sort((x, y) => new Date(x.start) - new Date(y.start));
+
+    // 保底：在每一站的最後一刻購買，都要至少有 MIN_PASS_SEC
+    const short = [];
+    for (const g of sched) {
+      const buyAt = new Date(g.end + 'T23:00:00Z').getTime();
+      const w = A.weekWindow(buyAt);
+      if (!w) continue;
+      const hours = (w.expiresAt - Math.floor(buyAt / 1000)) / 3600;
+      if (hours < 71) short.push(`${g.name} 只有 ${hours.toFixed(0)} 小時`);
+    }
+    short.length
+      ? fail('通行證：最後一刻購買的保底效期不足', short.slice(0, 4).join('、'))
+      : ok('通行證：任何時間購買都至少有 72 小時');
+
+    // 保底不可以反過來蓋到下一站
+    const leak = [];
+    for (const g of sched) {
+      const buyAt = new Date(g.end + 'T23:00:00Z').getTime();
+      const w = A.weekWindow(buyAt);
+      if (!w) continue;
+      const covered = sched.filter((x) => {
+        const raceDay = Math.floor(new Date(x.end + 'T00:00:00Z').getTime() / 1000);
+        return raceDay >= Math.floor(buyAt / 1000) - 86400 && raceDay <= w.expiresAt;
+      });
+      if (covered.length > 1) leak.push(g.name + ' → ' + covered.map((c) => c.name).join('+'));
+    }
+    leak.length
+      ? fail('通行證：保底把效期推進了下一站', leak.join('、'))
+      : ok('通行證：保底不會蓋到下一站');
+
+    // 多站：買 N 張就要涵蓋 N 站，且效期跟著最後一站走
+    const bad = [];
+    for (const n of [1, 2, 3, 5]) {
+      const w = A.weekWindow(new Date('2026-08-19T12:00:00Z').getTime(), undefined, n);
+      if (!w) { bad.push(`${n} 站算不出來`); continue; }
+      if (w.count !== n) bad.push(`買 ${n} 站卻只涵蓋 ${w.count} 站`);
+      if (w.gpNames.length !== n) bad.push(`${n} 站的站名只有 ${w.gpNames.length} 個`);
+      const lastEnd = Math.floor(new Date(w.lastGp.end + 'T00:00:00Z').getTime() / 1000);
+      if (w.expiresAt < lastEnd) bad.push(`${n} 站的效期在最後一站結束之前`);
+    }
+    bad.length
+      ? fail('通行證：多站購買不正確', bad.join('、'))
+      : ok('通行證：買 N 站就涵蓋 N 站，效期跟著最後一站');
+
+    // 數量上限不可以超過本賽季剩餘場次
+    const many = A.weekWindow(new Date('2026-08-19T12:00:00Z').getTime(), undefined, 999);
+    many.count <= A.racesLeft(new Date('2026-08-19T12:00:00Z').getTime())
+      ? ok(`通行證：數量上限被夾在本賽季剩餘場次內（${many.count} 站）`)
+      : fail('通行證：買 999 張竟然算出跨賽季的效期', String(many.count));
+  }
+
   // ---- 19b. 代訂不可以變成一張永久字幕授權 ----
   //
   // 這是**送錢出去的漏洞**，而且完全靜默：購物車裡全是代訂時，

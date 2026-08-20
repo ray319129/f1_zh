@@ -1576,37 +1576,68 @@ function weekendWindow(from, cfg) {
  */
 const WEEK_GRACE_MAX_SEC = 14 * 86400;
 
-function weekWindow(from, cfg) {
-  const now = Math.floor((from || Date.now()) / 1000);
-  const gp = nextGrandPrix(from, cfg);
-  if (!gp) return null;
+/**
+ * 一張通行證的最短效期。
+ *
+ * 買得再晚都至少有這麼久。**這是為了讓「最後一刻購買」不會變成詐欺**：
+ * 正賽快結束時買，若只算到該站結束，等於花 39 元買了十分鐘。
+ *
+ * ⚠️ 72 小時是**算過的上限**，不是隨便訂的：背靠背的兩站之間，
+ *    前一站結束（週日）到後一站開始（週五）中間有 5 天。
+ *    保底 3 天不會蓋到下一站，4 天就會有風險。改這個數字前先重算。
+ */
+const MIN_PASS_SEC = 72 * 3600;
 
-  // 該比賽週的星期一。`start` 是練習賽第一天（週五），往回三天。
+/**
+ * 這張通行證涵蓋哪幾站、到什麼時候。
+ *
+ * ⚠️ **這個方案賣的是「比賽週末」，不是「固定七天」。**
+ *
+ *    舊版是「購買起算七天」，在背靠背的兩站之間會出事：正賽當天買，
+ *    七天後正好是下一站的正賽日，一張票看了兩場。實測 2026 的 23 站
+ *    有 9 站會漏——近四成的購買時機都在白送一場。
+ *
+ *    現在改成錨定賽程：涵蓋接下來的 count 站，效期到最後一站結束的隔天。
+ *    加一天是因為**各站時區不同**——拉斯維加斯的正賽在當地週六深夜，
+ *    換算 UTC 已經是週日；只算到 end 當天會讓那一站的正賽看不完。
+ *
+ *    代價是誠實的：買得早（上一站剛結束）大約 10~12 天，
+ *    買在比賽週當中大約 3~5 天。**所以「一週」這個名字現在名不副實**，
+ *    購買頁必須顯示伺服器算出來的實際到期日與涵蓋的站名。
+ */
+function weekWindow(from, cfg, count) {
+  const now = Math.floor((from || Date.now()) / 1000);
+  const list = scheduleList(cfg).slice()
+    .sort((a, b) => dayStartSec(a.start) - dayStartSec(b.start));
+  // 「正在進行中」也算，所以用 end + 一天寬限來找
+  const idx = list.findIndex((g) => dayStartSec(g.end) + WEEKEND_PAD_SEC > now);
+  if (idx < 0) return null;
+
+  const n = Math.max(1, Math.min(Number(count) || 1, list.length - idx));
+  const gp = list[idx];
+  const last = list[idx + n - 1];
+
+  // 立刻可用；顯示用的「這一站的比賽週從哪天算起」
   let monday = dayStartSec(gp.start) - 3 * 86400;
-  // 已經進入那一週就從現在算起，不要往回追溯把效期吃掉
   if (monday < now) monday = now;
-  // 贈送期上限
   const graceStart = Math.max(now, monday - WEEK_GRACE_MAX_SEC);
 
-  // ⚠️ **一張 NT$39 的票不可以涵蓋兩個比賽週末。**
-  //
-  //    「購買起算七天」在背靠背的兩場之間會出事：例如 6/7（正賽當天）購買，
-  //    七天後是 6/14——那正好是下一場的正賽日，於是一張票看了兩場。
-  //    這不是理論，2026 的賽程裡有多組連續週末。
-  //
-  //    所以效期還要再夾一次：**最晚到下一場比賽週開始的前一刻**。
-  //    賽程夠鬆時這個上限碰不到，七天就是七天；只有背靠背時才會縮短，
-  //    而那時購買頁上顯示的到期日本來就是伺服器算出來的這個數字，
-  //    不會有「說七天卻只有五天」的落差。
-  const after = scheduleList(cfg)
-    .slice()
-    .sort((a, b) => dayStartSec(a.start) - dayStartSec(b.start))
-    .find((g) => dayStartSec(g.start) > dayStartSec(gp.end));
-  let expiresAt = monday + 7 * 86400;
+  // 涵蓋到最後一站結束的隔天（各站時區 + 賽後內容）
+  let expiresAt = dayStartSec(last.end) + WEEKEND_PAD_SEC;
+  // 保底：買得再晚都至少 MIN_PASS_SEC
+  expiresAt = Math.max(expiresAt, now + MIN_PASS_SEC);
+  // ⚠️ **安全優先於慷慨**：夾在最後。保底若把效期推進了範圍外的下一站，
+  //    仍然要砍掉——不然就回到「一張票看兩場」的老問題。
+  //    實務上碰不到（見 MIN_PASS_SEC 的算式），但這裡不靠算式，靠把關。
+  const after = list[idx + n];
   if (after) expiresAt = Math.min(expiresAt, dayStartSec(after.start));
 
   return {
     gp,
+    count: n,
+    // 涵蓋的站名，購買頁與授權記錄都要用它——使用者買的是「哪幾站」
+    gpNames: list.slice(idx, idx + n).map((g) => g.name),
+    lastGp: last,
     // 立刻可用，所以沒有 startsAt（不設限）
     startsAt: null,
     graceFrom: graceStart,
@@ -1615,7 +1646,7 @@ function weekWindow(from, cfg) {
   };
 }
 
-function planExpiry(plan, from, cfg) {
+function planExpiry(plan, from, cfg, count) {
   const p = PLANS[plan];
   if (!p) return null;
   // ⚠️ **不含字幕授權的方案要回「已經到期」，不可以回 null。**
@@ -1632,7 +1663,7 @@ function planExpiry(plan, from, cfg) {
   if (p.nextSeasonOnly) return nextSeasonEndSec(from);
   if (p.untilSeasonEnd) return seasonPriceNow(p.price, from, cfg).until;
   if (p.weekBound) {
-    const w = weekWindow(from, cfg);
+    const w = weekWindow(from, cfg, count);
     // 賽程讀不到就退回「購買後 7 天」，不要因為缺資料就發不出通行證
     if (w) return w.expiresAt;
     return Math.floor((from || Date.now()) / 1000) + (p.days || 7) * 86400;
@@ -2378,7 +2409,13 @@ async function quoteCart(env, items, opts) {
     if (ops.hidden.includes(key)) return { error: `此方案目前未販售：${p.label}` };
     const lock = planLock(key);
     if (lock) return { error: `${p.label} 目前無法購買——${lock}` };
-    const qty = Math.max(1, Math.min(5, Number(it.qty) || 1));
+    // 數量上限。
+    // ⚠️ 一般方案維持 5（買 5 張賽季票沒有意義，多半是誤操作）；
+    //    **通行證的上限是「本賽季剩餘比賽週」**——使用者的決定：
+    //    想一次買到季末就讓他買，那是我們最不用行銷的一種營收。
+    //    上限一定要有：沒有上限的話 999 張會算出一個跨到明年的效期。
+    const maxQty = p.weekBound ? Math.max(1, racesLeft()) : 5;
+    const qty = Math.max(1, Math.min(maxQty, Number(it.qty) || 1));
 
     let unit = planPrice(key, ops);          // 後台覆寫優先，沒設就用程式碼裡的牌價
     let note = '';
@@ -2391,7 +2428,17 @@ async function quoteCart(env, items, opts) {
       note = sp.nextSeason ? `${sp.tier}（本賽季剩餘週末一併附贈）` : sp.tier;
       seasonKey = k;
     }
-    if (p.weekBound) hasWeekPurchase = true;
+    if (p.weekBound) {
+      hasWeekPurchase = true;
+      // **買了幾張就涵蓋接下來幾站，不是「同一站買幾份」。**
+      // 不講清楚的話，買 3 張的人會以為自己重複買了同一站。
+      const w = weekWindow(undefined, undefined, qty);
+      if (w) {
+        note = w.count > 1
+          ? `涵蓋接下來 ${w.count} 站：${w.gpNames.join('、')}`
+          : `涵蓋${w.gpNames[0]}大獎賽週末`;
+      }
+    }
     if (p.bundleWeek) bundledWeek = true;
 
     lines.push({
@@ -2724,7 +2771,14 @@ async function handlePaymentWebhook(request, env) {
   const key = normLicense(licenseKeyNew());
   // Weekend Pass 要記下它涵蓋的是哪一場、從哪一天起生效。
   // 少了這兩個欄位，提前購買的人會拿到一張「現在就能用、但比賽前就過期」的通行證。
-  const w = PLANS[plan] && PLANS[plan].weekBound ? weekWindow() : null;
+  // ⚠️ **數量一定要從購物車讀回來。**
+  //    買 3 張通行證卻只發一張的效期，是安靜地少給使用者他付過錢的東西——
+  //    不報錯，只有他自己會在第二站發現看不了。
+  const weekQty = (pending && Array.isArray(pending.items))
+    ? pending.items.filter((i) => PLANS[i.key] && PLANS[i.key].weekBound)
+      .reduce((n, i) => n + (Number(i.qty) || 1), 0)
+    : 1;
+  const w = PLANS[plan] && PLANS[plan].weekBound ? weekWindow(undefined, undefined, weekQty) : null;
 
   // 代訂是**人工服務**：付款只代表「已收款、待處理」，不是已完成。
   // 把它列進授權記錄是為了讓後台看得到、追得到、結得了案——
@@ -2737,9 +2791,12 @@ async function handlePaymentWebhook(request, env) {
     // 帳號鍵。**日後導入登入時，靠這個欄位把既有資料接回帳號**——
     // 少一筆就是一筆接不回去的孤兒，而且完全不會報錯（見 accountKey）。
     acct: accountKey(email),
-    expiresAt: planExpiry(plan),
+    expiresAt: planExpiry(plan, undefined, undefined, weekQty),
     startsAt: planStart(plan),
-    gpName: w ? w.gp.name : null,
+    // 涵蓋的站名。買多站時要全部列出來，客服與使用者才對得上
+    gpName: w ? (w.count > 1 ? `${w.gpNames[0]}～${w.gpNames[w.count - 1]}（${w.count} 站）` : w.gp.name) : null,
+    gpNames: w ? w.gpNames : null,
+    gpCount: w ? w.count : null,
     weekFrom: w ? w.weekFrom : null,          // 正式七天從哪天起算（之前是贈送期）
     // 這筆訂單實付多少。升級抵扣要用它，不能用牌價——
     // 折抵過的訂單若用牌價回算，會把折掉的金額再抵一次。
@@ -2992,7 +3049,9 @@ async function handleLicenseIssue(request, env) {
   //    少了 weekFrom，一週通行證的正式七天不知道從哪天算；
   //    少了 paid，這張碼日後升級賽季票時折抵金額會算成 0——
   //    兩者都不會報錯，只會在幾週後變成一筆客訴。
-  const wk = (PLANS[plan] && PLANS[plan].weekBound) ? weekWindow() : null;
+  // 後台手動發通行證時也能指定涵蓋幾站（客服補償常常要給不只一站）
+  const wkQty = Math.max(1, Math.min(Number(body.gpCount) || 1, Math.max(1, racesLeft())));
+  const wk = (PLANS[plan] && PLANS[plan].weekBound) ? weekWindow(undefined, undefined, wkQty) : null;
   const opsNow = await opsConfig(env);
   const lic = {
     plan,
@@ -3000,9 +3059,11 @@ async function handleLicenseIssue(request, env) {
     acct: accountKey(body.email),               // 帳號鍵，見 accountKey 的說明
     orderId: String(body.orderId || ''),
     // 期限一律由伺服器依方案算。只有明確傳 expiresAt 時才覆寫（客服調整用）。
-    expiresAt: body.expiresAt ? Number(body.expiresAt) : planExpiry(plan),
+    expiresAt: body.expiresAt ? Number(body.expiresAt) : planExpiry(plan, undefined, undefined, wkQty),
     startsAt: planStart(plan),
-    gpName: wk ? wk.gp.name : null,
+    gpName: wk ? (wk.count > 1 ? `${wk.gpNames[0]}～${wk.gpNames[wk.count - 1]}（${wk.count} 站）` : wk.gp.name) : null,
+    gpNames: wk ? wk.gpNames : null,
+    gpCount: wk ? wk.count : null,
     weekFrom: wk ? wk.weekFrom : null,
     // 實付金額。手動發碼時預設用此刻的實際售價；補償碼是 0，折抵時自然算不到。
     paid: body.paid !== undefined ? Number(body.paid) || 0 : (planPrice(plan, opsNow) || 0),
@@ -5012,6 +5073,8 @@ async function handleRequest(request, env) {
               until: sp ? sp.until : null,
               // 一週通行證涵蓋的是哪一場、到什麼時候
               gp: v.weekBound && w ? { name: w.gp.name, weekFrom: w.weekFrom, expiresAt: w.expiresAt } : null,
+              // 通行證可以一次買多站。上限是本賽季剩餘的比賽週。
+              maxQty: v.weekBound ? Math.max(1, racesLeft()) : 1,
               vpn: !!v.vpn,
               desc: v.desc || '',
               bundleWeek: !!v.bundleWeek,

@@ -78,8 +78,7 @@
     // 那是刻意保留給使用者自己決定的（他可能就是想一次買斷），
     // 但「自己決定」的前提是他看得到另一個選項的總價。
     // 只顯示價格而不顯示對照，技術上沒說謊，實際上是靠他不會算。
-    const vh = valueHint(p);
-    if (vh) bits.push(vh);
+
 
     // ⚠️ 說明裡的 `**粗體**` 要跳脫星號（`\*\*`）。少了反斜線的話
     //    `/**(.+?)**/` 是無效的正規表示式（`*` 沒有可重複的對象），
@@ -87,11 +86,26 @@
     //    一個與真正原因無關的訊息（坑 #36）。
     const desc = p.desc ? esc(p.desc).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') : '';
 
+    // 通行證可以一次買多站。**上限由伺服器給**（本賽季剩餘比賽週），
+    // 寫死在這裡的話賽季走到一半就會對不上，而且不會報錯。
+    const qtyBox = p.maxQty > 1
+      ? `<div class="planQty">
+           <label>站數
+             <select data-qty="${p.key}">
+               ${Array.from({ length: p.maxQty }, (_, i) =>
+    `<option value="${i + 1}">${i + 1}</option>`).join('')}
+             </select>
+           </label>
+           <span class="hint">一次可買到本賽季結束（還有 ${p.maxQty} 站）</span>
+         </div>`
+      : '';
+
     el.innerHTML =
       `<button type="button" class="planHead">
          <span class="planName">${esc(p.label)}</span>
          <span class="planPrice">${money(p.price)}</span>
        </button>`
+      + qtyBox
       + (bits.length ? `<div class="planNote">${bits.join('　·　')}</div>` : '')
       + (desc ? `<details class="planMore"><summary>商品說明</summary><div>${desc}</div></details>` : '');
 
@@ -101,34 +115,33 @@
     } else {
       el.querySelector('.planHead').onclick = () => { toggle(p.key); };
     }
+    const qsel = el.querySelector('[data-qty]');
+    if (qsel) {
+      // 站數的下拉不可以連帶觸發「選取／取消選取」——改數量的人不是想退出購物車
+      qsel.onclick = (ev) => ev.stopPropagation();
+      qsel.onchange = () => {
+        const n = Number(qsel.value) || 1;
+        // 還沒加進購物車就改數量＝他想買，直接幫他加進去
+        cart.set(p.key, n);
+        paintSelection();
+        refreshQuote();
+      };
+    }
     return el;
   }
 
-  // 剩餘週末數，用來算「一場一場買要多少」。由 /v1/plans 提供。
+  // 剩餘週末數。用來設通行證的數量上限，也用在剩餘場次的說明文字。
   let seasonInfo = null;
-  let weekPrice = 0;
 
   /**
-   * 這個方案跟「單場買到底」比起來划不划算。
-   * 只有**明顯比較貴**時才出現——每一張卡都掛一句比較文字會變成雜訊，
-   * 而雜訊會讓真正重要的那一句被略過。
+   * ⚠️ 這裡曾經有一個 valueHint()，會主動算「一週票買滿是多少」貼在賽季卡上。
+   *    **使用者的決定（2026-08-19）是移除**：那句話會讓正在看賽季方案的人
+   *    突然要做一次算術比較，而多一個比較就多一批放棄結帳的人。
+   *    剩餘比賽週末數仍然顯示在方案清單下方，想自己算的人算得到。
    */
-  function valueHint(p) {
-    if (!seasonInfo || !weekPrice) return '';
-    if (p.nextSeason || p.locked) return '';
-    if (!/^season$/.test(p.key)) return '';
-    const n = seasonInfo.weekendsLeft;
-    if (!n) return '';
-    const singles = weekPrice * n;
-    if (p.price <= singles) return '';
-    return '<b class="warn">本賽季只剩 ' + n + ' 個比賽週末，'
-      + '一週通行證買滿為 ' + money(singles) + '，比這個方案便宜</b>';
-  }
 
   function renderPlans(d) {
     seasonInfo = d.season || null;
-    const wk = plans.find((p) => p.key === 'week');
-    weekPrice = wk ? wk.price : 0;
     const subs = plans.filter((p) => !/^svc_/.test(p.key));
     const svcs = plans.filter((p) => /^svc_/.test(p.key));
 
@@ -166,7 +179,9 @@
   // 購物車
   // ---------------------------------------------------------------------
   function toggle(key) {
-    if (cart.has(key)) cart.delete(key); else cart.set(key, 1);
+    if (cart.has(key)) { cart.delete(key); return paintSelection(), refreshQuote(); }
+    const sel = document.querySelector(`[data-qty="${key}"]`);
+    cart.set(key, sel ? (Number(sel.value) || 1) : 1);
     paintSelection();
     refreshQuote();
   }
