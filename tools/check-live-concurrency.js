@@ -27,7 +27,12 @@ const errors = [];
 const ok = (m) => console.log('✅ ' + m);
 const fail = (m, d) => { errors.push(m + (d ? '：' + d : '')); console.log('❌ ' + m + (d ? '：' + d : '')); };
 
-let src = fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
+// ⚠️ **後端一定要以嚴格模式載入。** 真正的 Worker 是 ESM（＝嚴格），
+//    但 vm.runInContext 跑的是 script（＝非嚴格）。差別會吃掉一整類 bug：
+//    對未宣告的變數賦值在這裡只是建立一個全域，在 Worker 上是 ReferenceError。
+//    實際發生過——`let hasWeekPurchase` 被刪掉、`hasWeekPurchase = true` 留著，
+//    node --check 與所有檢查工具**全部放行**，線上頁面才炸（坑 #22 的變形）。
+let src = "'use strict';\n" + fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
 // ⚠️ 兩種 export 都要剝：`export default {...}`（Worker 入口）
 //    與 `export class SubtitleRoom`（Durable Object）。
 //    只剝前者的話，沙箱會在 `export class` 那行語法錯誤——

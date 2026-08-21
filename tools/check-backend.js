@@ -21,7 +21,12 @@ const ok = (label) => console.log('✅ ' + label);
 const fail = (label, detail) => { errors.push(label + (detail ? '：' + detail : '')); console.log('❌ ' + label + (detail ? '：' + detail : '')); };
 
 // --- 把 index.js 載進來（去掉 export default，其餘原封不動）-----------------
-let src = fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
+// ⚠️ **後端一定要以嚴格模式載入。** 真正的 Worker 是 ESM（＝嚴格），
+//    但 vm.runInContext 跑的是 script（＝非嚴格）。差別會吃掉一整類 bug：
+//    對未宣告的變數賦值在這裡只是建立一個全域，在 Worker 上是 ReferenceError。
+//    實際發生過——`let hasWeekPurchase` 被刪掉、`hasWeekPurchase = true` 留著，
+//    node --check 與所有檢查工具**全部放行**，線上頁面才炸（坑 #22 的變形）。
+let src = "'use strict';\n" + fs.readFileSync(path.join(root, 'backend/src/index.js'), 'utf8');
 // ⚠️ 只剝掉 `export default { ... };` 這一塊，**不要貪婪吃到檔案結尾**。
 //    原本寫成 `[\s\S]*\};\s*$`，假設 export 是檔案的最後一段；
 //    CORS 重構把 `handleRequest` 移到 export 後面之後這個假設就不成立，

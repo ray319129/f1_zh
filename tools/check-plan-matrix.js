@@ -20,7 +20,12 @@
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
-let src = fs.readFileSync(path.join(__dirname, '..', 'backend/src/index.js'), 'utf8')
+// ⚠️ **一定要加 'use strict'。** 後端是 ESM（＝嚴格模式），但 vm.runInContext
+//    跑的是 script（＝非嚴格）。差別會吃掉一整類 bug：對未宣告的變數賦值
+//    在這裡只是建立一個全域，在真正的 Worker 上是 ReferenceError。
+//    實際發生過——`let hasWeekPurchase` 被刪掉、`hasWeekPurchase = true` 留著，
+//    node --check 與這裡的矩陣測試**全部放行**，直播頁面上才炸。
+let src = "'use strict';\n" + fs.readFileSync(path.join(__dirname, '..', 'backend/src/index.js'), 'utf8')
   .replace(/export default \{[\s\S]*?\n\};\r?\n/, '')
   .replace(/\bexport\s+class\s+/g, 'class ');
 const sb = {
@@ -130,20 +135,19 @@ function simulateLicense(quote) {
     }
   }
 
-  /* ---------- 3. 數量與折抵 ---------- */
-  console.log('\n── 數量與折抵 ──');
+  /* ---------- 3. 附贈不可以再變成折抵 ---------- */
+  //
+  // ⚠️ **這裡以前有一行「代訂已附贈一週，折抵 −39」。**
+  //    附贈現在是購物車裡 NT$0 的商品列，折抵已經拿掉。
+  //    若有人把它加回來就會**折兩次**——附贈免費一次、折抵再免費一次。
+  console.log('\n── 附贈不可以再變成折抵 ──');
   {
-    const r = await q([{ key: 'svc_prem_1m_own', qty: 3 }, item('week', GP1)]);
-    const adj = (r.adjustments || []).reduce((n, x) => n + x.amount, 0);
-    console.log('  代訂×3（附贈 3 週）+ 通行證×1　總計 ' + money(r.total) + '　折抵 ' + adj);
-    if (adj !== -39) P('中', '代訂買三份只折抵一次', '折抵 ' + adj + '，但附贈了 3 個比賽週');
-  }
-  {
-    const r = await q([{ key: 'svc_prem_1m_own', qty: 1 },
-      item('week', GP1), item('week', GP2), item('week', GP3)]);
-    const adj = (r.adjustments || []).reduce((n, x) => n + x.amount, 0);
-    console.log('  代訂×1（附贈 1 週）+ 通行證×3　總計 ' + money(r.total) + '　折抵 ' + adj);
-    if (adj !== -39) P('中', '一份代訂折抵了不只一週', String(adj));
+    const r = await q([{ key: 'svc_prem_1m_own', qty: 1, gifts: [GP2] }, item('week', GP1)]);
+    const adj = (r.adjustments || []).filter((x) => /附贈/.test(x.label));
+    console.log('  代訂 + 自費 1 張　總計 ' + money(r.total)
+      + '　附贈折抵 ' + (adj.length ? JSON.stringify(adj) : '無（正確）'));
+    if (adj.length) P('高', '附贈又被折抵了一次（會折兩次）', JSON.stringify(adj));
+    if (r.total !== 738) P('高', '代訂 + 自費 1 張的金額不對', String(r.total));
   }
 
   /* ---------- 4. 多張比賽週通行證 ---------- */
@@ -167,22 +171,82 @@ function simulateLicense(quote) {
     if (r.total > 39) P('高', '同一場買兩次收了兩次錢', money(r.total) + '（應為 NT$39 或直接拒絕）');
   }
 
-  /* ---------- 5. 賽季票 + 通行證：真正該檢查的 ---------- */
+  /* ---------- 5. 賽季票 + 通行證：必須整組擋下 ---------- */
+  //
+  // ⚠️ **這一組曾經放行，而且完全不報錯。** 發出去的賽季票帶著比賽週的區間，
+  //    續期只簽到「現在這一段」的結束——一整季被截成一週。
+  //    現在應該在算錢之前就被擋下；**放行本身就是錯**，不必再看金額。
   console.log('\n── 賽季票 + 通行證 ──');
   {
     const r = await q([{ key: 'season', qty: 1 }, item('week', GP2)]);
-    const lic = simulateLicense(r);
-    const seasonEnd = A.planExpiry('season');
-    console.log('  賽季票 + 一場通行證　' + money(r.total));
-    console.log('    主方案 ' + lic.plan
-      + '　效期 ' + (lic.expiresAt ? new Date(lic.expiresAt * 1000).toISOString().slice(0, 10) : '—')
-      + '（賽季票應為 ' + new Date(seasonEnd * 1000).toISOString().slice(0, 10) + '）');
-    console.log('    windows：' + (lic.windows ? lic.windows.length + ' 段' : '無'));
-    if (lic.windows) {
-      // 現在若不在那一段裡，整張賽季票會被擋
-      const inWin = A.currentWindow(lic.windows, NOW);
-      console.log('    現在落在區間內？' + (inWin ? '是' : '**否 → 整張賽季票會被擋下**'));
+    console.log('  ' + (r.error ? '✅ 擋下：' + r.error : '❌ 竟然放行　' + money(r.total)));
+    if (!r.error) {
+      const lic = simulateLicense(r);
+      P('高', '賽季票 + 通行證竟然放行', '主方案 ' + lic.plan
+        + '，區間 ' + ((lic.windows || []).length) + ' 段（賽季票會被截成一週）');
     }
+  }
+
+  /* ---------- 5b. 代訂附贈的比賽週 ---------- */
+  //
+  // ⚠️ **附贈是唯一一條「不收錢卻要發出權利」的路徑。**
+  //    多送不會報錯，只會少賺；漏送也不會報錯，只會變成一封客訴信。
+  //    兩邊都必須有人守著。
+  console.log('\n── 代訂附贈的比賽週 ──');
+  {
+    const giftOf = (r) => (r.lines || []).filter((l) => l.gift);
+    const chk = (why, items, want) => {
+      return q(items).then((r) => {
+        if (want === 'error') {
+          console.log('  ' + (r.error ? '✅ 擋下' : '❌ 竟然放行') + '　' + why
+            + (r.error ? '' : '　→ ' + money(r.total)));
+          if (!r.error) P('高', '附贈應擋下卻放行：' + why, JSON.stringify(items));
+          return;
+        }
+        if (r.error) { P('高', '附贈情境失敗：' + why, r.error); console.log('  ⛔ ' + why + '：' + r.error); return; }
+        const g = giftOf(r);
+        const ok = g.length === want.n && r.total === want.total && r.weekPaid === want.paid
+          && g.every((l) => l.sum === 0);
+        if (!ok) {
+          P('高', '附贈算錯：' + why,
+            g.length + ' 張／應 ' + want.n + '，總計 ' + r.total + '／應 ' + want.total
+            + '，通行證實付 ' + r.weekPaid + '／應 ' + want.paid);
+        }
+        console.log('  ' + (ok ? '✅' : '❌') + ' ' + why.padEnd(34)
+          + '附贈 ' + g.length + ' 張　' + money(r.total).padEnd(9)
+          + ' 通行證實付 ' + money(r.weekPaid) + '　主 ' + r.primary);
+      });
+    };
+    await chk('代訂 1 月 ×1（未指定，自動補）', [{ key: 'svc_prem_1m_own', qty: 1 }],
+      { n: 1, total: 699, paid: 0 });
+    await chk('代訂 1 月 ×3（每份 1 張 = 3 張）',
+      [{ key: 'svc_prem_1m_own', qty: 3, gifts: [GP1, GP2, GP3] }],
+      { n: 3, total: 2097, paid: 0 });
+    await chk('代訂 1 年（3 張）',
+      [{ key: 'svc_prem_1y_own', qty: 1, gifts: [GP1, GP2, GP3] }],
+      { n: 3, total: 4599, paid: 0 });
+    await chk('代訂 1 月 + 自費 1 張（不同場）',
+      [{ key: 'svc_prem_1m_own', qty: 1, gifts: [GP1] }, { key: 'week', gp: GP2, qty: 1 }],
+      { n: 1, total: 738, paid: 39 });
+    await chk('五天共用帳號（不附贈）', [{ key: 'svc_pro_5d', gp: GP1, qty: 1 }],
+      { n: 0, total: 79, paid: 0 });
+    await chk('賽季票 + 代訂（附贈已含於賽季票）',
+      [{ key: 'season', qty: 1 }, { key: 'svc_prem_1y_own', qty: 1 }],
+      { n: 1, total: A.seasonPriceNow(A.PLANS.season.price).price + 4599, paid: 0 });
+    // ⚠️ 這三個一定要擋。放行任何一個都等於白送一站。
+    await chk('❗附贈與自費撞號',
+      [{ key: 'svc_prem_1m_own', qty: 1, gifts: [GP1] }, { key: 'week', gp: GP1, qty: 1 }], 'error');
+    await chk('❗指定超過附贈張數',
+      [{ key: 'svc_prem_1m_own', qty: 1, gifts: [GP1, GP2] }], 'error');
+    await chk('❗附贈指定已結束的場次',
+      [{ key: 'svc_prem_1m_own', qty: 1, gifts: [A.gpId(A.gpList()[0])] }], 'error');
+  }
+  {
+    // 附贈的張數必須跟著份數走。寫死成 1 的話，買三份只送一份——
+    // 而商品卡上寫著「每份 1 張」，那是承諾與交付對不起來。
+    const r = await q([{ key: 'svc_prem_1m_own', qty: 3, gifts: [GP1, GP2, GP3] }]);
+    const n = (r.lines || []).filter((l) => l.gift).length;
+    if (n !== 3) P('高', '附贈張數沒有跟著份數走', '3 份只送了 ' + n + ' 張');
   }
 
   /* ---------- 6. 不該成立的組合 ---------- */

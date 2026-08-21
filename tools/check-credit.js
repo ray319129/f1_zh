@@ -23,7 +23,12 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 
-let src = fs.readFileSync(path.join(__dirname, '..', 'backend/src/index.js'), 'utf8')
+// ⚠️ **一定要加 'use strict'。** 後端是 ESM（＝嚴格模式），但 vm.runInContext
+//    跑的是 script（＝非嚴格）。差別會吃掉一整類 bug：對未宣告的變數賦值
+//    在這裡只是建立一個全域，在真正的 Worker 上是 ReferenceError。
+//    實際發生過——`let hasWeekPurchase` 被刪掉、`hasWeekPurchase = true` 留著，
+//    node --check 與這裡的矩陣測試**全部放行**，直播頁面上才炸。
+let src = "'use strict';\n" + fs.readFileSync(path.join(__dirname, '..', 'backend/src/index.js'), 'utf8')
   .replace(/export default \{[\s\S]*?\n\};\r?\n/, '')
   .replace(/\bexport\s+class\s+/g, 'class ');
 
@@ -81,9 +86,17 @@ const mail = (m, keys) => store.set('licmail:' + m, JSON.stringify(keys));
     const cases = [
       [[{ key: 'week', gp: A.gpId(gps[0]), qty: 1 }], 39, '單買一張'],
       [[{ key: 'week', gp: A.gpId(gps[0]), qty: 1 }, { key: 'week', gp: A.gpId(gps[1]), qty: 1 }], 78, '兩張'],
-      [[{ key: 'week', gp: A.gpId(gps[0]), qty: 1 }, { key: 'svc_prem_1y_own', qty: 1 }], 0,
-        '代訂 1 年 + 通行證（附贈折抵後 0 元）'],
-      [[{ key: 'svc_prem_1y_own', qty: 1 }], 0, '只買代訂'],
+      // ⚠️ **附贈那幾列的 sum 是 0，所以自動不計入。**
+      //    這是把附贈做成商品列（而不是折抵）換來的：不必再去追
+      //    「哪一筆折抵折的是通行證」。付費那張仍然實付 39。
+      [[{ key: 'week', gp: A.gpId(gps[0]), qty: 1 },
+        { key: 'svc_prem_1y_own', qty: 1, gifts: [A.gpId(gps[1]), A.gpId(gps[2]), A.gpId(gps[3])] }], 39,
+      '代訂 1 年（附贈 3 張）+ 自費 1 張'],
+      [[{ key: 'svc_prem_1y_own', qty: 1, gifts: [A.gpId(gps[0]), A.gpId(gps[1]), A.gpId(gps[2])] }], 0,
+        '只買代訂（附贈 3 張全免費）'],
+      [[{ key: 'svc_prem_1m_own', qty: 3, gifts: [A.gpId(gps[0]), A.gpId(gps[2]), A.gpId(gps[4])] },
+        { key: 'week', gp: A.gpId(gps[1]), qty: 1 }, { key: 'week', gp: A.gpId(gps[3]), qty: 1 }], 78,
+      '代訂 1 月 ×3（附贈 3 張）+ 自費 2 張'],
     ];
     for (const [items, want, why] of cases) {
       const r = await A.quoteCart(env, items, {});

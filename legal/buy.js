@@ -22,6 +22,19 @@
 
   // key -> qty。用 Map 保順序，畫面上的排列才穩定。
   const cart = new Map();
+
+  /**
+   * 代訂附贈的比賽週場次。方案代碼 -> 場次代碼陣列。
+   *
+   * ⚠️ **附贈的那幾週必須在畫面上有實體。** 以前的做法是「同時買代訂與
+   *    通行證就折抵 39」，附贈本身從頭到尾沒有出現過——買家看到的只有
+   *    一行折抵，得自己推理「代訂送的那週去哪了」。
+   *    **能用「看得到」解決的，不要用「說明得清楚」解決。**
+   *
+   * ⚠️ 這裡只是方便，不是防線。張數上限、有沒有結束、有沒有跟付費的撞號，
+   *    伺服器都會再驗一次（quoteCart）。
+   */
+  const gifts = new Map();
   let plans = [];
   let quote = null;
   let quoteSeq = 0;
@@ -88,7 +101,11 @@
     if (p.shared) {
       bits.push('<b class="warn">與他人共用帳號　·　僅限網頁端　·　高峰時段有機率被擠掉</b>');
     }
-    if (p.bundleWeek) bits.push('隨附一個比賽週的字幕翻譯');
+    // ⚠️ **張數要跟著份數走。** 寫死「隨附一個比賽週」而實際送三張，
+    //    或反過來，都是把承諾與交付對不起來——那是退款的來源。
+    if (p.bundleWeeks > 0) {
+      bits.push('<b>隨附 ' + p.bundleWeeks + ' 張比賽週通行證</b>（每一份；場次可自選）');
+    }
     if (p.locked) bits.push('<b class="warn">目前無法購買</b>　' + esc(p.locked));
     // **划算度要說實話。** 賽季尾聲的整季票可能比一場一場買貴，
     // 那是刻意保留給使用者自己決定的（他可能就是想一次買斷），
@@ -158,7 +175,8 @@
         const n = Number(qsel.value) || 1;
         // 還沒加進購物車就改數量＝他想買，直接幫他加進去
         cart.set(p.key, n);
-        paintSelection();
+        syncGifts();
+        renderRaces();
         refreshQuote();
       };
     }
@@ -227,8 +245,12 @@
   const ST_LABEL = { upcoming: '即將開始', live: '比賽週進行中', finished: '已結束' };
 
   function raceCard(g) {
+    // ⚠️ **已由代訂附贈的場次不可以再賣一次。** 同一場買兩張不會延長效期、
+    //    不會提高裝置上限——第二筆是純損失，而且事後一定變成客訴。
+    //    這裡直接鎖住並說明，不是靠結帳時報錯攔下來。
+    const gifted = giftGpIds().has(g.id);
     const el = document.createElement('div');
-    el.className = 'plan gp' + (g.purchasable ? '' : ' locked');
+    el.className = 'plan gp' + (g.purchasable && !gifted ? '' : ' locked');
     el.dataset.key = 'week';
     el.dataset.gp = g.id;
 
@@ -241,11 +263,12 @@
     if (g.tentative) bits.push('<span class="tag warnTag">賽程待 F1 官方確認</span>');
     if (g.status === 'live') bits.push('<span class="tag liveTag">進行中</span>');
     if (!g.purchasable) bits.push('<span class="tag">已結束</span>');
+    if (gifted) bits.push('<span class="tag giftTag">代訂已附贈，無須購買</span>');
 
     el.innerHTML =
       `<button type="button" class="planHead"${g.purchasable ? '' : ' disabled'}>
          <span class="planName"><span class="flag">${g.flag || '🏁'}</span> ${esc(g.label)}</span>
-         <span class="planPrice">${g.purchasable ? money(g.price) : '—'}</span>
+         <span class="planPrice">${gifted ? '已附贈' : (g.purchasable ? money(g.price) : '—')}</span>
        </button>
        <div class="planNote">
          ${esc(g.country)}　·　${esc(g.circuit)}　·　${fmtRange(g.startDate, g.endDate)}
@@ -278,7 +301,18 @@
        </details>`;
 
     if (g.purchasable) {
-      el.querySelector('.planHead').onclick = () => toggleGp(g.id);
+      // 已附贈的仍然可以點——但點下去是說明，不是加進購物車。
+      // 直接 disabled 的話，想換附贈場次的人不知道該去哪裡換。
+      el.querySelector('.planHead').onclick = () => {
+        if (giftGpIds().has(g.id)) {
+          // showMsg 走 textContent，**不可以先 esc**——那會讓 & < > 變成
+          //    使用者看得到的字面值（&amp; 之類）。
+          showMsg(g.label + '已由代訂附贈，您不需要再購買。'
+            + '若想把附贈換到別的場次，請在下方購物車的附贈那一列更改。');
+          return;
+        }
+        toggleGp(g.id);
+      };
     }
     return el;
   }
@@ -317,7 +351,11 @@
     const k = 'week:' + id;
     if (cart.has(k)) cart.delete(k);
     else { resolveConflict('week'); cart.set(k, 1); }
-    paintSelection();
+    // ⚠️ 買了一場之後，附贈可能得換到別站（同一場不重複開通）——
+    //    syncGifts 會處理，但**場次卡片必須跟著重畫**，
+    //    否則畫面上還掛著舊的「代訂已附贈」標籤。
+    syncGifts();
+    renderRaces();
     refreshQuote();
   }
 
@@ -384,11 +422,18 @@
   // 購物車
   // ---------------------------------------------------------------------
   function toggle(key) {
-    if (cart.has(key)) { cart.delete(key); return paintSelection(), refreshQuote(); }
+    if (cart.has(key)) {
+      cart.delete(key);
+      // 移除代訂 = 附贈一起走。場次卡片要解鎖，不然那幾站永遠買不到。
+      syncGifts();
+      renderRaces();
+      return refreshQuote();
+    }
     resolveConflict(key);
     const sel = document.querySelector(`[data-qty="${key}"]`);
     cart.set(key, sel ? (Number(sel.value) || 1) : 1);
-    paintSelection();
+    syncGifts();
+    renderRaces();
     refreshQuote();
   }
 
@@ -409,6 +454,9 @@
     // 商品卡上的下拉也要跟著動，否則兩個地方顯示不同的數字
     const sel = document.querySelector('[data-qty="' + key + '"]');
     if (sel) sel.value = String(next);
+    // 份數改了，附贈張數就跟著改（每份 N 張）
+    syncGifts();
+    renderRaces();
     refreshQuote();
   }
 
@@ -420,14 +468,72 @@
     });
   }
 
+  /** 這個方案每一份送幾張、總共該有幾張。 */
+  function giftNeed(key) {
+    const p = plans.find((x) => x.key === key);
+    if (!p || !(p.bundleWeeks > 0)) return 0;
+    const open = races.filter((r) => r.purchasable).length;
+    return Math.min(p.bundleWeeks * (cart.get(key) || 1), open);
+  }
+
+  /** 購物車裡付費買了哪幾場（附贈不可以跟它們撞號）。 */
+  function paidGpIds() {
+    return new Set(Array.from(cart.keys())
+      .filter((k) => k.indexOf('week:') === 0).map((k) => k.slice(5)));
+  }
+
+  /** 目前所有附贈涵蓋的場次。 */
+  function giftGpIds() {
+    const out = new Set();
+    for (const [k, arr] of gifts) if (cart.has(k)) arr.forEach((id) => out.add(id));
+    return out;
+  }
+
+  /**
+   * 把附贈的場次補齊 / 修剪。
+   *
+   * ⚠️ **每次報價前都要跑。** 數量改了、付費場次加了、方案移除了，
+   *    附贈的張數與可選場次都會跟著變——不同步的話，伺服器會回一個
+   *    「請指定 N 個場次」的錯誤，而使用者根本不知道自己漏了什麼。
+   */
+  function syncGifts() {
+    const paid = paidGpIds();
+    for (const k of Array.from(gifts.keys())) if (!cart.has(k)) gifts.delete(k);
+    for (const k of cart.keys()) {
+      const need = giftNeed(k);
+      if (!need) { gifts.delete(k); continue; }
+      const taken = new Set(paid);
+      for (const [k2, arr] of gifts) if (k2 !== k) arr.forEach((id) => taken.add(id));
+      // 先剔除已經不能用的（結束了、或被付費那邊佔走了）
+      let arr = (gifts.get(k) || []).filter((id) => {
+        const r = races.find((x) => x.id === id);
+        return r && r.purchasable && !taken.has(id);
+      });
+      arr = Array.from(new Set(arr)).slice(0, need);
+      // 不足的用最近幾場補。**預設要避開購物車裡已經有的**，
+      // 否則先加通行證再加代訂就會當場撞號。
+      arr.forEach((id) => taken.add(id));
+      for (const r of races) {
+        if (arr.length >= need) break;
+        if (!r.purchasable || taken.has(r.id)) continue;
+        arr.push(r.id); taken.add(r.id);
+      }
+      gifts.set(k, arr);
+    }
+  }
+
   /** 把購物車轉成後端要的格式。比賽週通行證要帶上場次代碼。 */
   function cartItems() {
+    syncGifts();
     return Array.from(cart, ([k, qty]) => {
       const i = k.indexOf(':');
       if (i >= 0) return { key: k.slice(0, i), gp: k.slice(i + 1), qty };
       // 共用帳號的代訂：場次來自卡片上的下拉，不編進購物車的鍵
       const g = document.querySelector('[data-svcgp="' + k + '"]');
-      return g ? { key: k, gp: g.value, qty } : { key: k, qty };
+      const base = g ? { key: k, gp: g.value, qty } : { key: k, qty };
+      // 附贈的場次。空陣列就讓伺服器自己補最近幾場（舊版頁面走的也是這條）
+      if (gifts.has(k)) base.gifts = gifts.get(k).slice();
+      return base;
     });
   }
 
@@ -491,7 +597,9 @@
       // 這一項在購物車裡的鍵。比賽週通行證是 `week:<場次>`，其餘就是方案代碼。
       const key = l.gp && l.key === 'week' ? ('week:' + l.gp) : l.key;
       const plan = plans.find((p) => p.key === l.key) || {};
-      const canQty = (plan.maxQty || 1) > 1;
+      // 附贈那幾列不是獨立商品：不能改數量、不能單獨移除（要拿掉就是移除代訂）
+      const canQty = !l.gift && (plan.maxQty || 1) > 1;
+      if (l.gift) row.classList.add('giftRow');
 
       // 比賽週通行證要在購物車裡就看得到效期——那是這個商品最容易誤會的地方。
       const notes = [];
@@ -500,6 +608,35 @@
           + (l.nextLabel ? '（' + esc(l.nextLabel) + '比賽週開始前）' : ''));
       }
       if (l.note) notes.push(esc(l.note));
+
+      // ⚠️ **附贈的場次要能在購物車裡直接改。** 這是買家唯一會盯著看的地方，
+      //    把它塞回上面的商品卡等於要他來回捲動比對。
+      //    賽季通行證涵蓋整季時 gp 是 null，那一列只講一句話、不給下拉。
+      if (l.gift && l.gp) {
+        const used = new Set(paidGpIds());
+        for (const [k2, arr] of gifts) arr.forEach((id) => { if (id !== l.gp) used.add(id); });
+        const opts = races.filter((r) => r.purchasable && (r.id === l.gp || !used.has(r.id)))
+          .map((r) => '<option value="' + r.id + '"' + (r.id === l.gp ? ' selected' : '') + '>'
+            + (r.flag || '') + ' ' + esc(r.label) + '</option>').join('');
+        row.innerHTML = '<span class="cItem"><b>附贈　比賽週通行證</b>'
+          + '<select class="giftSel" data-giftfor="' + esc(l.parent || '') + '"'
+          + ' data-giftgp="' + esc(l.gp) + '" aria-label="選擇附贈的場次">' + opts + '</select>'
+          + (notes.length ? '<em>' + notes.join('　·　') + '</em>' : '') + '</span>'
+          + '<span class="cQty" data-label="數量"><span class="qtyFixed">1</span></span>'
+          + '<span class="cPrice" data-label="單價">' + money(0) + '</span>'
+          + '<span class="cSum" data-label="小計">' + money(0) + '</span>'
+          + '<span class="cDel"></span>';
+        return row;
+      }
+      if (l.gift) {
+        row.innerHTML = '<span class="cItem"><b>附贈　' + esc(l.label) + '</b>'
+          + (notes.length ? '<em>' + notes.join('　·　') + '</em>' : '') + '</span>'
+          + '<span class="cQty" data-label="數量"><span class="qtyFixed">—</span></span>'
+          + '<span class="cPrice" data-label="單價">' + money(0) + '</span>'
+          + '<span class="cSum" data-label="小計">' + money(0) + '</span>'
+          + '<span class="cDel"></span>';
+        return row;
+      }
 
       const qtyCell = canQty
         ? '<span class="qtyBox">'
@@ -531,6 +668,19 @@
     });
     $('cartLines').querySelectorAll('[data-dec]').forEach((b) => {
       b.onclick = () => { bumpQty(b.dataset.dec, -1); };
+    });
+    // 換附贈場次。改完要重畫場次卡片——舊的那一場要解鎖、新的要鎖上。
+    $('cartLines').querySelectorAll('[data-giftfor]').forEach((sel) => {
+      sel.onchange = () => {
+        const k = sel.dataset.giftfor;
+        const arr = (gifts.get(k) || []).slice();
+        const i = arr.indexOf(sel.dataset.giftgp);
+        if (i < 0) return;
+        arr[i] = sel.value;
+        gifts.set(k, arr);
+        renderRaces();
+        refreshQuote();
+      };
     });
 
     $('cartAdj').replaceChildren(...(quote.adjustments || []).map((a) => {

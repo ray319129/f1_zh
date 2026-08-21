@@ -37,3 +37,6 @@ test_video.mp4
 
 # 暫存的實驗檔
 backend/dev/
+
+# 本機預覽用的 dev server 設定（不是產品的一部分）
+.claude/

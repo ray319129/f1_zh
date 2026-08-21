@@ -285,3 +285,23 @@ nav a.cta:hover { background: currentColor; color: Canvas; }
   }
 }
 
+
+/* 代訂附贈的比賽週。
+   ⚠️ **附贈要在購物車裡看得起來像一列商品，不是一行小字。**
+      舊做法（折抵 −39）把附贈藏在算術裡，買家只能自己推理
+      「代訂送的那週去哪了」。縮排 + 左邊那條線是在說「這隸屬於上一列」。 */
+.cartTable .cartRow.giftRow { background: rgba(46,160,67,.06); }
+.cartTable .cartRow.giftRow .cItem {
+  padding-left: 14px; border-left: 3px solid var(--ok, #2ea043);
+}
+.cartTable .cartRow.giftRow .cSum,
+.cartTable .cartRow.giftRow .cPrice { color: var(--ok, #2ea043); font-weight: 600; }
+
+/* 換附贈場次的下拉。就放在那一列裡——把它移回上面的商品卡，
+   等於要買家在兩個地方之間來回捲動比對。 */
+.giftSel {
+  margin-top: 5px; max-width: 100%; padding: 5px 8px; border-radius: 7px;
+  border: 1px solid var(--line, rgba(128,128,128,.35)); background: transparent;
+  color: inherit; font-size: 13px;
+}
+.giftTag { color: var(--ok, #2ea043); font-weight: 600; }

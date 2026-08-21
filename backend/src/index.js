@@ -1279,7 +1279,20 @@ const PLANS = {
   //    後台要看得到並手動結案。把它們放進同一個 PLANS 是為了讓
   //    購物車、金流、訂單查詢共用同一套流程，不必再寫一份。
   //
-  // `bundleWeek: true` 代表附贈一個比賽週的翻譯使用權（五天方案不附）。
+  // `bundleWeeks: N` 代表**每一份**附贈 N 張比賽週通行證（五天方案不附）。
+  //
+  // ⚠️ **這是張數不是布林。** 原本是 `bundleWeek: true`，配上「同時買代訂與
+  //    通行證就折抵 39」的規則。那個規則有兩個毛病：
+  //
+  //    (1) 買家看不到附贈的那一週。畫面上只有一行「折抵 −39」，
+  //        「代訂送的那週去哪了」得自己推理——**折抵能算對金額，算不掉困惑**。
+  //    (2) 折抵只折一次，於是代訂買三份仍然只送一週，
+  //        而商品卡上寫著「隨附一個比賽週」，並排看就像文字遊戲。
+  //
+  //    現在附贈是購物車裡真正的一列（NT$0），場次由買家自己指定。
+  //
+  // ⚠️ **1 年方案給 3 張，不是 1 張。** 1 個月 × 3 份 = NT$2,097 送 3 張，
+  //    1 年 NT$4,599 若只送 1 張，付兩倍拿三分之一，並排一定會被講。
   // ⚠️ 鍵名保留了 `_own` 後綴，但**那個區分已經取消**（2026-08-17）。
   //    原本每個時長有「自備帳號／無自備帳號」兩種，實際作業沒有差別，
   //    只是讓買家多做一次不必要的選擇；現在統一成一種，只需要 email。
@@ -1314,10 +1327,10 @@ const PLANS = {
     shared: true,
     svcWeekend: true,
   },
-  svc_pro_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 個月', price: 329, manual: true, vpn: true, bundleWeek: true, maxQty: 3 },
-  svc_prem_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 個月', price: 699, manual: true, vpn: true, bundleWeek: true, maxQty: 3 },
-  svc_pro_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 年', price: 2199, manual: true, vpn: true, bundleWeek: true },
-  svc_prem_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 年', price: 4599, manual: true, vpn: true, bundleWeek: true },
+  svc_pro_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。**每份隨附 1 張比賽週通行證**，場次由您在結帳時指定（可選本賽季任何尚未開始的場次）。", label: 'F1TV Pro 代訂 1 個月', price: 329, manual: true, vpn: true, bundleWeeks: 1, maxQty: 3 },
+  svc_prem_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。**每份隨附 1 張比賽週通行證**，場次由您在結帳時指定（可選本賽季任何尚未開始的場次）。", label: 'F1TV Premium 代訂 1 個月', price: 699, manual: true, vpn: true, bundleWeeks: 1, maxQty: 3 },
+  svc_pro_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。**隨附 3 張比賽週通行證**，場次由您在結帳時指定（可選本賽季任何尚未開始的場次）。", label: 'F1TV Pro 代訂 1 年', price: 2199, manual: true, vpn: true, bundleWeeks: 3, maxQty: 1 },
+  svc_prem_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。**隨附 3 張比賽週通行證**，場次由您在結帳時指定（可選本賽季任何尚未開始的場次）。", label: 'F1TV Premium 代訂 1 年', price: 4599, manual: true, vpn: true, bundleWeeks: 3, maxQty: 1 },
 };
 
 /**
@@ -2723,7 +2736,7 @@ function tradeDate() {
  *
  * 三條規則按順序套用：
  *   1. 賽季方案用 `seasonPriceNow`（分段價、早鳥賣完自動降級）
- *   2. **代訂附贈一週 + 另外買翻譯 → 折抵 39**（使用者決定）
+ *   2. **代訂附贈的比賽週是購物車裡真正的一列（NT$0）**，不是折抵
  *   3. 升級補差價：扣掉這個 email 本賽季已付的比賽週通行證
  */
 async function quoteCart(env, rawItems, opts) {
@@ -2732,9 +2745,10 @@ async function quoteCart(env, rawItems, opts) {
   const ops = await opsConfig(env);          // 後台可覆寫價格與下架方案
   const lines = [];
   let total = 0;
-  let bundledWeek = false;
-  let hasWeekPurchase = false;
   let seasonKey = null;
+  let hasSeason = false;
+  const paidGps = new Set();     // 付費購買的場次
+  const giftGps = new Set();     // 代訂附贈的場次
 
   // ⚠️ **有些組合本身就是錯的，要在算錢之前擋下來。**
   //
@@ -2779,6 +2793,15 @@ async function quoteCart(env, rawItems, opts) {
         error: '賽季通行證已經涵蓋本賽季的所有場次，不需要再加購比賽週通行證。'
           + '請移除其中一種再結帳。',
       };
+    }
+
+    // ⚠️ **付費買了哪幾場，必須在跑迴圈之前就知道。**
+    //    附贈的場次不可以跟付費的撞號（同一場不會重複開通），
+    //    而代訂那一列可能排在通行證後面——邊跑邊記就會漏掉前面那些。
+    hasSeason = nSeason > 0;
+    for (const it of items) {
+      const pp = PLANS[String((it && it.key) || '')];
+      if (pp && pp.weekBound && it && it.gp) paidGps.add(String(it.gp));
     }
   }
 
@@ -2829,7 +2852,6 @@ async function quoteCart(env, rawItems, opts) {
     }
 
     if (p.weekBound) {
-      hasWeekPurchase = true;
       // ⚠️ **比賽週通行證一定要指定是哪一場。**
       //    商品是「荷蘭大獎賽通行證」，不是「一週」——沒有 gp 就不知道賣什麼。
       const gid = String((it && it.gp) || '');
@@ -2847,8 +2869,6 @@ async function quoteCart(env, rawItems, opts) {
       lineFrom = w.from; lineUntil = w.until;
       lineNext = w.next ? (w.next.label || (w.next.name + '大獎賽')) : null;
     }
-    if (p.bundleWeek) bundledWeek = true;
-
     // 比賽週通行證的顯示名稱是**那一場的名字**，不是方案名稱
     const lineLabel = (p.weekBound && it && it.gp && gpById(String(it.gp)))
       ? (gpById(String(it.gp)).label || `${gpById(String(it.gp)).name}大獎賽`)
@@ -2859,20 +2879,94 @@ async function quoteCart(env, rawItems, opts) {
       label: lineLabel, qty, unit, sum: unit * qty, note,
       vpn: !!p.vpn, manual: !!p.manual,
       // primary 的判斷要用得到它：全是代訂時，有沒有附贈一週決定發哪一種內部方案
-      bundleWeek: !!p.bundleWeek,
+      bundleWeek: p.bundleWeeks > 0,
     });
     total += unit * qty;
+
+    // ---- 代訂附贈的比賽週通行證 ----
+    //
+    // ⚠️ **附贈的每一張都是購物車裡真正的一列，不是折抵。**
+    //
+    //    舊做法是「代訂 + 通行證」折 39 元。金額算得對，但買家必須自己
+    //    回答「代訂送的那週去哪了」——因為它從頭到尾沒有出現在畫面上。
+    //    **能用「看得到」解決的，不要用「說明得清楚」解決。**
+    //
+    // ⚠️ **場次一定要在伺服器這裡驗。** 前端送來的只是 gp 代號，
+    //    張數上限、有沒有結束、有沒有跟付費那幾張撞號，全部在這裡把關。
+    //    前端的「已附贈／不可選」只是方便，不是防線。
+    if (p.bundleWeeks > 0) {
+      // 賽季通行證已經涵蓋整季，附贈的週沒有任何內容可以給。
+      // **但仍然要出現在購物車裡**——不然買家會以為附贈憑空消失了，
+      // 而那正是舊折抵做法的毛病。
+      if (hasSeason) {
+        lines.push({
+          key: 'week_svc', gp: null, gift: true, manual: true, parent: key,
+          label: `比賽週通行證 ×${p.bundleWeeks * qty}`,
+          qty: 1, unit: 0, sum: 0,
+          note: '已包含於賽季通行證，無須指定場次',
+        });
+      } else {
+        // 上限：每份 N 張 × 份數，但不能超過本賽季還沒開始的場次數
+        const openGps = gpList().filter((g) => gpStatus(g) !== 'finished');
+        const allow = Math.min(p.bundleWeeks * qty, openGps.length);
+        let want = Array.from(new Set(
+          (Array.isArray(it && it.gifts) ? it.gifts : [])
+            .map((x) => String(x || '')).filter(Boolean),
+        ));
+        // ⚠️ 沒指定就自動補**最近幾場尚未被佔用的**。
+        //    這條路是給舊版購買頁（HTML 可能還在快取裡）與 body.plan 舊格式走的，
+        //    直接回錯誤會讓那些人結不了帳，而他們什麼也沒做錯。
+        if (!want.length) {
+          want = openGps.map((g) => gpId(g))
+            .filter((id) => !paidGps.has(id) && !giftGps.has(id))
+            .slice(0, allow);
+        }
+        if (want.length > allow) {
+          return { error: `${p.label} 附贈 ${allow} 張比賽週通行證，您指定了 ${want.length} 場。` };
+        }
+        if (want.length < allow) {
+          return {
+            error: `請指定 ${p.label} 附贈的 ${allow} 個比賽週場次`
+              + `（目前只指定了 ${want.length} 個）。`,
+          };
+        }
+        for (const gid of want) {
+          const g = gpById(gid);
+          if (!g) return { error: '附贈的比賽週場次不存在（請重新整理購買頁）' };
+          const nm = g.label || `${g.name}大獎賽`;
+          if (gpStatus(g) === 'finished') {
+            return { error: `${nm}已經結束，無法指定為附贈場次` };
+          }
+          if (giftGps.has(gpId(g))) {
+            return { error: `${nm}重複指定為附贈場次——同一場只會開通一次。` };
+          }
+          if (paidGps.has(gpId(g))) {
+            return {
+              error: `${nm}已經在購物車中（付費購買）。附贈的場次請改選其他站——`
+                + '同一場只會開通一次，重複指定不會延長任何效期。',
+            };
+          }
+          giftGps.add(gpId(g));
+          const gw = gpWindow(g);
+          if (!gw) return { error: '找不到該場次的比賽週區間' };
+          gpWindows.push([gw.from, gw.until, gpId(g)]);
+          lines.push({
+            key: 'week_svc', gp: gpId(g), gift: true, manual: true, parent: key,
+            label: nm, qty: 1, unit: 0, sum: 0,
+            validFrom: gw.from, validUntil: gw.until,
+            nextLabel: gw.next ? (gw.next.label || (gw.next.name + '大獎賽')) : null,
+            note: '代訂附贈',
+          });
+        }
+      }
+    }
   }
 
   const adjustments = [];
 
-  // ---- 代訂附贈的一週，不該讓買家再付一次 ----
-  // 使用者的決定：同時買「有附贈一週的代訂」與「比賽週通行證」時折抵 39。
-  // 只折一次——附贈的就是一週，買兩週的人第二週仍然要付。
-  if (bundledWeek && hasWeekPurchase) {
-    adjustments.push({ label: '代訂已附贈一週，折抵', amount: -WEEKEND_PRICE });
-    total -= WEEKEND_PRICE;
-  }
+  // ⚠️ **這裡以前有一行「代訂已附贈一週，折抵 −39」。拿掉了，不要加回來。**
+  //    附贈現在是上面那幾列 NT$0 的商品，買家看得到自己拿到哪幾站。
+  //    再加一筆折抵就會變成折兩次。
 
   // ---- 升級補差價 ----
   let creditKeys = [];
@@ -2901,13 +2995,11 @@ async function quoteCart(env, rawItems, opts) {
   //    會帶著 paid = 4599——日後升級賽季票時，一張免費拿到的通行證
   //    換到滿額折抵。實測確認過。
   //
-  //    這裡只算 weekBound 那幾行，並且把「代訂已附贈一週」的折抵扣回去，
-  //    因為那筆折抵折的正是通行證本身。
+  //    這裡只算 weekBound 那幾行。**附贈的那幾列 sum 是 0**，
+  //    所以自動不計入——這是把附贈做成商品列（而不是折抵）的附帶好處：
+  //    不必再去追「哪一筆折抵折的是通行證」。
   const weekLines = lines.filter((l) => PLANS[l.key] && PLANS[l.key].weekBound);
-  const bundleAdj = adjustments
-    .filter((a) => /附贈/.test(a.label))
-    .reduce((n, a) => n + a.amount, 0);
-  const weekPaid = Math.max(0, weekLines.reduce((n, l) => n + l.sum, 0) + bundleAdj);
+  const weekPaid = Math.max(0, weekLines.reduce((n, l) => n + l.sum, 0));
   return {
     lines,
     adjustments,
@@ -5860,7 +5952,7 @@ async function handleRequest(request, env) {
               // 共用帳號的限制要在卡片上跳出來，不能只寫在商品說明裡
               shared: !!v.shared,
               desc: v.desc || '',
-              bundleWeek: !!v.bundleWeek,
+              bundleWeeks: Number(v.bundleWeeks) || 0,
             };
           })
           // ⚠️ 早鳥價一旦不比當期 Season 價便宜就自動下架。
