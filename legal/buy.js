@@ -283,9 +283,40 @@
     return el;
   }
 
+  /**
+   * 賽季通行證與比賽週通行證是互斥的——賽季票已經涵蓋本賽季所有場次。
+   *
+   * ⚠️ 伺服器會擋（quoteCart 回 error），但**只擋不夠**：使用者會停在一個
+   *    「請移除其中一種」的錯誤訊息前，而他不一定記得自己何時選了另一種。
+   *    點賽季票的意圖很清楚就是「我要改買這個」，所以直接幫他換掉。
+   *
+   * ⚠️ 但**一定要說出來**。默默移除他選過的東西，比報錯更糟——
+   *    他會在購物車裡找不到剛才選的那一項，然後懷疑網站壞了。
+   */
+  function resolveConflict(key) {
+    const isSeason = /^season/.test(key);
+    const isWeek = key === 'week';
+    if (!isSeason && !isWeek) return;
+    const removed = [];
+
+    for (const k of Array.from(cart.keys())) {
+      const base = k.indexOf(':') >= 0 ? k.slice(0, k.indexOf(':')) : k;
+      if (isSeason && base === 'week') { cart.delete(k); removed.push('比賽週通行證'); }
+      else if (isSeason && /^season/.test(base) && base !== key) {
+        cart.delete(k); removed.push('另一張賽季通行證');
+      } else if (isWeek && /^season/.test(base)) { cart.delete(k); removed.push('賽季通行證'); }
+    }
+    if (removed.length) {
+      showMsg('已為您移除' + Array.from(new Set(removed)).join('、')
+        + '——賽季通行證已涵蓋本賽季所有場次，兩者不需要同時購買。');
+    }
+  }
+
+
   function toggleGp(id) {
     const k = 'week:' + id;
-    if (cart.has(k)) cart.delete(k); else cart.set(k, 1);
+    if (cart.has(k)) cart.delete(k);
+    else { resolveConflict('week'); cart.set(k, 1); }
     paintSelection();
     refreshQuote();
   }
@@ -354,6 +385,7 @@
   // ---------------------------------------------------------------------
   function toggle(key) {
     if (cart.has(key)) { cart.delete(key); return paintSelection(), refreshQuote(); }
+    resolveConflict(key);
     const sel = document.querySelector(`[data-qty="${key}"]`);
     cart.set(key, sel ? (Number(sel.value) || 1) : 1);
     paintSelection();

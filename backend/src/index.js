@@ -2719,7 +2719,8 @@ function tradeDate() {
  *   2. **代訂附贈一週 + 另外買翻譯 → 折抵 39**（使用者決定）
  *   3. 升級補差價：扣掉這個 email 本賽季已付的比賽週通行證
  */
-async function quoteCart(env, items, opts) {
+async function quoteCart(env, rawItems, opts) {
+  let items = Array.isArray(rawItems) ? rawItems : [];
   const o = opts || {};
   const ops = await opsConfig(env);          // 後台可覆寫價格與下架方案
   const lines = [];
@@ -2727,6 +2728,52 @@ async function quoteCart(env, items, opts) {
   let bundledWeek = false;
   let hasWeekPurchase = false;
   let seasonKey = null;
+
+  // ⚠️ **有些組合本身就是錯的，要在算錢之前擋下來。**
+  //
+  //    這一段是矩陣測試（tools/check-plan-matrix.js）抓出來的兩個
+  //    **會收錯錢**的 bug：
+  //
+  //    (1) 賽季票 + 比賽週通行證
+  //        發出去的授權會帶著比賽週的區間，而 entitlementUntil 只簽到
+  //        「現在這一段」的結束——**整張賽季票被截成一週**，而且比賽週之外
+  //        完全不能用。客人付了 NT$338 拿到兩週。兩者本來就重複，不該讓他買。
+  //
+  //    (2) 同一場買兩次
+  //        兩列、收兩次錢，但區間合併後只有一段——**第二筆是純損失**。
+  //
+  //    ⚠️ 這裡回 error 而不是「默默修正金額」：使用者手上有購買頁的截圖，
+  //       默默改掉才是糾紛的來源。唯一的例外是**完全相同的重複項目**
+  //       （那是用戶端的 bug，不是他的選擇），那種直接去重。
+  {
+    const seen = new Set();
+    const dedup = [];
+    for (const it of items) {
+      const k = String((it && it.key) || '') + '|' + String((it && it.gp) || '');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      dedup.push(it);
+    }
+    items = dedup;
+
+    const ks = items.map((it) => String((it && it.key) || ''));
+    const nSeason = ks.filter((k) => PLANS[k] && PLANS[k].untilSeasonEnd).length;
+    const nNext = ks.filter((k) => PLANS[k] && PLANS[k].nextSeasonOnly).length;
+    const nWeek = ks.filter((k) => PLANS[k] && PLANS[k].weekBound).length;
+
+    if (nSeason > 1) {
+      return { error: '一次只能購買一張賽季通行證。多買一張不會延長效期，只會重複收費。' };
+    }
+    if (nNext > 1) {
+      return { error: '一次只能購買一張下一賽季通行證。' };
+    }
+    if (nSeason && nWeek) {
+      return {
+        error: '賽季通行證已經涵蓋本賽季的所有場次，不需要再加購比賽週通行證。'
+          + '請移除其中一種再結帳。',
+      };
+    }
+  }
 
   const gpWindows = [];
   let lineFrom = null; let lineUntil = null; let lineNext = null; let lineGp = null;
@@ -2834,14 +2881,25 @@ async function quoteCart(env, items, opts) {
   }
 
   total = Math.max(0, Math.round(total));
+
+  // 主方案先算出來——下面要靠它決定「這張授權該不該帶比賽週區間」。
+  const primaryKey = (lines.find((l) => !l.manual) || {}).key
+    || (lines.some((l) => l.bundleWeek) ? 'week_svc' : 'svc_none');
+  const primaryIsWeek = !!(PLANS[primaryKey] && PLANS[primaryKey].weekBound);
   return {
     lines,
     adjustments,
     total,
     creditKeys,
     // 買到的比賽週區間。發碼時直接寫進授權記錄，續期時用它判斷「現在能不能用」。
-    windows: mergeWindows(gpWindows.map((w) => [w[0], w[1]])),
-    gpIds: gpWindows.map((w) => w[2]),
+    //
+    // ⚠️ **只有主方案是比賽週通行證時才帶區間。**
+    //    上面已經擋掉「賽季票 + 通行證」了，這裡是第二道：
+    //    區間一旦掛到賽季票上，那張票會被截成一週，而且完全不報錯。
+    //    要壞就壞在安全的那一邊——寧可少一段區間（使用者仍有完整效期），
+    //    也不要多一段（把長效期截短）。
+    windows: primaryIsWeek ? mergeWindows(gpWindows.map((w) => [w[0], w[1]])) : [],
+    gpIds: primaryIsWeek ? gpWindows.map((w) => w[2]) : [],
     // 主方案：發碼與統計要有一個代表。
     //
     // ⚠️ **購物車全是代訂時，絕對不可以拿代訂方案當主方案。**
@@ -2849,8 +2907,7 @@ async function quoteCart(env, items, opts) {
     //    等於送出一張永不過期的字幕授權（實際存在過的漏洞）。
     //    全是代訂時改發內部方案：有附贈一週的發 week_svc，
     //    沒有的發 svc_none（立刻到期，只用來讓後台追得到這張訂單）。
-    primary: (lines.find((l) => !l.manual) || {}).key
-      || (lines.some((l) => l.bundleWeek) ? 'week_svc' : 'svc_none'),
+    primary: primaryKey,
     // 差額低到不值得走金流時直接送（見 UPGRADE_FREE_BELOW）
     creditNote,
     freeUpgrade: !!(o.upgrade && total > 0 && total < UPGRADE_FREE_BELOW),

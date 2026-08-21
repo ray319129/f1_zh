@@ -37,6 +37,7 @@ const CHECKS = [
   ['法律文件與程式碼一致（權限／保存期限／價格／法規要件）', 'tools/check-legal.js'],
   ['所有超連結指向正確位置', 'tools/check-links.js'],
   ['跨產物一致（免費層／長度上限／快取版本／條款數字）', 'tools/check-consistency.js'],
+  ['方案組合矩陣（每一種搭配的金額與授權都要正確）', 'tools/check-plan-matrix.js'],
   ['翻譯品質沒有靜默退化（固定測試資料）', 'tools/check-fixtures.js'],
 ];
 
