@@ -1,0 +1,22 @@
+# Cloudflare Pages 的快取規則。
+#
+# ⚠️ **HTML 一定要 must-revalidate。**
+#    實測（2026-08-21）：部署後 buy.js 已經是新的，buy.html 還是瀏覽器快取的舊版，
+#    於是新的購物車表格結構完全沒出現——而畫面上看起來只是「版面怪怪的」，
+#    Console 一片乾淨。`?v=` 只救得了 CSS 與 JS，**救不了 HTML 自己**。
+#
+# 靜態資源反過來：它們都帶 ?v=，改版一定會換網址，所以可以放心長快取。
+/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/site.css
+  Cache-Control: public, max-age=31536000
+
+/*.js
+  Cache-Control: public, max-age=31536000
+
+/demo.mp4
+  Cache-Control: public, max-age=604800
+
+/demo-poster.jpg
+  Cache-Control: public, max-age=604800

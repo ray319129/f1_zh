@@ -118,16 +118,15 @@
          </div>`
       : '';
 
+    // ⚠️ **數量就是數量，不要加單位。** 這個下拉原本寫「站數」，
+    //    那是比賽週通行證的用語；套到「代訂 1 個月」上會變成
+    //    「站數 3」——完全不知道那是什麼意思。
+    //    商品名稱裡已經有單位（1 個月），這裡只要純數字。
     const qtyBox = p.maxQty > 1
-      ? `<div class="planQty">
-           <label>站數
-             <select data-qty="${p.key}">
-               ${Array.from({ length: p.maxQty }, (_, i) =>
-    `<option value="${i + 1}">${i + 1}</option>`).join('')}
-             </select>
-           </label>
-           <span class="hint">一次可買到本賽季結束（還有 ${p.maxQty} 站）</span>
-         </div>`
+      ? '<div class="planQty"><label>數量 <select data-qty="' + p.key + '">'
+        + Array.from({ length: p.maxQty }, (_, i) =>
+          '<option value="' + (i + 1) + '">' + (i + 1) + '</option>').join('')
+        + '</select></label></div>'
       : '';
 
     el.innerHTML =
@@ -361,6 +360,26 @@
     refreshQuote();
   }
 
+  /**
+   * 調整數量。
+   *
+   * ⚠️ 上限來自**伺服器給的 maxQty**，不是寫死的。一個月的代訂上限三個月，
+   *    而那個數字日後會改——寫死在前端就會與後端漂掉，
+   *    然後使用者選得到 4 卻在結帳時被夾回 3。
+   */
+  function bumpQty(key, delta) {
+    const plan = plans.find((p) => p.key === key) || {};
+    const max = plan.maxQty || 1;
+    const now = cart.get(key) || 1;
+    const next = Math.max(1, Math.min(max, now + delta));
+    if (next === now) return;
+    cart.set(key, next);
+    // 商品卡上的下拉也要跟著動，否則兩個地方顯示不同的數字
+    const sel = document.querySelector('[data-qty="' + key + '"]');
+    if (sel) sel.value = String(next);
+    refreshQuote();
+  }
+
   function paintSelection() {
     document.querySelectorAll('.plan').forEach((el) => {
       // 比賽週通行證的購物車鍵是 `week:<場次代碼>`，一般方案就是方案代碼
@@ -417,6 +436,16 @@
     validate();
   }
 
+  /**
+   * 購物車。
+   *
+   * ⚠️ **數量欄要誠實。** 一場一份的商品（比賽週通行證、共用帳號代訂）
+   *    顯示純數字，不給加減鈕——給一個按了不會有反應的按鈕，
+   *    比不給更糟：使用者會以為壞掉。
+   *
+   * ⚠️ 每一列都有移除鈕。沒有的話，要拿掉一項就得回到上面的商品卡再點一次，
+   *    而那時他已經不記得自己選了哪一張。
+   */
   function paintCart() {
     const box = $('cart');
     if (!quote) { box.hidden = true; return; }
@@ -425,21 +454,57 @@
     $('cartLines').replaceChildren(...quote.lines.map((l) => {
       const row = document.createElement('div');
       row.className = 'cartRow';
-      // 比賽週通行證要在購物車裡就看得到效期——
-      // 那是這個商品最容易誤會的地方，不能只放在卡片的展開裡。
-      const win = l.validUntil
-        ? `效期至 ${fmtSession(l.validUntil)}${l.nextLabel ? `（${esc(l.nextLabel)}比賽週開始前）` : ''}`
-        : '';
-      row.innerHTML = `<span>${esc(l.label)}${l.qty > 1 ? ` × ${l.qty}` : ''}`
-        + `${win ? `<em>${win}</em>` : ''}${l.note ? `<em>${esc(l.note)}</em>` : ''}</span>`
-        + `<span>${money(l.sum)}</span>`;
+      row.setAttribute('role', 'row');
+
+      // 這一項在購物車裡的鍵。比賽週通行證是 `week:<場次>`，其餘就是方案代碼。
+      const key = l.gp && l.key === 'week' ? ('week:' + l.gp) : l.key;
+      const plan = plans.find((p) => p.key === l.key) || {};
+      const canQty = (plan.maxQty || 1) > 1;
+
+      // 比賽週通行證要在購物車裡就看得到效期——那是這個商品最容易誤會的地方。
+      const notes = [];
+      if (l.validUntil) {
+        notes.push('效期至 ' + fmtSession(l.validUntil)
+          + (l.nextLabel ? '（' + esc(l.nextLabel) + '比賽週開始前）' : ''));
+      }
+      if (l.note) notes.push(esc(l.note));
+
+      const qtyCell = canQty
+        ? '<span class="qtyBox">'
+          + '<button type="button" class="qtyBtn" data-dec="' + key + '"'
+          + (l.qty <= 1 ? ' disabled' : '') + ' aria-label="減少數量">−</button>'
+          + '<b>' + l.qty + '</b>'
+          + '<button type="button" class="qtyBtn" data-inc="' + key + '"'
+          + (l.qty >= (plan.maxQty || 1) ? ' disabled' : '') + ' aria-label="增加數量">+</button>'
+          + '</span>'
+        : '<span class="qtyFixed">' + l.qty + '</span>';
+
+      row.innerHTML = '<span class="cItem"><b>' + esc(l.label) + '</b>'
+        + (notes.length ? '<em>' + notes.join('　·　') + '</em>' : '') + '</span>'
+        + '<span class="cQty" data-label="數量">' + qtyCell + '</span>'
+        + '<span class="cPrice" data-label="單價">' + money(l.unit) + '</span>'
+        + '<span class="cSum" data-label="小計">' + money(l.sum) + '</span>'
+        + '<span class="cDel"><button type="button" class="delBtn" data-del="' + key
+        + '" aria-label="從購物車移除">×</button></span>';
       return row;
     }));
+
+    // 事件一次綁完。**用委派會更省，但這裡每次重畫都是全新的節點，
+    // 直接綁反而不會有「舊監聽器殘留」的問題。**
+    $('cartLines').querySelectorAll('[data-del]').forEach((b) => {
+      b.onclick = () => { cart.delete(b.dataset.del); paintSelection(); refreshQuote(); };
+    });
+    $('cartLines').querySelectorAll('[data-inc]').forEach((b) => {
+      b.onclick = () => { bumpQty(b.dataset.inc, 1); };
+    });
+    $('cartLines').querySelectorAll('[data-dec]').forEach((b) => {
+      b.onclick = () => { bumpQty(b.dataset.dec, -1); };
+    });
 
     $('cartAdj').replaceChildren(...(quote.adjustments || []).map((a) => {
       const row = document.createElement('div');
       row.className = 'cartRow adj';
-      row.innerHTML = `<span>${esc(a.label)}</span><span>${money(a.amount)}</span>`;
+      row.innerHTML = '<span>' + esc(a.label) + '</span><span>' + money(a.amount) + '</span>';
       return row;
     }));
 

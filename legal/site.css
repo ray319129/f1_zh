@@ -222,3 +222,66 @@ nav a.cta:hover { background: currentColor; color: Canvas; }
 .tight { margin: 6px 0 0; padding-left: 20px; }
 .tight li { margin: 3px 0; }
 
+/* ===================================================================
+   購物車：表格式版面
+   欄位固定為 商品 / 數量 / 單價 / 小計 / 移除
+   =================================================================== */
+.cartTable { border: 1px solid var(--line, rgba(128,128,128,.28)); border-radius: 12px;
+             overflow: hidden; margin-bottom: 14px; }
+
+/* ⚠️ 只套在表格內。折抵（.cartAdj .cartRow）仍是舊的兩欄 flex——
+   套上五欄 grid 會讓那兩個 span 被拉到奇怪的位置。 */
+.cartHead, .cartTable .cartRow {
+  display: grid;
+  grid-template-columns: 1fr 110px 92px 92px 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.cartHead { font-size: 12px; opacity: .6; background: rgba(128,128,128,.08);
+            border-bottom: 1px solid var(--line, rgba(128,128,128,.22)); }
+.cartHead span:not(:first-child) { text-align: center; }
+.cartHead span:nth-child(3), .cartHead span:nth-child(4) { text-align: right; }
+
+.cartTable .cartRow + .cartRow { border-top: 1px solid var(--line, rgba(128,128,128,.18)); }
+
+.cItem b { display: block; font-weight: 600; }
+.cItem em { display: block; font-style: normal; font-size: 12px; opacity: .65; margin-top: 3px; }
+.cQty { text-align: center; }
+.cPrice, .cSum { text-align: right; font-variant-numeric: tabular-nums; }
+.cSum { font-weight: 600; }
+.cDel { text-align: center; }
+
+/* 數量的加減。**只有真的能調的項目才會出現**——
+   一場一份的商品給了按鈕卻按不動，比不給更糟。 */
+.qtyBox { display: inline-flex; align-items: center; gap: 8px; }
+.qtyBox b { min-width: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.qtyBtn { width: 26px; height: 26px; border-radius: 7px; border: 0; cursor: pointer;
+          background: #f0a500; color: #fff; font-size: 16px; line-height: 1;
+          display: inline-flex; align-items: center; justify-content: center; }
+.qtyBtn:disabled { opacity: .35; cursor: not-allowed; }
+.qtyFixed { font-variant-numeric: tabular-nums; opacity: .7; }
+
+.delBtn { width: 26px; height: 26px; border-radius: 50%; border: 0; cursor: pointer;
+          background: #e5484d; color: #fff; font-size: 15px; line-height: 1;
+          display: inline-flex; align-items: center; justify-content: center; }
+.delBtn:hover { filter: brightness(1.1); }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* 手機：表格一定會爆版，改成堆疊式。
+   每一格用 data-label 補上欄位名稱，否則只剩一排看不懂的數字。 */
+@media (max-width: 640px) {
+  .cartHead { display: none; }
+  .cartTable .cartRow { grid-template-columns: 1fr auto; row-gap: 6px; }
+  .cItem { grid-column: 1 / 2; }
+  .cDel { grid-column: 2 / 3; grid-row: 1; }
+  .cQty, .cPrice, .cSum {
+    grid-column: 1 / 3; display: flex; justify-content: space-between;
+    align-items: center; font-size: 13px;
+  }
+  .cQty::before, .cPrice::before, .cSum::before {
+    content: attr(data-label); opacity: .6; font-size: 12px;
+  }
+}
+

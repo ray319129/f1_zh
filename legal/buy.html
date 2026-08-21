@@ -149,7 +149,25 @@
 -->
 <section id="cart" class="cart" hidden>
   <h2 class="secTitle">購物車</h2>
-  <div id="cartLines"></div>
+  <!--
+    表格式版面。欄位固定：商品／數量／單價／小計／移除。
+
+    ⚠️ **數量欄不是每一項都能調。** 比賽週通行證與共用帳號代訂都是
+       「一場一份」，買兩份不會延長任何東西，只是收兩次錢。
+       那些項目顯示的是純數字，沒有加減鈕——**不能給一個按了沒用的按鈕**。
+
+    ⚠️ 手機上表格會爆版，所以 640px 以下改成堆疊式（見 site.css）。
+  -->
+  <div class="cartTable" role="table" aria-label="購物車">
+    <div class="cartHead" role="row">
+      <span role="columnheader">商品</span>
+      <span role="columnheader">數量</span>
+      <span role="columnheader">單價</span>
+      <span role="columnheader">小計</span>
+      <span role="columnheader"><span class="sr">移除</span></span>
+    </div>
+    <div id="cartLines"></div>
+  </div>
   <div id="cartAdj" class="cartAdj"></div>
   <div class="cartTotal"><span>應付金額</span><strong id="cartTotal">—</strong></div>
   <p id="cartNote" class="hint"></p>
