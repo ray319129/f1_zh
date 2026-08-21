@@ -55,6 +55,27 @@ async function check() {
   }
 
   if (d.status === 'paid') {
+    // ⚠️ **有些方案不含字幕授權，所以沒有授權碼。**
+    //    目前只有共用帳號的單一比賽週末代訂會走到這裡。
+    //    要明講「這是正常的」——留一個空白的授權碼區塊，
+    //    買家會以為系統出錯了，然後來問。
+    if (d.noLicense) {
+      return render(`<h1>付款完成</h1>
+        <p class="lead">謝謝你的支持，我們已收到你的訂單。</p>
+        <div class="notice">
+          <strong>本方案不含字幕翻譯使用權，因此沒有授權碼</strong>
+          <p>這是正常的，不是系統出錯。若你也需要中文字幕，
+             請另外購買<a href="/buy">比賽週通行證</a>。</p>
+        </div>
+        <h2>接下來</h2>
+        <ol class="steps">
+          <li>我們會在<b>三個工作日內</b>完成開通，並寄到你的信箱</li>
+          <li>開通後<b>僅限網頁端觀看</b>，無法使用 App、電視或遊戲主機</li>
+          <li>觀看時<b>需自備 VPN</b>——F1TV 在台灣未提供服務</li>
+        </ol>
+        <p class="hint">訂單編號：<code>${esc(no)}</code>　·　
+           高峰時段共用帳號可能無法進入或被登出，這是共用帳號的固有特性。</p>`);
+    }
     return render(`<h1>付款完成</h1>
       <p class="lead">謝謝你的支持。這是你的授權碼：</p>
       <div class="key">${esc(d.licenseKey)}</div>

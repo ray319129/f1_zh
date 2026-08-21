@@ -38,6 +38,7 @@ const CHECKS = [
   ['所有超連結指向正確位置', 'tools/check-links.js'],
   ['跨產物一致（免費層／長度上限／快取版本／條款數字）', 'tools/check-consistency.js'],
   ['方案組合矩陣（每一種搭配的金額與授權都要正確）', 'tools/check-plan-matrix.js'],
+  ['升級折抵沒有漏財（贈送的一週不可折抵）', 'tools/check-credit.js'],
   ['翻譯品質沒有靜默退化（固定測試資料）', 'tools/check-fixtures.js'],
 ];
 

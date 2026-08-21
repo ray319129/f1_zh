@@ -1612,6 +1612,13 @@ async function weekCreditFor(env, email, from, licenseKey) {
     if (!lic || lic.revoked) continue;
     const p = PLANS[lic.plan];
     if (!p || !p.weekBound) continue;               // 只有比賽週通行證能抵
+    // ⚠️ **代訂附贈的那一週是我們送的，不可以拿來折抵我們自己的錢。**
+    //
+    //    fromService 的檢查原本只做在「當證明用的那一張」上，
+    //    **沒有做在這個累加迴圈裡**——於是只要手上有任何一張真的通行證當證明，
+    //    代訂送的那幾張就全部被算進折抵。實測：真票 39 + 贈送票 → 折抵 80。
+    //    上限救了大部分損失，但那 80 元仍然是白送的。
+    if (p.fromService) continue;
     if (lic.creditedAt) continue;                   // 已經抵過了
     // 本賽季：到期日必須落在這個賽季界線之前
     if (!lic.expiresAt || lic.expiresAt > seasonEnd) continue;
@@ -2565,7 +2572,7 @@ async function handleReportSubmit(request, env, auth) {
   try {
     await patchOrder(env, orderId, {
       status: 'paid', paidAt: nowSec(),
-      licenseKey: prettyLicense(key), plan, email,
+      licenseKey: noLicense ? null : prettyLicense(key), plan, email,
       price: Number(lic.paid) || 0,
       mailed: !!mailed.sent,
       mailReason: mailed.sent ? '' : String(mailed.reason || ''),
@@ -2886,11 +2893,28 @@ async function quoteCart(env, rawItems, opts) {
   const primaryKey = (lines.find((l) => !l.manual) || {}).key
     || (lines.some((l) => l.bundleWeek) ? 'week_svc' : 'svc_none');
   const primaryIsWeek = !!(PLANS[primaryKey] && PLANS[primaryKey].weekBound);
+
+  // ⚠️ **通行證實際付了多少，要跟整張訂單的金額分開記。**
+  //
+  //    授權記錄的 paid 原本存的是**整張訂單的總價**，於是
+  //    「代訂 1 年（4,599）+ 一張通行證（被折成 0 元）」發出的通行證
+  //    會帶著 paid = 4599——日後升級賽季票時，一張免費拿到的通行證
+  //    換到滿額折抵。實測確認過。
+  //
+  //    這裡只算 weekBound 那幾行，並且把「代訂已附贈一週」的折抵扣回去，
+  //    因為那筆折抵折的正是通行證本身。
+  const weekLines = lines.filter((l) => PLANS[l.key] && PLANS[l.key].weekBound);
+  const bundleAdj = adjustments
+    .filter((a) => /附贈/.test(a.label))
+    .reduce((n, a) => n + a.amount, 0);
+  const weekPaid = Math.max(0, weekLines.reduce((n, l) => n + l.sum, 0) + bundleAdj);
   return {
     lines,
     adjustments,
     total,
     creditKeys,
+    // 通行證那幾行實際付了多少。**升級折抵只能用這個數字**，不能用訂單總價。
+    weekPaid,
     // 買到的比賽週區間。發碼時直接寫進授權記錄，續期時用它判斷「現在能不能用」。
     //
     // ⚠️ **只有主方案是比賽週通行證時才帶區間。**
@@ -3032,6 +3056,8 @@ async function handleCheckout(request, env, url) {
     adjustments: quote.adjustments,
     creditKeys: quote.creditKeys,
     manual: quote.hasManual,
+    // 折抵只認這個數字，不認訂單總價（見 quoteCart 的 weekPaid）
+    weekPaid: quote.weekPaid,
   }), { expirationTtl: 30 * 86400 });          // 超商代碼最長可繳 30 天
 
   // 訂單記錄。**與 pending 是兩回事**：pending 只是 webhook 要用的暫存，
@@ -3095,6 +3121,9 @@ async function handleOrderStatus(env, url) {
 
   const licKeyRaw = await env.SUBS.get(`order:${no}`);
   if (licKeyRaw) {
+    // 不含字幕授權的訂單沒有授權碼（見 webhook 的 noLicense）。
+    // 要明講「這筆訂單不需要授權碼」，不要留一個空白讓人以為出錯了。
+    if (licKeyRaw === 'nolicense') return json({ status: 'paid', licenseKey: null, noLicense: true });
     return json({ status: 'paid', licenseKey: prettyLicense(licKeyRaw) });
   }
   const info = await env.SUBS.get(`payinfo:${no}`);
@@ -3201,7 +3230,14 @@ async function handlePaymentWebhook(request, env) {
   // 早鳥賣完就給正式方案。金流那邊可能還在賣舊連結，這裡是最後一道。
   // **寧可少賣一組也不要賣超**——名額只有 20，食言的代價比少賺一筆高得多。
   if (plan === 'season_early' && (await earlyIssued(env)) >= EARLY_LIMIT) plan = 'season';
-  const key = normLicense(licenseKeyNew());
+  // ⚠️ **不含字幕授權的訂單不發授權碼。**
+  //
+  //    svc_none 代表「這筆訂單沒有任何字幕使用權」（目前只有共用帳號的
+  //    單一比賽週末代訂會走到這裡）。以前照樣發一組碼，但那組碼是**立刻過期**的——
+  //    買家貼進擴充功能只會看到「已過期」，然後來問是不是買錯了。
+  //    不發一個沒用的東西最乾淨。訂單記錄照常建立，後台一樣追得到。
+  const noLicense = plan === 'svc_none';
+  const key = noLicense ? null : normLicense(licenseKeyNew());
   // Weekend Pass 要記下它涵蓋的是哪一場、從哪一天起生效。
   // 少了這兩個欄位，提前購買的人會拿到一張「現在就能用、但比賽前就過期」的通行證。
   // ⚠️ **數量一定要從購物車讀回來。**
@@ -3247,7 +3283,11 @@ async function handlePaymentWebhook(request, env) {
     // weekFrom 已由 windows 取代（比賽週區間是一段一段的，不是一個起點）
     // 這筆訂單實付多少。升級抵扣要用它，不能用牌價——
     // 折抵過的訂單若用牌價回算，會把折掉的金額再抵一次。
-    paid: pending ? Number(pending.price) || 0 : (PLANS[plan] || {}).price || 0,
+    // ⚠️ **只記通行證那幾行實際付的錢，不是訂單總價。**
+    //    記成總價的話，跟著代訂免費拿到的通行證會換到滿額的升級折抵。
+    paid: (PLANS[plan] && PLANS[plan].weekBound && pending && pending.weekPaid !== undefined)
+      ? Number(pending.weekPaid) || 0
+      : (pending ? Number(pending.price) || 0 : (PLANS[plan] || {}).price || 0),
     items: cartItems,
     services: services.length ? services.map((s) => ({
       key: s.key, qty: s.qty, label: PLANS[s.key].label, status: 'pending',
@@ -3255,7 +3295,7 @@ async function handlePaymentWebhook(request, env) {
     devices: [], createdAt: nowSec(), revoked: false,
     source: 'webhook',
   };
-  await env.SUBS.put(licKey(key), JSON.stringify(lic));
+  if (!noLicense) await env.SUBS.put(licKey(key), JSON.stringify(lic));
 
   // 拿去抵扣的比賽週通行證要標記，否則下一次升級還能再抵一次同樣的金額。
   // ⚠️ 一定要在發碼**之後**做：先標記後發碼的話，發碼失敗會讓使用者
@@ -3263,9 +3303,10 @@ async function handlePaymentWebhook(request, env) {
   if (pending && Array.isArray(pending.creditKeys) && pending.creditKeys.length) {
     await markCredited(env, pending.creditKeys, orderId);
   }
-  await env.SUBS.put(dedupeKey, key, { expirationTtl: 400 * 86400 });
+  // 去重記錄一定要寫，即使沒有發碼——不寫的話綠界重送時會再處理一次。
+  await env.SUBS.put(dedupeKey, key || 'nolicense', { expirationTtl: 400 * 86400 });
   await env.SUBS.delete(`pending:${orderId}`);
-  if (email) {
+  if (email && !noLicense) {
     const ik = `licmail:${email.toLowerCase()}`;
     let arr = [];
     try { arr = JSON.parse((await env.SUBS.get(ik)) || '[]'); } catch (e) { /* noop */ }
@@ -3280,7 +3321,7 @@ async function handlePaymentWebhook(request, env) {
   let mailed = { sent: false, reason: 'no_email' };
   if (email) {
     try {
-      mailed = await sendLicenseMail(env, email, key, lic);
+      mailed = await sendLicenseMail(env, email, key, lic, { noLicense });
     } catch (e) {
       mailed = { sent: false, reason: String(e && e.message || e) };
     }
@@ -3582,7 +3623,11 @@ async function handleLicenseIssue(request, env) {
  *   wrangler secret put RESEND_API_KEY
  *   MAIL_FROM（vars，例如 "PitLingo <noreply@pitlingo.com>"，網域要在 Resend 驗證過）
  */
-async function sendLicenseMail(env, to, key, lic, quote) {
+async function sendLicenseMail(env, to, key, lic, opts) {
+  // ⚠️ **沒有授權碼的訂單也要寄信。** 共用帳號的單一比賽週末代訂不含字幕授權，
+  //    所以不發碼——但買家仍然付了錢，**不寄信等於他付完款什麼都沒收到**。
+  //    那封信講的是「我們收到訂單了，三個工作日內開通」。
+  const noKey = !!(opts && opts.noLicense) || !key;
   if (!env.RESEND_API_KEY || !to) return { sent: false, reason: 'not_configured' };
 
   const pretty = prettyLicense(key);
@@ -3601,17 +3646,22 @@ async function sendLicenseMail(env, to, key, lic, quote) {
   const html = [
     '<div style="font:16px/1.7 system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px">',
     '<h1 style="font-size:22px;margin:0 0 8px">PitLingo 訂單完成</h1>',
-    '<p>感謝您的購買。以下是您的授權碼，<b>請妥善保存</b>——',
-    '它以使用者為單位，換電腦或重新安裝都用同一組啟用。</p>',
-    `<div style="font:600 24px/1.4 ui-monospace,monospace;letter-spacing:2px;padding:16px;`,
-    `text-align:center;border:2px dashed #0a7c4a;border-radius:12px;margin:16px 0">${pretty}</div>`,
-    `<p>訂單編號：<code>${lic.orderId || '-'}</code>　·　有效期至：${exp}</p>`,
+    // ⚠️ 沒有授權碼的訂單要**明講為什麼沒有**，否則買家會以為信寄漏了。
+    noKey
+      ? '<p>感謝您的購買，我們已收到您的訂單。</p>'
+        + '<p><b>本方案不含字幕翻譯使用權，因此沒有授權碼</b>——這是正常的，不是漏寄。'
+        + '若您也需要中文字幕，請另外購買比賽週通行證。</p>'
+      : '<p>感謝您的購買。以下是您的授權碼，<b>請妥善保存</b>——'
+        + '它以使用者為單位，換電腦或重新安裝都用同一組啟用。</p>',
+    noKey ? '' : `<div style="font:600 24px/1.4 ui-monospace,monospace;letter-spacing:2px;padding:16px;`
+      + `text-align:center;border:2px dashed #0a7c4a;border-radius:12px;margin:16px 0">${pretty}</div>`,
+    `<p>訂單編號：<code>${lic.orderId || '-'}</code>${noKey ? '' : `　·　有效期至：${exp}`}</p>`,
     items ? `<p><b>購買項目</b></p><ul>${items}</ul>` : '',
     svc,
-    '<h2 style="font-size:17px;margin:20px 0 6px">啟用方式</h2>',
-    '<ol><li>安裝 PitLingo 擴充功能</li>',
-    '<li>點擴充功能圖示 → 授權 → 貼上授權碼 → 啟用</li>',
-    '<li>打開 F1TV 影片，並在播放器開啟英文字幕（CC）</li></ol>',
+    noKey ? '' : '<h2 style="font-size:17px;margin:20px 0 6px">啟用方式</h2>',
+    noKey ? '' : '<ol><li>安裝 PitLingo 擴充功能</li>'
+      + '<li>點擴充功能圖示 → 授權 → 貼上授權碼 → 啟用</li>'
+      + '<li>打開 F1TV 影片，並在播放器開啟英文字幕（CC）</li></ol>',
     '<p style="font-size:14px;color:#666">最多可在 3 台裝置同時啟用，可自行解除後轉移。<br>',
     '如有問題請至 <a href="https://pitlingo.com/contact">pitlingo.com/contact</a> 與我們聯繫。</p>',
     '</div>',
