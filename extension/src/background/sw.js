@@ -432,16 +432,25 @@ async function licenseDevices() {
 // window.postMessage 收來的——**頁面上任何腳本都能偽造那個訊息**。
 // 沒有白名單的話，F1TV 頁面上的第三方腳本（廣告、分析、被入侵的 CDN）
 // 就能讓這個擴充功能帶著使用者的 cookie 去抓任意網址。
-const FETCH_ALLOW = [
-  'ott-video-fer-cf.formula1.com',
-  'f1tv.formula1.com',
-];
+// ⚠️ **F1TV 會依內容換 CDN 主機名。** 實測（2026-08-21 直播）：
+//      重播  ott-video-fer-cf.formula1.com
+//      直播  ott-video-cf.formula1.com      ← 少了 "fer"
+//
+//    舊版寫死那兩個字串，於是**直播的整軌預抓從來沒有成功過**——
+//    診斷報告裡是一行「網址不在允許清單內，已拒絕」，功能退化成
+//    只靠 worker 攔到的分段，但不報錯、畫面上也看不出來。
+//
+//    改成樣式比對，涵蓋現在與未來的 ott-video 變體。
+//    **仍然只限 formula1.com 底下的 ott-video / f1tv 主機**——
+//    這個白名單是必要的：字幕清單的網址來自 content script，
+//    而那是從 MAIN world 的 postMessage 收來的，頁面上任何腳本都能偽造。
+const FETCH_ALLOW_RE = /^(ott-video[a-z0-9-]*|f1tv)\.formula1\.com$/i;
 
 function isAllowedFetch(url) {
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return false;
-    return FETCH_ALLOW.some((h) => u.hostname === h || u.hostname.endsWith('.' + h));
+    return FETCH_ALLOW_RE.test(u.hostname);
   } catch (e) { return false; }
 }
 

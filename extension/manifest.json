@@ -2,15 +2,14 @@
   "manifest_version": 3,
   "name": "PitLingo — F1TV 繁體中文字幕",
   "short_name": "PitLingo",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "description": "把 F1TV 的英文 CC 即時翻譯成繁體中文，雙語疊字顯示。保留 F1TV 原本的多視角與英文原聲體驗。",
   "permissions": [
     "storage",
     "clipboardWrite"
   ],
   "host_permissions": [
-    "https://f1tv.formula1.com/*",
-    "https://ott-video-fer-cf.formula1.com/*",
+    "https://*.formula1.com/*",
     "https://f1zh-api.pitlingo.workers.dev/*",
     "https://api.pitlingo.com/*"
   ],

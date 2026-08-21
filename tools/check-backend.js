@@ -922,6 +922,34 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : fail('帳號鍵：把不同的 email 當成同一個人了');
   }
 
+  // ---- 21b. 模型「跳出角色」的輸出絕不可以變成字幕 ----
+  //
+  // ⚠️ **實際發生在付費使用者的畫面上**（2026-08-21 直播）：
+  //    輸入是轉播畫面上的一個問句，而且人名拼法與模型記憶不同，
+  //    模型於是切換成助理模式輸出一整段自言自語。
+  //    當時的守門是 max(120, en×3)＝132 字，那段是 116 字，**差 16 字矇混過關**。
+  {
+    const cases = [
+      ['When were you first informed of Isaac Hadjar',
+        '我沒有收到任何關於 Isaac Hadjar 的資訊。（注：根據我的知識庫，2026 賽季 Red Bull 的第二車手是 Isack Hadjar，而非 Isaac。如果這是即時轉播字幕，請提供完整的轉播內容片段，我會直接翻譯。）',
+        false, '線上實際出現過的那一句'],
+      ['When were you first informed of Isaac Hadjar', '你們是什麼時候第一次得知 Isaac Hadjar 的？', true, '正常譯文'],
+      ['box box box', '進站 進站 進站', true, '短句'],
+      ['DRS enabled', '可以開 DRS', true, '縮寫'],
+      ['and Norris takes the lead here at turn one', 'Norris 在一號彎搶下領先', true, '一般長句'],
+      ['what a lap', '以下是翻譯：真是精彩的一圈', false, '助理口吻'],
+      ['who is that', '我無法判斷那是誰', false, '自稱無法'],
+      ['tell me the gap', '（注：這句需要更多上下文）', false, '加註解'],
+    ];
+    const bad = [];
+    for (const [en, zh, want, why] of cases) {
+      if (A.plausibleTranslation(en, zh) !== want) bad.push(why);
+    }
+    bad.length
+      ? fail('汙染防護：模型跳出角色的輸出沒有被擋下', bad.join('、'))
+      : ok(`汙染防護：${cases.length} 種「跳出角色」的輸出都判斷正確`);
+  }
+
   // ---- 20. 訂單狀態機不可以倒退 ----
   //
   // 這是**資安檢查，不是資料整潔檢查**。付款結果的導回頁是使用者的瀏覽器送的，

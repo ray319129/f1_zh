@@ -348,10 +348,12 @@
     <div class="bar">
       <input id="bnCid" size="18" placeholder="contentId">
       <button id="bnView" class="secondary">檢視譯文</button>
+      <button id="sq-go" class="secondary">掃描可疑譯文</button>
     </div>
     <p class="hint">抽查翻譯品質用。也可以用 <code>node tools/fetch-fixtures.js</code>
       把幾支完整的影片抓下來當固定測試資料。</p>
     <pre id="bnLines" class="full" hidden></pre>
+    <div id="sq-out"></div>
     <div id="bnOut"></div>
   </div>
 </section>
@@ -1582,5 +1584,49 @@ async function liSyncGpVisibility() {
 }
 
 $('li-plan').addEventListener('change', liSyncGpVisibility);
+
+
+// ---- 可疑譯文：掃描與清除 ----
+//
+// ⚠️ **守門是後來才收緊的，之前放行的東西還躺在共用快取裡。**
+//    快取是所有人共用的——一句垃圾會顯示給每一個看那支影片的人，
+//    而且不會有任何錯誤訊息。這一區就是為了把那些挖出來。
+let sqBad = [];
+
+$('sq-go').onclick = async () => {
+  const out = $('sq-out');
+  out.innerHTML = '掃描中…';
+  try {
+    const d = await apiCall('/v1/admin/bundle/suspect?cid=' + encodeURIComponent($('bnCid').value.trim()));
+    sqBad = d.bad || [];
+    if (!sqBad.length) {
+      out.innerHTML = '<div class="hint">' + escHtml(d.slug || d.cid) + '：'
+        + d.total + ' 句全部通過現行的合理性檢查。</div>';
+      return;
+    }
+    out.innerHTML = '<p class="hint">' + escHtml(d.slug || d.cid) + '：' + d.total
+      + ' 句中有 <b>' + sqBad.length + '</b> 句不通過。刪除後那幾句會在下次有人觀看時重新翻譯。</p>'
+      + '<table><tr><th>英文</th><th>目前的譯文</th></tr>'
+      + sqBad.map((x) => '<tr><td class="hint">' + escHtml(x.en) + '</td><td>'
+        + escHtml(String(x.zh).slice(0, 160)) + '</td></tr>').join('')
+      + '</table>'
+      + '<div class="bar"><button id="sq-purge" class="danger">刪除這 ' + sqBad.length + ' 句</button></div>';
+
+    $('sq-purge').onclick = async () => {
+      // 刪除會影響所有看這支影片的人，值得問一次。
+      if (!confirm('永久刪除這 ' + sqBad.length + ' 句的譯文？\n\n'
+        + '共用快取是所有人共用的，刪除後下一位觀看者會重新翻譯（會花錢）。\n'
+        + '英文原文不受影響。')) return;
+      try {
+        const r = await apiCall('/v1/admin/bundle/purge', {
+          method: 'POST',
+          body: JSON.stringify({ cid: $('bnCid').value.trim(), keys: sqBad.map((x) => x.en) }),
+        });
+        out.innerHTML = '<div class="okmsg">已刪除 ' + r.removed + ' 句，剩餘 ' + r.left + ' 句。</div>';
+        bnData = null; bnLoad();
+      } catch (e) { $('err').textContent = String(e.message || e); }
+    };
+  } catch (e) { out.innerHTML = ''; $('err').textContent = String(e.message || e); }
+};
 
 </script>
