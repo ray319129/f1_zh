@@ -1296,15 +1296,26 @@ const PLANS = {
   // ⚠️ **這是唯一一個「共用帳號」的商品**，限制與其他代訂完全不同：
   //    只能用網頁端、高峰期有機率被擠掉。這兩件事**必須在購買前講清楚**，
   //    講不清楚就是把一筆客訴與一則負評賣給自己。
+  // ⚠️ **鍵名維持 svc_pro_5d 不改。** 商品內容已從「Pro 五天」改成
+  //    「Premium 單一比賽週末共用帳號」，但鍵名一改，既有訂單與授權記錄裡的
+  //    plan 就對不上——那是查不回來的資料。命名難看勝過資料對不起來。
+  //
+  // ⚠️ **這是唯一一個「共用帳號」的商品**，四個限制與其他代訂完全不同。
+  //    那些限制**必須出現在收合狀態的商品卡上**——寫在展開後的說明裡等於沒寫，
+  //    而「買了才發現只能用網頁、只有三天、還會被擠掉」是必然的客訴與退款。
+  //
+  // ⚠️ `svcWeekend` 代表**結帳時必須指定是哪一場大獎賽**。
+  //    不指定的話，訂單進來時我們不知道要幫他開哪個週末的帳號，
+  //    而那是人工作業——弄錯了就是整筆重來。
   svc_pro_5d: {
-    desc: "代為開通 F1TV Premium 五天觀看權。**這是與他人共用的帳號**，與其他代訂方案不同，請務必先讀完以下三點：（1）**僅限網頁端觀看**，無法使用 App、電視或遊戲主機。（2）**高峰時段有機率被擠掉**——共用帳號有同時觀看人數上限，正賽等尖峰時段若人數已滿，可能無法進入或觀看中被登出，屆時請稍後再試。（3）**不附贈字幕翻譯使用權**，需另外購買比賽週通行證。Premium 方案內容：所有場次無廣告直播與隨選、Multiview 多視角、4K UHD／HDR、車上鏡頭、車隊無線電、即時計時與遙測、獨家節目與紀錄片。若您需要穩定、獨立、可在任何裝置觀看的帳號，請選擇一個月或一年的代訂方案。",
-    label: 'F1TV Premium 代訂 5 天（共用帳號）',
+    desc: "代為開通 F1TV Premium，**涵蓋單一個比賽週末的星期五、六、日三天**。**這是與他人共用的帳號**，與一個月／一年的代訂完全不同，請務必先讀完以下四點：（1）**只有該比賽週末的星期五、六、日可用**，其餘時間無法使用，也無法觀看重播。（2）**僅限網頁端觀看**，無法使用行動裝置 App、電視或遊戲主機。（3）**高峰時段有機率被擠掉**——共用帳號有同時觀看人數上限，正賽等尖峰時段若人數已滿，可能無法進入或觀看中被登出。（4）**不附贈字幕翻譯使用權**，需另外購買比賽週通行證。結帳時請選擇您要的那一場大獎賽。若您需要穩定、獨立、可在任何裝置與任何時間觀看的帳號，請選擇一個月或一年的代訂方案。",
+    label: 'F1TV Premium 代訂（單一比賽週末）',
     price: 79, manual: true, vpn: true,
-    // 購買頁要用它跳出額外的警告區塊，不能只靠使用者去讀商品說明
     shared: true,
+    svcWeekend: true,
   },
-  svc_pro_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 個月', price: 329, manual: true, vpn: true, bundleWeek: true },
-  svc_prem_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 個月', price: 699, manual: true, vpn: true, bundleWeek: true },
+  svc_pro_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 個月', price: 329, manual: true, vpn: true, bundleWeek: true, maxQty: 3 },
+  svc_prem_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 個月', price: 699, manual: true, vpn: true, bundleWeek: true, maxQty: 3 },
   svc_pro_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 年', price: 2199, manual: true, vpn: true, bundleWeek: true },
   svc_prem_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 年', price: 4599, manual: true, vpn: true, bundleWeek: true },
 };
@@ -2718,10 +2729,10 @@ async function quoteCart(env, items, opts) {
   let seasonKey = null;
 
   const gpWindows = [];
-  let lineFrom = null; let lineUntil = null; let lineNext = null;
+  let lineFrom = null; let lineUntil = null; let lineNext = null; let lineGp = null;
   for (const it of items) {
     // ⚠️ 每一圈都要清掉，否則第二張通行證會沿用第一張的效期顯示
-    lineFrom = null; lineUntil = null; lineNext = null;
+    lineFrom = null; lineUntil = null; lineNext = null; lineGp = null;
     const key = String((it && it.key) || '');
     const p = PLANS[key];
     if (!p || p.internal || !(p.price > 0)) return { error: `方案不存在或不販售：${key}` };
@@ -2735,7 +2746,8 @@ async function quoteCart(env, items, opts) {
     //    上限一定要有：沒有上限的話 999 張會算出一個跨到明年的效期。
     // ⚠️ 比賽週通行證**一場只能買一張**。同一場買兩張不會延長任何東西，
     //    只是收兩次錢——那是客訴。要多站就選多個場次（每場各一張）。
-    const maxQty = p.weekBound ? 1 : 5;
+    // 比賽週通行證與共用帳號的代訂都是「一場一份」；一個月的代訂可買多份。
+    const maxQty = (p.weekBound || p.svcWeekend) ? 1 : (Number(p.maxQty) || 5);
     const qty = Math.max(1, Math.min(maxQty, Number(it.qty) || 1));
 
     let unit = planPrice(key, ops);          // 後台覆寫優先，沒設就用程式碼裡的牌價
@@ -2749,6 +2761,19 @@ async function quoteCart(env, items, opts) {
       note = sp.nextSeason ? `${sp.tier}（本賽季剩餘週末一併附贈）` : sp.tier;
       seasonKey = k;
     }
+    // 共用帳號的代訂綁單一比賽週末，同樣要指定是哪一場——
+    // 不指定的話，訂單進來時不知道要幫他開哪個週末的帳號，而那是人工作業，
+    // 弄錯了就是整筆重來。
+    if (p.svcWeekend) {
+      const gid2 = String((it && it.gp) || '');
+      const g2 = gid2 ? gpById(gid2) : null;
+      if (!g2) return { error: (p.label || '此方案') + '必須指定場次（請重新整理購買頁）' };
+      if (gpStatus(g2) === 'finished') {
+        return { error: (g2.label || g2.name) + '已經結束，無法購買' };
+      }
+      lineGp = g2;
+    }
+
     if (p.weekBound) {
       hasWeekPurchase = true;
       // ⚠️ **比賽週通行證一定要指定是哪一場。**
@@ -2773,7 +2798,7 @@ async function quoteCart(env, items, opts) {
     // 比賽週通行證的顯示名稱是**那一場的名字**，不是方案名稱
     const lineLabel = (p.weekBound && it && it.gp && gpById(String(it.gp)))
       ? (gpById(String(it.gp)).label || `${gpById(String(it.gp)).name}大獎賽`)
-      : p.label;
+      : (lineGp ? (p.label + '　' + (lineGp.label || lineGp.name)) : p.label);
     lines.push({
       key, gp: (it && it.gp) ? String(it.gp) : null,
       validFrom: lineFrom, validUntil: lineUntil, nextLabel: lineNext,
@@ -5721,8 +5746,9 @@ async function handleRequest(request, env) {
               //    正賽當天再加一句提醒。使用者自己知道比賽跑完了沒有。
               // ⚠️ 舊的 gp 欄位已移除。真正的商品清單是 races（一個 GP 一張卡），
               //    留著第二份「代表場次」只會變成第二個事實來源。
-              // 比賽週通行證一場一張；要多站就選多個場次
-              maxQty: 1,
+              // 一場一份的商品 maxQty=1；一個月的代訂可買多份（上限見方案設定）
+              maxQty: (v.weekBound || v.svcWeekend) ? 1 : (Number(v.maxQty) || 1),
+              svcWeekend: !!v.svcWeekend,
               vpn: !!v.vpn,
               // 共用帳號的限制要在卡片上跳出來，不能只寫在商品說明裡
               shared: !!v.shared,

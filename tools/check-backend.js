@@ -862,7 +862,7 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       ? ok('代訂（附贈一週）：主方案是 week_svc，不是代訂方案本身')
       : fail('代訂（附贈一週）：主方案是 ' + onlySvc.primary + ' —— 會發出無期限授權');
 
-    const noBundle = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }], {});
+    const noBundle = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 1 }], {});
     noBundle.primary === 'svc_none'
       ? ok('代訂（不附贈）：主方案是 svc_none')
       : fail('代訂（不附贈）：主方案是 ' + noBundle.primary);
@@ -879,11 +879,37 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : fail('svc_none 竟然還沒到期');
 
     // 混合購物車：有正常方案時，主方案還是那個正常方案
-    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }, { key: 'week', gp: '2026-12', qty: 1 }], {});
+    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-12', qty: 1 }], {});
     mixed.primary === 'week'
       ? ok('混合購物車：主方案取非代訂的那個')
       : fail('混合購物車：主方案是 ' + mixed.primary);
 
+    // 共用帳號的代訂必須指定場次——不指定的話，訂單進來時不知道要開哪個週末
+    (await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }], {})).error
+      ? ok('共用帳號的代訂：沒有指定場次時拒絕結帳')
+      : fail('共用帳號的代訂沒指定場次竟然可以結帳 —— 人工作業時不知道要開哪個週末');
+    (await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-10', qty: 1 }], {})).error
+      ? ok('共用帳號的代訂：已結束的場次拒絕結帳')
+      : fail('共用帳號的代訂竟然可以買已結束的場次');
+    {
+      const q5 = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 5 }], {});
+      q5.lines[0].qty === 1
+        ? ok('共用帳號的代訂：一場一份（數量被夾成 1）')
+        : fail('共用帳號的代訂竟然可以買多份', String(q5.lines[0].qty));
+      /荷蘭/.test(q5.lines[0].label)
+        ? ok('共用帳號的代訂：購物車顯示涵蓋哪一場')
+        : fail('共用帳號的代訂沒有顯示場次', q5.lines[0].label);
+    }
+    // 一個月的代訂可以買多份，但上限三個月
+    {
+      const m = await A.quoteCart(envQ, [{ key: 'svc_pro_1m_own', qty: 9 }], {});
+      m.lines[0].qty === 3
+        ? ok('一個月的代訂：數量上限三個月')
+        : fail('一個月的代訂數量上限不正確', String(m.lines[0].qty));
+      m.total === 329 * 3
+        ? ok('一個月的代訂：買三份收三份的錢')
+        : fail('一個月的代訂金額不正確', String(m.total));
+    }
     // 內部方案不可以被拿去結帳
     const bad = await A.quoteCart(envQ, [{ key: 'week_svc', qty: 1 }], {});
     bad.error

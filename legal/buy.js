@@ -104,6 +104,20 @@
 
     // 通行證可以一次買多站。**上限由伺服器給**（本賽季剩餘比賽週），
     // 寫死在這裡的話賽季走到一半就會對不上，而且不會報錯。
+    // 共用帳號的代訂要選一場大獎賽。**放在收合狀態就看得到的位置**——
+    // 藏在展開裡的話，多數人會直接加進購物車然後在結帳時被擋下。
+    const gpBox = p.svcWeekend
+      ? `<div class="planQty">
+           <label>比賽週末
+             <select data-svcgp="${p.key}">
+               ${races.filter((r) => r.purchasable).map((r) =>
+    `<option value="${r.id}">${r.flag} ${esc(r.label)}（${fmtRange(r.startDate, r.endDate)}）</option>`).join('')}
+             </select>
+           </label>
+           <span class="hint">只有該週末的星期五、六、日可用</span>
+         </div>`
+      : '';
+
     const qtyBox = p.maxQty > 1
       ? `<div class="planQty">
            <label>站數
@@ -121,6 +135,7 @@
          <span class="planName">${esc(p.label)}</span>
          <span class="planPrice">${money(p.price)}</span>
        </button>`
+      + gpBox
       + qtyBox
       + (bits.length ? `<div class="planNote">${bits.join('　·　')}</div>` : '')
       + (desc ? `<details class="planMore"><summary>商品說明</summary><div>${desc}</div></details>` : '');
@@ -130,6 +145,11 @@
       el.querySelector('.planHead').disabled = true;
     } else {
       el.querySelector('.planHead').onclick = () => { toggle(p.key); };
+    }
+    const gsel = el.querySelector('[data-svcgp]');
+    if (gsel) {
+      gsel.onclick = (ev) => ev.stopPropagation();
+      gsel.onchange = () => { if (cart.has(p.key)) refreshQuote(); };
     }
     const qsel = el.querySelector('[data-qty]');
     if (qsel) {
@@ -353,7 +373,10 @@
   function cartItems() {
     return Array.from(cart, ([k, qty]) => {
       const i = k.indexOf(':');
-      return i < 0 ? { key: k, qty } : { key: k.slice(0, i), gp: k.slice(i + 1), qty };
+      if (i >= 0) return { key: k.slice(0, i), gp: k.slice(i + 1), qty };
+      // 共用帳號的代訂：場次來自卡片上的下拉，不編進購物車的鍵
+      const g = document.querySelector('[data-svcgp="' + k + '"]');
+      return g ? { key: k, gp: g.value, qty } : { key: k, qty };
     });
   }
 

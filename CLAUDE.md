@@ -12,7 +12,7 @@
 | 產物 | 角色 | 版本 |
 |---|---|---|
 | `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取，v4.9.0 起可自動跑整個佇列） | v4.10.5 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v5.4 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v5.5 |
 | `extension/` | MV3 擴充功能，**商品化主體** | v0.21.2 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
