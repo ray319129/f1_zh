@@ -132,6 +132,12 @@ button.secondary { background: transparent; color: inherit; border-color: var(--
 .result.err { color: var(--err); }
 
 /* ---------- 授權 ---------- */
+.licGp { margin: 8px 0 10px; padding: 10px 12px; border-radius: 8px;
+         background: rgba(128,128,128,.1); display: grid; gap: 3px; }
+.licGpRow { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.licGpRow span { opacity: .7; }
+.licGpRow b { font-variant-numeric: tabular-nums; }
+
 .licRow { display: flex; align-items: center; gap: 8px; }
 .badge {
   font-size: 11px; padding: 2px 8px; border-radius: 20px;

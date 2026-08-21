@@ -285,7 +285,8 @@ async function licenseStatus(force) {
     if (licenseKey) await licenseRenew().catch(() => {});
   }
   const st = await chrome.storage.local.get(['licenseKey', 'entitlement', 'entExp', 'licPlan',
-    'licPlanLabel', 'licGpName', 'licGpCount', 'licExpiresAt', 'entCheckedAt']);
+    'licPlanLabel', 'licGpName', 'licGpCount', 'licWindows', 'licNextLabel',
+    'licExpiresAt', 'entCheckedAt']);
   if (!st.entitlement || !st.entExp) {
     const { licRevokedReason } = await chrome.storage.local.get('licRevokedReason');
     return { active: false, reason: licRevokedReason || '' };
@@ -312,6 +313,8 @@ async function licenseStatus(force) {
     planLabel: st.licPlanLabel || '',
     gpName: st.licGpName || '',
     gpCount: st.licGpCount || 0,
+    windows: st.licWindows || null,
+    nextLabel: st.licNextLabel || '',
     expiresAt: st.licExpiresAt || null,
     licenseKey: st.licenseKey || '',
   };
@@ -327,6 +330,8 @@ async function licenseActivate(licenseKey) {
       licenseKey: key, entitlement: d.entitlement, entExp: d.exp,
       licPlan: d.plan, licPlanLabel: d.planLabel || '',
       licGpName: d.gpName || '', licGpCount: d.gpCount || 0,
+      // 比賽週區間。設定頁靠它算「剩餘多久」與「下一段何時生效」。
+      licWindows: d.windows || null, licNextLabel: d.nextLabel || '',
       licExpiresAt: d.expiresAt || null,
       entCheckedAt: Date.now(), licRevokedReason: '',
     });
@@ -372,6 +377,7 @@ async function licenseRenew() {
       await chrome.storage.local.set({
         entitlement: d.entitlement, entExp: d.exp, licPlan: d.plan,
         licPlanLabel: d.planLabel || '', licGpName: d.gpName || '', licGpCount: d.gpCount || 0,
+        licWindows: d.windows || null, licNextLabel: d.nextLabel || '',
         entCheckedAt: Date.now(), licRevokedReason: '',
       });
     }

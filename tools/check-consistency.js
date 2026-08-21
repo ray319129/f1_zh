@@ -263,6 +263,53 @@ function block(src, name) {
     : ok('購買頁沒有無人兌現的付款承諾');
 }
 
+/* --- 12. 賽事資料與商品資料必須分開 ------------------------------------ */
+//
+// 使用者定的核心原則：**商品不可以自己保存一套賽事時間**。
+// 保存了就會在賽程異動時與賽事脫節，而且不報錯——只有買家會發現。
+{
+  const planBlock = BACKEND.match(/const PLANS = \{([\s\S]*?)\n\};/)[1];
+  /(days|expiresAt|start|end)\s*:\s*'20\d\d-/.test(planBlock)
+    ? bad('PLANS 裡出現了寫死的日期 —— 商品不可以自己保存賽事時間')
+    : ok('商品沒有保存任何賽事時間（效期由 gpWindow 動態算）');
+
+  /function gpWindow\(/.test(BACKEND)
+    ? ok('通行證效期由賽事資料動態計算（gpWindow）')
+    : bad('找不到 gpWindow —— 效期沒有綁定賽事');
+}
+
+/* --- 13. 舊的商品名稱不可以殘留 ---------------------------------------- */
+//
+// 「一週通行證」已改為「比賽週通行證」。殘留在收錢的頁面上就是名實不符。
+{
+  const files = ['legal/buy.html', 'legal/terms.html', 'legal/faq.html',
+    'legal/privacy.html', 'backend/src/index.js'];
+  const left = files.filter((f) => /一週通行證/.test(read(f)));
+  left.length
+    ? bad('這些檔案還留著舊的商品名稱「一週通行證」：' + left.join('、'))
+    : ok('沒有殘留舊的商品名稱');
+}
+
+/* --- 14. 賽事資料的欄位要齊全 ------------------------------------------ */
+//
+// 少一個欄位，購買頁的卡片就會缺一塊，而那不會報錯——只會顯示「—」。
+{
+  const need = ['name', 'label', 'country', 'flag', 'circuit', 'tz', 'start', 'end', 'sessions'];
+  const block = BACKEND.match(/schedule: \[([\s\S]*?)\n  \],/);
+  if (!block) bad('找不到 schedule 區塊');
+  else {
+    const rows = block[1].split('\n').filter((l) => l.includes('{ r:'));
+    const missing = [];
+    for (const r of rows) {
+      for (const k of need) if (!new RegExp(k + ':').test(r)) missing.push(k);
+    }
+    const uniq = [...new Set(missing)];
+    uniq.length
+      ? bad(`賽事資料缺少欄位：${uniq.join('、')}（共 ${rows.length} 站）`)
+      : ok(`賽事資料 ${rows.length} 站，${need.length} 個必要欄位都齊全`);
+  }
+}
+
 console.log('');
 if (errors.length) { console.log(`❌ ${errors.length} 項未通過`); process.exit(1); }
 console.log('✅ 跨產物一致性全部通過');

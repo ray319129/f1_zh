@@ -13,7 +13,7 @@
      沒有這個勾選，排除條款無效，使用者仍可主張無條件退貨。
      所以 checkout 端點也會再驗一次 agreed，不是只靠前端擋。
 -->
-<link rel="stylesheet" href="/site.css?v=4.9">
+<link rel="stylesheet" href="/site.css?v=5.0">
 </head>
 <body>
 <main class="narrow">
@@ -40,15 +40,54 @@
   <figcaption>實際運作畫面（30 秒，含英文原聲）。字級與位置皆可自行調整。</figcaption>
 </figure>
 
-<h2 class="secTitle">字幕翻譯</h2>
-<div id="plans" class="plans"></div>
+<!--
+  三個最高層級分類，都可以整體收合。
 
-<h2 class="secTitle">F1TV 代訂服務</h2>
-<p class="hint">
-  代為完成 F1TV 訂閱手續。<b>觀看時仍需自備 VPN</b>——F1TV 在台灣未提供服務，
-  這點無法由代訂解決，請務必先確認。
-</p>
-<div id="services" class="plans"></div>
+  ⚠️ **比賽週通行證預設只顯示最近的兩場。** 一個賽季 23 站，全部攤開會把
+     購買頁淹掉，使用者連「有哪些選擇」都看不出來。已結束的更是要收起來——
+     那些買了也沒用（效期早就過了），留著只是為了讓人確認賽程沒漏。
+-->
+<details class="cat" id="catGp" open>
+  <summary><h2 class="secTitle">比賽週通行證</h2>
+    <span class="catHint">一場大獎賽一張，效期到下一場比賽週開始前</span></summary>
+
+  <div class="notice">
+    <strong>購買前請確認這四件事</strong>
+    <ul class="tight">
+      <li><b>需要 F1TV Pro 或 Premium 訂閱</b>，本服務只翻譯 F1TV 既有的英文字幕。</li>
+      <li><b>台灣觀看 F1TV 需自備 VPN</b>，本服務不包含 VPN。</li>
+      <li><b>僅支援桌面版 Chrome 與 Edge</b>，手機、平板與 Safari 皆不支援。</li>
+      <li><b>數位服務開通後不適用七日鑑賞期</b>。每場正式賽事都有
+          <b>15 分鐘免費</b>，請務必先試用再購買。</li>
+    </ul>
+  </div>
+
+  <h3 class="subTitle">即將開始</h3>
+  <div id="gpUpcoming" class="plans"></div>
+  <div class="bar"><button type="button" id="gpMore" class="linkBtn" hidden></button></div>
+
+  <details class="sub" id="catPast">
+    <summary><h3 class="subTitle">已結束</h3>
+      <span class="catHint">效期已過，僅供查閱</span></summary>
+    <div id="gpPast" class="plans"></div>
+  </details>
+</details>
+
+<details class="cat" id="catSeason" open>
+  <summary><h2 class="secTitle">賽季通行證</h2>
+    <span class="catHint">一次涵蓋整個賽季，不必逐場購買</span></summary>
+  <div id="plans" class="plans"></div>
+</details>
+
+<details class="cat" id="catSvc">
+  <summary><h2 class="secTitle">F1TV 代訂服務</h2>
+    <span class="catHint">代為完成訂閱手續，觀看時仍需自備 VPN</span></summary>
+  <p class="hint">
+    代為完成 F1TV 訂閱手續。<b>觀看時仍需自備 VPN</b>——F1TV 在台灣未提供服務，
+    這點無法由代訂解決，請務必先確認。
+  </p>
+  <div id="services" class="plans"></div>
+</details>
 
 <!--
   Pro 與 Premium 的差異。**表格與官方截圖並存**，兩者用途不同：
@@ -125,18 +164,18 @@
 
   <!--
     升級補差價。要先填 email 才算得出來——抵扣是以 email 為鍵查本賽季
-    已付的一週通行證。放在 email 後面，順序本身就是說明。
+    已付的比賽週通行證。放在 email 後面，順序本身就是說明。
   -->
   <label class="agree" id="upgradeWrap" hidden>
     <input id="upgrade" type="checkbox">
     <span>
-      我先前買過<b>一週通行證</b>，要升級為賽季通行證
+      我先前買過<b>比賽週通行證</b>，要升級為賽季通行證
       <em>勾選後請填入那組授權碼憑證。</em>
     </span>
   </label>
 
   <label class="field" id="upgradeKeyWrap" hidden>
-    <span>一週通行證授權碼</span>
+    <span>比賽週通行證授權碼</span>
     <input id="upgradeKey" placeholder="PL-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
     <em id="creditNote"></em>
   </label>
@@ -182,6 +221,6 @@
 </main>
 
 <form id="ecpay" method="post" hidden></form>
-<script src="/buy.js?v=4.9"></script>
+<script src="/buy.js?v=5.0"></script>
 </body>
 </html>

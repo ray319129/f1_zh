@@ -182,3 +182,43 @@ nav a.cta:hover { background: currentColor; color: Canvas; }
   border: 1px solid var(--line); border-radius: 10px; background: #000;
 }
 .demo figcaption { font-size: .82rem; color: var(--dim); margin-top: .5rem; }
+
+/* ===================================================================
+   比賽週通行證：一個 Grand Prix 一張卡
+   =================================================================== */
+
+/* 最高層級分類。整體可收合——23 站全部攤開會把購買頁淹掉。 */
+.cat { border-top: 1px solid var(--line, rgba(128,128,128,.28)); padding-top: 8px; margin-top: 28px; }
+.cat > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline;
+                 gap: 12px; flex-wrap: wrap; }
+.cat > summary::-webkit-details-marker { display: none; }
+.cat > summary::before { content: '▸'; opacity: .5; font-size: 14px; }
+.cat[open] > summary::before { content: '▾'; }
+.cat > summary h2 { display: inline; margin: 0; }
+.catHint { font-size: 13px; opacity: .65; }
+
+.sub { margin-top: 18px; }
+.sub > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; }
+.sub > summary::-webkit-details-marker { display: none; }
+.sub > summary::before { content: '▸'; opacity: .5; font-size: 13px; }
+.sub[open] > summary::before { content: '▾'; }
+.subTitle { font-size: 15px; margin: 18px 0 8px; opacity: .8; display: inline; }
+
+.linkBtn { background: none; border: 0; padding: 6px 0; font: inherit; font-size: 14px;
+           color: var(--accent, #e10600); cursor: pointer; text-decoration: underline; }
+
+/* 卡片內的場次時間。**一定要看得到**——買家要靠它決定買哪一場。 */
+.gpTimes { padding: 2px 14px 10px; display: grid; gap: 2px; }
+.sRow { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.sRow span { opacity: .7; }
+.sRow b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.flag { font-size: 20px; margin-right: 2px; }
+
+.tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+       border: 1px solid currentColor; opacity: .85; }
+.warnTag { color: #b8730a; }
+.liveTag { color: var(--accent, #e10600); font-weight: 600; }
+
+.tight { margin: 6px 0 0; padding-left: 20px; }
+.tight li { margin: 3px 0; }
+

@@ -157,11 +157,68 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
     //    英文鍵名「week」，而且完全不報錯。
     //    寫死的對照表在方案增減時一定會漂，這是第二次了（後台也發生過）。
     $('licPlan').textContent = licState.planLabel || licState.plan;
-    // 買多站的人要看得出自己買了幾站——只顯示一個日期他分不出 1 站與 3 站
-    $('licExp').textContent = (licState.gpName ? `${licState.gpName}　` : '')
-      + (licState.expiresAt ? `有效期至 ${fmtDate(licState.expiresAt)}` : '無使用期限');
+    $('licExp').textContent = licState.expiresAt
+      ? `有效期至 ${fmtDate(licState.expiresAt)}`
+      : '無使用期限';
+    paintGpPass(licState);
   }
 
+  /**
+   * 比賽週通行證的細節。
+   *
+   * ⚠️ **不要只寫「有效 N 天」。** 使用者買的是「荷蘭大獎賽通行證」，
+   *    他要看到的是那個名字、以及「什麼時候失效、為什麼是那個時候」。
+   *    一個沒有脈絡的日期，他無法判斷自己還能不能看下一場。
+   */
+  function paintGpPass(st) {
+    const box = $('licGp');
+    if (!box) return;
+    const wins = Array.isArray(st.windows) ? st.windows : null;
+    if (!st.gpName && !wins) { box.hidden = true; return; }
+    box.hidden = false;
+
+    const now = Math.floor(Date.now() / 1000);
+    // 現在落在哪一段。跳著買時中間會有空檔，那時要說清楚下一段何時開始。
+    const cur = wins && wins.find((w) => now >= w[0] && now < w[1]);
+    const next = wins && wins.find((w) => w[0] > now);
+
+    const left = (sec) => {
+      const s2 = sec - now;
+      if (s2 <= 0) return '';
+      const d = Math.floor(s2 / 86400);
+      const h = Math.floor((s2 % 86400) / 3600);
+      return d > 0 ? `${d} 天 ${h} 小時` : `${h} 小時`;
+    };
+
+    const rows = [];
+    if (st.gpName) rows.push(['涵蓋場次', st.gpName]);
+    if (cur) {
+      rows.push(['狀態', '使用中']);
+      rows.push(['有效至', fmtDateTime(cur[1])
+        + (st.nextLabel ? `（${st.nextLabel}第一場賽事前）` : '')]);
+      rows.push(['剩餘', left(cur[1])]);
+    } else if (next) {
+      rows.push(['狀態', '尚未進入比賽週']);
+      rows.push(['生效時間', fmtDateTime(next[0])]);
+      rows.push(['還有', left(next[0])]);
+    } else if (wins) {
+      rows.push(['狀態', '涵蓋的比賽週都已結束']);
+    }
+
+    box.innerHTML = rows.map(([k, v]) =>
+      `<div class="licGpRow"><span>${k}</span><b>${String(v)}</b></div>`).join('');
+  }
+
+  /** 日期＋時間，用使用者自己的時區。 */
+  function fmtDateTime(sec) {
+    if (!sec) return '—';
+    try {
+      return new Intl.DateTimeFormat('zh-TW', {
+        month: 'numeric', day: 'numeric', weekday: 'short',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(new Date(sec * 1000));
+    } catch (e) { return new Date(sec * 1000).toLocaleString(); }
+  }
   $('licActivate').onclick = async () => {
     const key = $('licKey').value.trim();
     const msg = $('licMsg');

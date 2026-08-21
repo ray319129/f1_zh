@@ -653,35 +653,41 @@ const REMOTE_CONFIG = {
   // 時區一律用 UTC 判斷，不做各站當地時間換算：Weekend Pass 的範圍會往兩邊
   // 各放寬一天，那個緩衝遠大於任何時區差。
   seasonYear: 2026,
+  // 賽事資料。**一個 Grand Prix = 一個商品**，通行證的效期由這裡動態算出來，
+  // 商品自己不保存任何時間（見 gpWindow）。
+  //
+  // ⚠️ 哪些是事實、哪些是推估：
+  //   事實 —— 場次日期、衝刺賽週、待定場次、夏休界線
+  //   推估 —— 每個場次的開始時間（標 `est: 1`）。用 F1 的標準時刻表換算，
+  //           官方公布後由 /v1/admin/schedule/sync 覆蓋。**推估值不可以
+  //           在畫面上假裝是官方時間**，購買頁會標示「時間待官方確認」。
+  //
+  // ⚠️ 這一份是**內建的退路**。實際使用的是 KV 的 `sched:current`（若有），
+  //    同步失敗或資料不合理時自動退回這裡——寧可用舊賽程，也不要沒有賽程。
   schedule: [
-    { r: 1, name: '澳洲', start: '2026-03-06', end: '2026-03-08' },
-    { r: 2, name: '中國', start: '2026-03-13', end: '2026-03-15', sprint: true },
-    { r: 3, name: '日本', start: '2026-03-27', end: '2026-03-29' },
-    { r: 4, name: '邁阿密', start: '2026-05-01', end: '2026-05-03', sprint: true },
-    { r: 5, name: '加拿大', start: '2026-05-22', end: '2026-05-24', sprint: true },
-    { r: 6, name: '摩納哥', start: '2026-06-05', end: '2026-06-07' },
-    { r: 7, name: '巴塞隆納', start: '2026-06-12', end: '2026-06-14' },
-    { r: 8, name: '奧地利', start: '2026-06-26', end: '2026-06-28' },
-    { r: 9, name: '英國', start: '2026-07-03', end: '2026-07-05', sprint: true },
-    { r: 10, name: '比利時', start: '2026-07-17', end: '2026-07-19' },
-    { r: 11, name: '匈牙利', start: '2026-07-24', end: '2026-07-26' },
-    // ⚠️ `afterSummerBreak` 標的是**夏休之後的第一場**，定價的分界就在這裡。
-    //    為什麼用人工標記而不是「自動抓最長間隔」：2026 最長的間隔在四月
-    //    （3/29 日本 → 5/01 邁阿密，33 天，因為巴林與沙烏地被取消），
-    //    比真正的夏休（7/26 匈牙利 → 8/21 荷蘭，26 天）還長。
-    //    自動偵測會把分界點放在四月，整個上半季賣錯價而且不會報錯。
-    { r: 12, name: '荷蘭', start: '2026-08-21', end: '2026-08-23', sprint: true, afterSummerBreak: true },
-    { r: 13, name: '義大利', start: '2026-09-04', end: '2026-09-06' },
-    { r: 14, name: '西班牙（馬德里）', start: '2026-09-11', end: '2026-09-13' },
-    { r: 15, name: '亞塞拜然', start: '2026-09-24', end: '2026-09-26' },
-    { r: 16, name: '巴林（馬來西亞 Sepang）', start: '2026-10-02', end: '2026-10-04' },
-    { r: 17, name: '新加坡', start: '2026-10-09', end: '2026-10-11', sprint: true },
-    { r: 18, name: '美國', start: '2026-10-23', end: '2026-10-25' },
-    { r: 19, name: '墨西哥', start: '2026-10-30', end: '2026-11-01' },
-    { r: 20, name: '巴西', start: '2026-11-06', end: '2026-11-08' },
-    { r: 21, name: '拉斯維加斯', start: '2026-11-19', end: '2026-11-21' },
-    { r: 22, name: '卡達', start: '2026-11-27', end: '2026-11-29', tentative: true },
-    { r: 23, name: '阿布達比', start: '2026-12-04', end: '2026-12-06', tentative: true },
+    { r: 1, name: '澳洲', label: '澳洲大獎賽', country: '澳洲', flag: '🇦🇺', circuit: 'Albert Park', tz: 'Australia/Melbourne', start: '2026-03-06', end: '2026-03-08', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1772764200 }, { k: 'fp2', n: '第二次自由練習', t: 1772776800 }, { k: 'fp3', n: '第三次自由練習', t: 1772847000 }, { k: 'quali', n: '排位賽', t: 1772859600 }, { k: 'race', n: '正賽', t: 1772942400 }] },
+    { r: 2, name: '中國', label: '中國大獎賽', country: '中國', flag: '🇨🇳', circuit: 'Shanghai', tz: 'Asia/Shanghai', start: '2026-03-13', end: '2026-03-15', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1773376200 }, { k: 'sq', n: '衝刺排位賽', t: 1773390600 }, { k: 'sprint', n: '衝刺賽', t: 1773460800 }, { k: 'quali', n: '排位賽', t: 1773475200 }, { k: 'race', n: '正賽', t: 1773558000 }] },
+    { r: 3, name: '日本', label: '日本大獎賽', country: '日本', flag: '🇯🇵', circuit: 'Suzuka', tz: 'Asia/Tokyo', start: '2026-03-27', end: '2026-03-29', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1774585800 }, { k: 'fp2', n: '第二次自由練習', t: 1774598400 }, { k: 'fp3', n: '第三次自由練習', t: 1774668600 }, { k: 'quali', n: '排位賽', t: 1774681200 }, { k: 'race', n: '正賽', t: 1774764000 }] },
+    { r: 4, name: '邁阿密', label: '邁阿密大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Miami', tz: 'America/New_York', start: '2026-05-01', end: '2026-05-03', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1777653000 }, { k: 'sq', n: '衝刺排位賽', t: 1777667400 }, { k: 'sprint', n: '衝刺賽', t: 1777737600 }, { k: 'quali', n: '排位賽', t: 1777752000 }, { k: 'race', n: '正賽', t: 1777834800 }] },
+    { r: 5, name: '加拿大', label: '加拿大大獎賽', country: '加拿大', flag: '🇨🇦', circuit: 'Gilles Villeneuve', tz: 'America/Toronto', start: '2026-05-22', end: '2026-05-24', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1779467400 }, { k: 'sq', n: '衝刺排位賽', t: 1779481800 }, { k: 'sprint', n: '衝刺賽', t: 1779552000 }, { k: 'quali', n: '排位賽', t: 1779566400 }, { k: 'race', n: '正賽', t: 1779649200 }] },
+    { r: 6, name: '摩納哥', label: '摩納哥大獎賽', country: '摩納哥', flag: '🇲🇨', circuit: 'Monaco', tz: 'Europe/Monaco', start: '2026-06-05', end: '2026-06-07', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1780659000 }, { k: 'fp2', n: '第二次自由練習', t: 1780671600 }, { k: 'fp3', n: '第三次自由練習', t: 1780741800 }, { k: 'quali', n: '排位賽', t: 1780754400 }, { k: 'race', n: '正賽', t: 1780837200 }] },
+    { r: 7, name: '巴塞隆納', label: '巴塞隆納大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Barcelona-Catalunya', tz: 'Europe/Madrid', start: '2026-06-12', end: '2026-06-14', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1781263800 }, { k: 'fp2', n: '第二次自由練習', t: 1781276400 }, { k: 'fp3', n: '第三次自由練習', t: 1781346600 }, { k: 'quali', n: '排位賽', t: 1781359200 }, { k: 'race', n: '正賽', t: 1781442000 }] },
+    { r: 8, name: '奧地利', label: '奧地利大獎賽', country: '奧地利', flag: '🇦🇹', circuit: 'Red Bull Ring', tz: 'Europe/Vienna', start: '2026-06-26', end: '2026-06-28', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1782473400 }, { k: 'fp2', n: '第二次自由練習', t: 1782486000 }, { k: 'fp3', n: '第三次自由練習', t: 1782556200 }, { k: 'quali', n: '排位賽', t: 1782568800 }, { k: 'race', n: '正賽', t: 1782651600 }] },
+    { r: 9, name: '英國', label: '英國大獎賽', country: '英國', flag: '🇬🇧', circuit: 'Silverstone', tz: 'Europe/London', start: '2026-07-03', end: '2026-07-05', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1783081800 }, { k: 'fp2', n: '第二次自由練習', t: 1783094400 }, { k: 'fp3', n: '第三次自由練習', t: 1783164600 }, { k: 'quali', n: '排位賽', t: 1783177200 }, { k: 'race', n: '正賽', t: 1783260000 }] },
+    { r: 10, name: '比利時', label: '比利時大獎賽', country: '比利時', flag: '🇧🇪', circuit: 'Spa-Francorchamps', tz: 'Europe/Brussels', start: '2026-07-17', end: '2026-07-19', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1784284200 }, { k: 'sq', n: '衝刺排位賽', t: 1784298600 }, { k: 'sprint', n: '衝刺賽', t: 1784368800 }, { k: 'quali', n: '排位賽', t: 1784383200 }, { k: 'race', n: '正賽', t: 1784466000 }] },
+    { r: 11, name: '匈牙利', label: '匈牙利大獎賽', country: '匈牙利', flag: '🇭🇺', circuit: 'Hungaroring', tz: 'Europe/Budapest', start: '2026-07-24', end: '2026-07-26', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1784892600 }, { k: 'fp2', n: '第二次自由練習', t: 1784905200 }, { k: 'fp3', n: '第三次自由練習', t: 1784975400 }, { k: 'quali', n: '排位賽', t: 1784988000 }, { k: 'race', n: '正賽', t: 1785070800 }] },
+    { r: 12, name: '荷蘭', label: '荷蘭大獎賽', country: '荷蘭', flag: '🇳🇱', circuit: 'Zandvoort', tz: 'Europe/Amsterdam', start: '2026-08-21', end: '2026-08-23', afterSummerBreak: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1787311800 }, { k: 'fp2', n: '第二次自由練習', t: 1787324400 }, { k: 'fp3', n: '第三次自由練習', t: 1787394600 }, { k: 'quali', n: '排位賽', t: 1787407200 }, { k: 'race', n: '正賽', t: 1787490000 }] },
+    { r: 13, name: '義大利', label: '義大利大獎賽', country: '義大利', flag: '🇮🇹', circuit: 'Monza', tz: 'Europe/Rome', start: '2026-09-04', end: '2026-09-06', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1788521400 }, { k: 'fp2', n: '第二次自由練習', t: 1788534000 }, { k: 'fp3', n: '第三次自由練習', t: 1788604200 }, { k: 'quali', n: '排位賽', t: 1788616800 }, { k: 'race', n: '正賽', t: 1788699600 }] },
+    { r: 14, name: '西班牙（馬德里）', label: '西班牙（馬德里）大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Madring', tz: 'Europe/Madrid', start: '2026-09-11', end: '2026-09-13', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1789126200 }, { k: 'fp2', n: '第二次自由練習', t: 1789138800 }, { k: 'fp3', n: '第三次自由練習', t: 1789209000 }, { k: 'quali', n: '排位賽', t: 1789221600 }, { k: 'race', n: '正賽', t: 1789304400 }] },
+    { r: 15, name: '亞塞拜然', label: '亞塞拜然大獎賽', country: '亞塞拜然', flag: '🇦🇿', circuit: 'Baku City', tz: 'Asia/Baku', start: '2026-09-24', end: '2026-09-26', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790242200 }, { k: 'fp2', n: '第二次自由練習', t: 1790254800 }, { k: 'fp3', n: '第三次自由練習', t: 1790325000 }, { k: 'quali', n: '排位賽', t: 1790337600 }, { k: 'race', n: '正賽', t: 1790420400 }] },
+    { r: 16, name: '巴林（馬來西亞 Sepang）', label: '巴林（馬來西亞 Sepang）大獎賽', country: '馬來西亞', flag: '🇲🇾', circuit: 'Sepang', tz: 'Asia/Kuala_Lumpur', start: '2026-10-02', end: '2026-10-04', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790919000 }, { k: 'fp2', n: '第二次自由練習', t: 1790931600 }, { k: 'fp3', n: '第三次自由練習', t: 1791001800 }, { k: 'quali', n: '排位賽', t: 1791014400 }, { k: 'race', n: '正賽', t: 1791097200 }] },
+    { r: 17, name: '新加坡', label: '新加坡大獎賽', country: '新加坡', flag: '🇸🇬', circuit: 'Marina Bay', tz: 'Asia/Singapore', start: '2026-10-09', end: '2026-10-11', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1791520200 }, { k: 'sq', n: '衝刺排位賽', t: 1791534600 }, { k: 'sprint', n: '衝刺賽', t: 1791604800 }, { k: 'quali', n: '排位賽', t: 1791619200 }, { k: 'race', n: '正賽', t: 1791702000 }] },
+    { r: 18, name: '美國', label: '美國大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Circuit of the Americas', tz: 'America/Chicago', start: '2026-10-23', end: '2026-10-25', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1792780200 }, { k: 'fp2', n: '第二次自由練習', t: 1792792800 }, { k: 'fp3', n: '第三次自由練習', t: 1792863000 }, { k: 'quali', n: '排位賽', t: 1792875600 }, { k: 'race', n: '正賽', t: 1792958400 }] },
+    { r: 19, name: '墨西哥', label: '墨西哥大獎賽', country: '墨西哥', flag: '🇲🇽', circuit: 'Hermanos Rodríguez', tz: 'America/Mexico_City', start: '2026-10-30', end: '2026-11-01', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793388600 }, { k: 'fp2', n: '第二次自由練習', t: 1793401200 }, { k: 'fp3', n: '第三次自由練習', t: 1793471400 }, { k: 'quali', n: '排位賽', t: 1793484000 }, { k: 'race', n: '正賽', t: 1793566800 }] },
+    { r: 20, name: '巴西', label: '巴西大獎賽', country: '巴西', flag: '🇧🇷', circuit: 'Interlagos', tz: 'America/Sao_Paulo', start: '2026-11-06', end: '2026-11-08', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793982600 }, { k: 'fp2', n: '第二次自由練習', t: 1793995200 }, { k: 'fp3', n: '第三次自由練習', t: 1794065400 }, { k: 'quali', n: '排位賽', t: 1794078000 }, { k: 'race', n: '正賽', t: 1794160800 }] },
+    { r: 21, name: '拉斯維加斯', label: '拉斯維加斯大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Las Vegas Strip', tz: 'America/Los_Angeles', start: '2026-11-19', end: '2026-11-21', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795123800 }, { k: 'fp2', n: '第二次自由練習', t: 1795136400 }, { k: 'fp3', n: '第三次自由練習', t: 1795206600 }, { k: 'quali', n: '排位賽', t: 1795219200 }, { k: 'race', n: '正賽', t: 1795302000 }] },
+    { r: 22, name: '卡達', label: '卡達大獎賽', country: '卡達', flag: '🇶🇦', circuit: 'Lusail', tz: 'Asia/Qatar', start: '2026-11-27', end: '2026-11-29', tentative: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795775400 }, { k: 'fp2', n: '第二次自由練習', t: 1795788000 }, { k: 'fp3', n: '第三次自由練習', t: 1795858200 }, { k: 'quali', n: '排位賽', t: 1795870800 }, { k: 'race', n: '正賽', t: 1795953600 }] },
+    { r: 23, name: '阿布達比', label: '阿布達比大獎賽', country: '阿拉伯聯合大公國', flag: '🇦🇪', circuit: 'Yas Marina', tz: 'Asia/Dubai', start: '2026-12-04', end: '2026-12-06', tentative: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1796376600 }, { k: 'fp2', n: '第二次自由練習', t: 1796389200 }, { k: 'fp3', n: '第三次自由練習', t: 1796459400 }, { k: 'quali', n: '排位賽', t: 1796472000 }, { k: 'race', n: '正賽', t: 1796554800 }] },
   ],
 
   freeTier: {
@@ -1178,14 +1184,21 @@ const PLANS = {
     label: '下一賽季通行證', price: PRICE_FIRST_HALF, nextSeasonOnly: true,
   },
 
-  // 一週通行證。**不是「比賽週末」而是完整七天。**
+  // 比賽週通行證。**不是「比賽週末」而是完整七天。**
   //
   // 改動理由（使用者觀察，正確）：F1TV 就算不在比賽週也有大量重播可看，
   // 只給週四到週日太窄，而且「一週」在銷售上比「一個週末」好講。
   //
   // 生效方式見 `weekWindow()`：**購買當下立刻可用（贈送），正式七天從
   // 下一個比賽週的星期一起算**。使用者不必做任何決定，也不會算錯。
-  week: { desc: "完整七天，不限時數。購買當下即可使用，正式七日自下一個比賽週的星期一起算，因此一定完整涵蓋該週的練習賽、排位賽與正賽。非比賽週亦可觀看 F1TV 上的重播與節目。", label: '一週通行證', price: WEEKEND_PRICE, days: 7, weekBound: true },
+  // ⚠️ **鍵名維持 week 不改。** 改了會讓既有訂單與授權記錄裡的 plan 對不上，
+  //    而那是查不回來的資料。命名難看勝過資料對不起來。
+  //    對外顯示的名稱是「比賽週通行證」，而且**每一場是一張獨立的商品卡**
+  //    （購買頁顯示的是「荷蘭大獎賽通行證」），見 gpProduct。
+  week: {
+    desc: "涵蓋指定的一場大獎賽週末——練習賽、排位賽、衝刺賽與正賽全部包含。效期自購買（或該比賽週開始）起算，至**下一場大獎賽的比賽週開始前**為止，所以兩站之間的重播也看得到。實際涵蓋的場次與到期時間以購買頁顯示者為準。",
+    label: '比賽週通行證', price: WEEKEND_PRICE, days: 7, weekBound: true,
+  },
 
   // 客服補償用，不公開販售。
   comp: { label: '客服補償', price: 0, days: 30 },
@@ -1204,7 +1217,7 @@ const PLANS = {
   //    planExpiry 回 null ＝「無期限」——買一次 79 元的五天代訂，
   //    拿到的是一張永遠不會過期的字幕授權。** 不報錯，只是白送。
   week_svc: {
-    label: '一週通行證（代訂）', price: 0, days: 7, weekBound: true,
+    label: '比賽週通行證（代訂）', price: 0, days: 7, weekBound: true,
     internal: true, fromService: true,
   },
   // 五天代訂不附贈字幕授權（商品說明已寫明）。仍然要發一筆記錄讓後台
@@ -1318,8 +1331,35 @@ function dayStartSec(ymd) {
   return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000);
 }
 
+/**
+ * KV 裡的賽程快取。
+ *
+ * ⚠️ **`scheduleList()` 是同步的，而 KV 是非同步的。**
+ *    所有算效期的地方（gpWindow、planExpiry…）都是同步函式，
+ *    要它們每次去 await 一次 KV 是不可能的，也不該——那是每個請求一次額外讀取。
+ *    所以在請求最前面 await 一次載進這個快取，之後同步讀。
+ *
+ * ⚠️ 快取沒有載到時**退回內建賽程**，不是回空陣列。
+ *    回空會讓所有效期算成 null、所有商品消失，而那不會報錯（坑 #23）。
+ */
+let schedCache = { at: 0, races: null };
+
+async function loadSchedule(env) {
+  if (schedCache.races && Date.now() - schedCache.at < 60000) return;
+  try {
+    const raw = JSON.parse((await env.SUBS.get(SCHED_KEY)) || 'null');
+    if (raw && Array.isArray(raw.races) && validateSchedule(raw.races).ok) {
+      schedCache = { at: Date.now(), races: raw.races };
+      return;
+    }
+  } catch (e) { /* 用內建的 */ }
+  schedCache = { at: Date.now(), races: null };
+}
+
 function scheduleList(cfg) {
-  const list = (cfg && Array.isArray(cfg.schedule)) ? cfg.schedule : REMOTE_CONFIG.schedule;
+  // 同步的來源順序：呼叫端指定的 cfg → KV 同步來的 → 內建的退路
+  const list = (cfg && Array.isArray(cfg.schedule)) ? cfg.schedule
+    : (schedCache.races || REMOTE_CONFIG.schedule);
   return Array.isArray(list) ? list.filter((g) => g && dayStartSec(g.start) && dayStartSec(g.end)) : [];
 }
 
@@ -1431,7 +1471,7 @@ function seasonPriceNow(base, from, cfg) {
 }
 
 /**
- * 升級補差價：Season 價 − 這個 email 本賽季已付的一週通行證金額。
+ * 升級補差價：Season 價 − 這個 email 本賽季已付的比賽週通行證金額。
  *
  * 規則一句話講得完，但實作有六個一定要釘死的點（全部踩過或想過）：
  *
@@ -1473,10 +1513,10 @@ async function weekCreditFor(env, email, from, licenseKey) {
   // 就能拿到那個人的折抵，而新授權碼會在付款完成頁上直接顯示給付款的人看——
   // **等於用受害者的錢買自己的授權**。email 是公開資訊，不是憑證。
   //
-  // 現在要求同時提供**一組屬於自己的一週通行證授權碼**：
+  // 現在要求同時提供**一組屬於自己的比賽週通行證授權碼**：
   //   · 授權碼是隨機 12 碼、只寄給買家本人，猜不到
   //   · 那組碼的 email 必須與這次填的 email 相符，否則不給折抵
-  // 兩個條件都成立，才算證明「這些一週通行證確實是你的」。
+  // 兩個條件都成立，才算證明「這些比賽週通行證確實是你的」。
   const proof = normLicense(licenseKey || '');
   if (!proof) return { credit: 0, keys: [], reason: 'need_key' };
   const proofLic = await readLicense(env, proof);
@@ -1503,7 +1543,7 @@ async function weekCreditFor(env, email, from, licenseKey) {
     const lic = await readLicense(env, k);
     if (!lic || lic.revoked) continue;
     const p = PLANS[lic.plan];
-    if (!p || !p.weekBound) continue;               // 只有一週通行證能抵
+    if (!p || !p.weekBound) continue;               // 只有比賽週通行證能抵
     if (lic.creditedAt) continue;                   // 已經抵過了
     // 本賽季：到期日必須落在這個賽季界線之前
     if (!lic.expiresAt || lic.expiresAt > seasonEnd) continue;
@@ -1576,7 +1616,7 @@ function weekendWindow(from, cfg) {
 }
 
 /**
- * 一週通行證的時段。
+ * 比賽週通行證的時段。
  *
  * **設計取捨**：使用者原本想讓買家自己選「立刻啟用或延後啟用」。
  * 我建議不要——那是一個需要解釋的決定，而買東西時最不想做的就是做決定；
@@ -1594,6 +1634,196 @@ function weekendWindow(from, cfg) {
  * 沒有上限的話「贈送」會變成「幾乎白送一個月」。
  */
 const WEEK_GRACE_MAX_SEC = 14 * 86400;
+
+// ---------------------------------------------------------------------------
+// Grand Prix 商品模型
+// ---------------------------------------------------------------------------
+/**
+ * **一個 Grand Prix = 一個商品。**
+ *
+ * 商品本身不保存任何時間，只保存「綁到哪一場」（gpId）；
+ * 效期一律由這裡依賽事資料**動態算**。這是使用者定的核心原則，
+ * 理由很實際：賽程會變（延期、改時間、加減場次），
+ * 若商品自己存了一份時間，改賽程之後**已售出的通行證會與賽事脫節**，
+ * 而且不會有任何錯誤——只有使用者會發現「我買的那場看不到」。
+ *
+ * ⚠️ **比賽週的界線不是正賽，是「第一場賽事」。**
+ *    區間定義成 [本場第一場賽事 − 暖身提前量, 下一場第一場賽事 − 暖身提前量)，
+ *    這樣 23 個區間會**完美接合、不重疊也不留縫**：
+ *    任何一個時間點都只屬於一個 GP，不會出現「兩張票都能看」或「都不能看」。
+ */
+
+/**
+ * 暖身提前量。
+ *
+ * 比賽週的**星期四就有 warm-up 直播**（使用者確認過），而第一場正式賽事
+ * 是星期五的自由練習。若區間直接切在第一場賽事，那場暖身會落到**上一站**
+ * 的通行證裡——買了荷蘭的人看不到荷蘭的暖身，買了匈牙利的人反而看得到。
+ * 往前挪一天就對齊了。
+ *
+ * ⚠️ 使用者最新的敘述是「有效至下一場第一場賽事開始前」，
+ *    那會把下一場的暖身也包進來。這裡刻意保守一天，與先前
+ *    「到下個比賽週的星期三」的決定一致。要改成 0 只需動這個常數，
+ *    但改之前要知道那等於把下一站的暖身送出去。
+ */
+/** 目前的賽季年份。賽事資料沒帶 season 時用它補。 */
+const SEASON_YEAR = 2026;
+
+const WARMUP_LEAD_SEC = 86400;
+
+/**
+ * 把一組區間合併排序。相鄰（首尾相接）的要併成一段，
+ * 否則「連續買三站」會變成三段，而使用者感受上那是一整段。
+ */
+function mergeWindows(list) {
+  const a = (list || []).map((w) => [Number(w[0]), Number(w[1])])
+    .filter((w) => w[0] < w[1]).sort((x, y) => x[0] - y[0]);
+  const out = [];
+  for (const w of a) {
+    const last = out[out.length - 1];
+    if (last && w[0] <= last[1]) last[1] = Math.max(last[1], w[1]);
+    else out.push([w[0], w[1]]);
+  }
+  return out;
+}
+
+/**
+ * 現在落在哪一段區間裡。回傳那一段，不在任何一段裡回 null。
+ *
+ * ⚠️ **這是「跳著買」能成立的關鍵。**
+ *    使用者可以只買荷蘭與新加坡，中間那三站不該送給他。
+ *    做法不是把區間塞進通行證簽章（那要改格式、會讓已發出的通行證全失效），
+ *    而是利用「通行證最長只有 14 天、到期一定會回來續」這個既有性質：
+ *    續期時**只簽到「現在這一段的結束」為止**，落在空檔就不簽。
+ *    格式一行都不用改。
+ */
+function currentWindow(windows, from) {
+  const now = Math.floor((from || Date.now()) / 1000);
+  for (const w of windows || []) if (now >= w[0] && now < w[1]) return w;
+  return null;
+}
+
+function nextWindow(windows, from) {
+  const now = Math.floor((from || Date.now()) / 1000);
+  return (windows || []).find((w) => w[0] > now) || null;
+}
+
+/**
+ * 賽事資料的來源與同步時間。
+ *
+ * ⚠️ **同步失敗時要退回內建賽程，不可以讓商店沒有賽事。**
+ *    外部來源壞掉（改格式、擋 IP、回空）時若直接套用，整個購買頁會空掉，
+ *    而那看起來像我們倒了。寧可用舊賽程也不要沒有賽程。
+ */
+async function scheduleMeta(env) {
+  try {
+    const raw = JSON.parse((await env.SUBS.get(SCHED_KEY)) || "null");
+    if (raw && Array.isArray(raw.races) && raw.races.length) {
+      return { source: raw.source || "sync", at: raw.at || 0, races: raw.races };
+    }
+  } catch (e) { /* 壞掉就用內建的 */ }
+  return { source: "built-in", at: 0, races: null };
+}
+
+const SCHED_KEY = "sched:current";
+
+/** 賽事的穩定識別碼。跨賽季不重複，而且看得懂。 */
+function gpId(g) {
+  return `${g.season || SEASON_YEAR}-${String(g.r).padStart(2, '0')}`;
+}
+
+/** 依開始日排序過的賽事清單。 */
+function gpList(cfg) {
+  return scheduleList(cfg).slice()
+    .sort((a, b) => dayStartSec(a.start) - dayStartSec(b.start));
+}
+
+function gpById(id, cfg) {
+  return gpList(cfg).find((g) => gpId(g) === String(id)) || null;
+}
+
+/**
+ * 這一場的第一場賽事是什麼時候（UTC 秒）。
+ * 沒有場次資料時退回「開始日的 00:00 UTC」——**那一定早於任何實際場次**，
+ * 所以區間只會偏保守（提早結束），不會把下一站送出去。
+ */
+function gpFirstSession(g) {
+  const list = (g && Array.isArray(g.sessions)) ? g.sessions.filter((x) => x && x.t) : [];
+  if (list.length) return Math.min(...list.map((x) => Number(x.t)));
+  return dayStartSec(g.start);
+}
+
+/** 某個場次的時間（找不到回 null）。 */
+function gpSession(g, kind) {
+  const s = (g && Array.isArray(g.sessions)) ? g.sessions.find((x) => x && x.k === kind) : null;
+  return s ? Number(s.t) : null;
+}
+
+/**
+ * 這一場的通行證區間 [from, until)。
+ *
+ * 最後一站沒有「下一場」，就給到正賽後七天——賽季結束後還要留時間看重播。
+ */
+function gpWindow(g, cfg) {
+  if (!g) return null;
+  const list = gpList(cfg);
+  const i = list.findIndex((x) => gpId(x) === gpId(g));
+  if (i < 0) return null;
+  const from = gpFirstSession(g) - WARMUP_LEAD_SEC;
+  const next = list[i + 1];
+  const until = next
+    ? gpFirstSession(next) - WARMUP_LEAD_SEC
+    : (gpSession(g, 'race') || dayStartSec(g.end)) + 7 * 86400;
+  return { from, until, next: next || null };
+}
+
+/**
+ * 商品狀態。**由賽事時間自動判斷，沒有任何人工開關。**
+ *   upcoming  尚未開始（可購買）
+ *   live      比賽週進行中（可購買）
+ *   finished  已結束（不可購買）
+ */
+function gpStatus(g, from, cfg) {
+  const now = Math.floor((from || Date.now()) / 1000);
+  const w = gpWindow(g, cfg);
+  if (!w) return 'finished';
+  if (now >= w.until) return 'finished';
+  if (now >= w.from) return 'live';
+  return 'upcoming';
+}
+
+/** 給購買頁與後台用的完整商品描述。 */
+function gpProduct(g, from, cfg) {
+  const w = gpWindow(g, cfg);
+  const status = gpStatus(g, from, cfg);
+  return {
+    id: gpId(g),
+    round: g.r,
+    season: g.season || SEASON_YEAR,
+    name: g.name,
+    label: g.label || `${g.name}大獎賽`,
+    country: g.country || g.name,
+    flag: g.flag || '',
+    circuit: g.circuit || '',
+    tz: g.tz || 'UTC',
+    startDate: g.start,
+    endDate: g.end,
+    sprint: !!g.sprint,
+    tentative: !!g.tentative,
+    // 場次時間是不是推估的。**畫面上一定要標示**，不可以假裝是官方時間。
+    estimated: !!g.est,
+    sessions: (g.sessions || []).map((x) => ({ kind: x.k, label: x.n, at: Number(x.t) })),
+    firstSessionAt: gpFirstSession(g),
+    qualiAt: gpSession(g, 'quali'),
+    raceAt: gpSession(g, 'race'),
+    validFrom: w ? w.from : null,
+    validUntil: w ? w.until : null,
+    nextLabel: w && w.next ? (w.next.label || `${w.next.name}大獎賽`) : null,
+    nextFirstSessionAt: w && w.next ? gpFirstSession(w.next) : null,
+    status,
+    purchasable: status !== 'finished',
+  };
+}
 
 /**
  * 一張通行證的最短效期。
@@ -1704,7 +1934,7 @@ function planExpiry(plan, from, cfg, count) {
 }
 
 /**
- * 生效時間。一週通行證**購買當下就能用**，所以一律回 null（不設限）。
+ * 生效時間。比賽週通行證**購買當下就能用**，所以一律回 null（不設限）。
  * 保留這個函式是因為授權記錄有 `startsAt` 欄位，日後若有需要延後生效的
  * 方案（例如預購下一季）可以在這裡加，而 `licenseProblem` 已經會處理。
  */
@@ -1815,6 +2045,23 @@ function licenseProblem(lic) {
   if (!lic) return { msg: '查無此授權碼，請確認有沒有打錯', status: 404 };
   if (lic.revoked) return { msg: '這組授權碼已停用（退款或違規）。如有疑問請聯絡客服', status: 403 };
   if (lic.expiresAt && lic.expiresAt * 1000 < Date.now()) return { msg: '授權已過期，請續訂', status: 403 };
+
+  // ⚠️ **比賽週通行證是「一段一段」的，不是一整條。**
+  //    跳著買（只買荷蘭與新加坡）時，中間那幾站不該給他。
+  //    落在空檔時要說清楚「下一段什麼時候開始」——只說「未生效」
+  //    會讓人以為買錯了或系統壞了。
+  if (Array.isArray(lic.windows) && lic.windows.length) {
+    if (!currentWindow(lic.windows)) {
+      const nx = nextWindow(lic.windows);
+      if (!nx) return { msg: '這張通行證涵蓋的比賽週都已結束', status: 403 };
+      const d = new Date(nx[0] * 1000);
+      return {
+        msg: `這張通行證涵蓋的下一個比賽週為 ${lic.gpName || ''}，`
+          + `將於 ${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日起生效`,
+        status: 403,
+      };
+    }
+  }
   // Weekend Pass 提前買的情況。**要說出從哪一天開始能用**——
   // 只回「尚未生效」會讓人以為買錯了或系統壞了。
   if (lic.startsAt && lic.startsAt * 1000 > Date.now()) {
@@ -1830,6 +2077,21 @@ function licenseProblem(lic) {
 }
 
 /** 啟用：把授權碼綁到這個安裝，換回通行證。同一組碼可在任何裝置操作。 */
+/**
+ * 這張授權碼現在應該簽到什麼時候。
+ *
+ * ⚠️ **有比賽週區間時，只能簽到「現在這一段」的結束。**
+ *    簽到最後一段的結束就等於把中間的空檔一起送出去，
+ *    而通行證最長 14 天、到期一定會回來續，所以這樣切完全不影響體驗。
+ */
+function entitlementUntil(lic) {
+  if (Array.isArray(lic.windows) && lic.windows.length) {
+    const w = currentWindow(lic.windows);
+    if (w) return w[1];
+  }
+  return lic.expiresAt;
+}
+
 async function handleLicenseActivate(request, env, auth) {
   const body = await request.json().catch(() => null);
   const key = normLicense(body && body.licenseKey);
@@ -1867,11 +2129,15 @@ async function handleLicenseActivate(request, env, auth) {
   //    畫面顯示已啟用、實際不能用，而且完全不報錯——付費使用者直接壞掉。
   await unvoidEntitlements(env, [iid]);
 
-  const ent = await issueEntitlement(env, iid, lic.plan || 'season', lic.expiresAt);
+  // ⚠️ 有比賽週區間時只能簽到「現在這一段」的結束，見 entitlementUntil
+  const ent = await issueEntitlement(env, iid, lic.plan || 'season', entitlementUntil(lic));
   // 涵蓋的站名要一起回。買 3 站的人在擴充功能裡只看到一個日期時，
   // 根本分不出自己買的是 1 站還是 3 站——那是他付過錢的東西。
   return json({
     ok: true, plan: lic.plan || 'season',
+    windows: lic.windows || null,
+    gpIds: lic.gpIds || null,
+    nextLabel: lic.nextLabel || null,
     // ⚠️ **方案名稱由伺服器給，用戶端不要自己維護一份對照表。**
     //    options.js 曾經寫死過，於是加了 week／season_next／week_svc 之後，
     //    使用者的設定頁直接顯示英文鍵名（"week"），而且完全不報錯。
@@ -1916,7 +2182,8 @@ async function handleLicenseRenew(request, env, auth) {
     plan: lic.plan || 'season',
     planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
     gpName: lic.gpName || null, gpCount: lic.gpCount || null,
-    ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', lic.expiresAt)),
+    windows: lic.windows || null, nextLabel: lic.nextLabel || null,
+    ...(await issueEntitlement(env, auth.installId, lic.plan || 'season', entitlementUntil(lic))),
   });
 }
 
@@ -2439,7 +2706,7 @@ function tradeDate() {
  * 三條規則按順序套用：
  *   1. 賽季方案用 `seasonPriceNow`（分段價、早鳥賣完自動降級）
  *   2. **代訂附贈一週 + 另外買翻譯 → 折抵 39**（使用者決定）
- *   3. 升級補差價：扣掉這個 email 本賽季已付的一週通行證
+ *   3. 升級補差價：扣掉這個 email 本賽季已付的比賽週通行證
  */
 async function quoteCart(env, items, opts) {
   const o = opts || {};
@@ -2450,7 +2717,11 @@ async function quoteCart(env, items, opts) {
   let hasWeekPurchase = false;
   let seasonKey = null;
 
+  const gpWindows = [];
+  let lineFrom = null; let lineUntil = null; let lineNext = null;
   for (const it of items) {
+    // ⚠️ 每一圈都要清掉，否則第二張通行證會沿用第一張的效期顯示
+    lineFrom = null; lineUntil = null; lineNext = null;
     const key = String((it && it.key) || '');
     const p = PLANS[key];
     if (!p || p.internal || !(p.price > 0)) return { error: `方案不存在或不販售：${key}` };
@@ -2462,7 +2733,9 @@ async function quoteCart(env, items, opts) {
     //    **通行證的上限是「本賽季剩餘比賽週」**——使用者的決定：
     //    想一次買到季末就讓他買，那是我們最不用行銷的一種營收。
     //    上限一定要有：沒有上限的話 999 張會算出一個跨到明年的效期。
-    const maxQty = p.weekBound ? Math.max(1, racesLeft()) : 5;
+    // ⚠️ 比賽週通行證**一場只能買一張**。同一場買兩張不會延長任何東西，
+    //    只是收兩次錢——那是客訴。要多站就選多個場次（每場各一張）。
+    const maxQty = p.weekBound ? 1 : 5;
     const qty = Math.max(1, Math.min(maxQty, Number(it.qty) || 1));
 
     let unit = planPrice(key, ops);          // 後台覆寫優先，沒設就用程式碼裡的牌價
@@ -2478,19 +2751,33 @@ async function quoteCart(env, items, opts) {
     }
     if (p.weekBound) {
       hasWeekPurchase = true;
-      // **買了幾張就涵蓋接下來幾站，不是「同一站買幾份」。**
-      // 不講清楚的話，買 3 張的人會以為自己重複買了同一站。
-      const w = weekWindow(undefined, undefined, qty);
-      if (w) {
-        note = w.count > 1
-          ? `涵蓋接下來 ${w.count} 站：${w.gpNames.join('、')}`
-          : `涵蓋${w.gpNames[0]}大獎賽週末`;
+      // ⚠️ **比賽週通行證一定要指定是哪一場。**
+      //    商品是「荷蘭大獎賽通行證」，不是「一週」——沒有 gp 就不知道賣什麼。
+      const gid = String((it && it.gp) || '');
+      const g = gid ? gpById(gid) : null;
+      if (!g) return { error: '比賽週通行證必須指定場次（請重新整理購買頁）' };
+      const st = gpStatus(g);
+      if (st === 'finished') {
+        return { error: `${g.label || g.name}已經結束，無法購買` };
       }
+      const w = gpWindow(g);
+      if (!w) return { error: '找不到該場次的比賽週區間' };
+      gpWindows.push([w.from, w.until, gpId(g)]);
+      // 購物車要看得到這一張的效期。**時間一律回 UTC 秒**，
+      //    由前端換成使用者的時區——伺服器猜不到他在哪裡。
+      lineFrom = w.from; lineUntil = w.until;
+      lineNext = w.next ? (w.next.label || (w.next.name + '大獎賽')) : null;
     }
     if (p.bundleWeek) bundledWeek = true;
 
+    // 比賽週通行證的顯示名稱是**那一場的名字**，不是方案名稱
+    const lineLabel = (p.weekBound && it && it.gp && gpById(String(it.gp)))
+      ? (gpById(String(it.gp)).label || `${gpById(String(it.gp)).name}大獎賽`)
+      : p.label;
     lines.push({
-      key, label: p.label, qty, unit, sum: unit * qty, note,
+      key, gp: (it && it.gp) ? String(it.gp) : null,
+      validFrom: lineFrom, validUntil: lineUntil, nextLabel: lineNext,
+      label: lineLabel, qty, unit, sum: unit * qty, note,
       vpn: !!p.vpn, manual: !!p.manual,
       // primary 的判斷要用得到它：全是代訂時，有沒有附贈一週決定發哪一種內部方案
       bundleWeek: !!p.bundleWeek,
@@ -2501,7 +2788,7 @@ async function quoteCart(env, items, opts) {
   const adjustments = [];
 
   // ---- 代訂附贈的一週，不該讓買家再付一次 ----
-  // 使用者的決定：同時買「有附贈一週的代訂」與「一週通行證」時折抵 39。
+  // 使用者的決定：同時買「有附贈一週的代訂」與「比賽週通行證」時折抵 39。
   // 只折一次——附贈的就是一週，買兩週的人第二週仍然要付。
   if (bundledWeek && hasWeekPurchase) {
     adjustments.push({ label: '代訂已附贈一週，折抵', amount: -WEEKEND_PRICE });
@@ -2515,7 +2802,7 @@ async function quoteCart(env, items, opts) {
     const c = await weekCreditFor(env, o.email, Date.now(), o.licenseKey);
     if (c.credit > 0) {
       const use = Math.min(c.credit, total);      // 不會變成負數
-      adjustments.push({ label: `已購一週通行證折抵（本賽季 ${c.keys.length} 張）`, amount: -use });
+      adjustments.push({ label: `已購比賽週通行證折抵（本賽季 ${c.keys.length} 張）`, amount: -use });
       total -= use;
       creditKeys = c.keys;
     }
@@ -2527,6 +2814,9 @@ async function quoteCart(env, items, opts) {
     adjustments,
     total,
     creditKeys,
+    // 買到的比賽週區間。發碼時直接寫進授權記錄，續期時用它判斷「現在能不能用」。
+    windows: mergeWindows(gpWindows.map((w) => [w[0], w[1]])),
+    gpIds: gpWindows.map((w) => w[2]),
     // 主方案：發碼與統計要有一個代表。
     //
     // ⚠️ **購物車全是代訂時，絕對不可以拿代訂方案當主方案。**
@@ -2650,8 +2940,13 @@ async function handleCheckout(request, env, url) {
   await env.SUBS.put(`pending:${no}`, JSON.stringify({
     plan: finalPlan, price, email, at: nowSec(), mode: conf.mode,
     // 購物車全貌要留著：webhook 回來時要知道發哪些碼、哪些是待人工處理的代訂，
-    // 以及哪幾張一週通行證已經被拿去抵扣了（不標記的話明年還能再抵一次）。
-    items: quote.lines.map((l) => ({ key: l.key, qty: l.qty, unit: l.unit })),
+    // 以及哪幾張比賽週通行證已經被拿去抵扣了（不標記的話明年還能再抵一次）。
+    items: quote.lines.map((l) => ({ key: l.key, gp: l.gp || null, qty: l.qty, unit: l.unit })),
+    // ⚠️ **區間在結帳當下就算好存起來。** 付款可能是幾小時甚至幾天後
+    //    （ATM／超商代碼最長 30 天），webhook 再重算會用當時的「現在」當基準，
+    //    發出去的效期就與購買頁顯示的不一樣——而使用者手上有截圖。
+    windows: quote.windows || [],
+    gpIds: quote.gpIds || [],
     adjustments: quote.adjustments,
     creditKeys: quote.creditKeys,
     manual: quote.hasManual,
@@ -2830,11 +3125,15 @@ async function handlePaymentWebhook(request, env) {
   // ⚠️ **數量一定要從購物車讀回來。**
   //    買 3 張通行證卻只發一張的效期，是安靜地少給使用者他付過錢的東西——
   //    不報錯，只有他自己會在第二站發現看不了。
-  const weekQty = (pending && Array.isArray(pending.items))
-    ? pending.items.filter((i) => PLANS[i.key] && PLANS[i.key].weekBound)
-      .reduce((n, i) => n + (Number(i.qty) || 1), 0)
-    : 1;
-  const w = PLANS[plan] && PLANS[plan].weekBound ? weekWindow(undefined, undefined, weekQty) : null;
+  // 比賽週通行證：買了哪幾場、各自的區間。**結帳時就算好存進 pending**，
+  // 不要在這裡重算——重算會用「現在」當基準，而付款可能是幾小時後
+  // （ATM／超商），基準一變就發出與購買頁顯示不同的效期。
+  const gpWins = (pending && Array.isArray(pending.windows)) ? pending.windows : [];
+  const gpIds = (pending && Array.isArray(pending.gpIds)) ? pending.gpIds : [];
+  const gpLabels = gpIds.map((id) => {
+    const g = gpById(id);
+    return g ? (g.label || `${g.name}大獎賽`) : id;
+  });
 
   // 代訂是**人工服務**：付款只代表「已收款、待處理」，不是已完成。
   // 把它列進授權記錄是為了讓後台看得到、追得到、結得了案——
@@ -2847,13 +3146,23 @@ async function handlePaymentWebhook(request, env) {
     // 帳號鍵。**日後導入登入時，靠這個欄位把既有資料接回帳號**——
     // 少一筆就是一筆接不回去的孤兒，而且完全不會報錯（見 accountKey）。
     acct: accountKey(email),
-    expiresAt: planExpiry(plan, undefined, undefined, weekQty),
-    startsAt: planStart(plan),
-    // 涵蓋的站名。買多站時要全部列出來，客服與使用者才對得上
-    gpName: w ? (w.count > 1 ? `${w.gpNames[0]}～${w.gpNames[w.count - 1]}（${w.count} 站）` : w.gp.name) : null,
-    gpNames: w ? w.gpNames : null,
-    gpCount: w ? w.count : null,
-    weekFrom: w ? w.weekFrom : null,          // 正式七天從哪天起算（之前是贈送期）
+    // 比賽週通行證的效期＝最後一段的結束；其餘方案照原本的算法
+    expiresAt: gpWins.length ? Math.max(...gpWins.map((x) => x[1])) : planExpiry(plan),
+    startsAt: gpWins.length ? Math.min(...gpWins.map((x) => x[0])) : planStart(plan),
+    // 區間本身也要存。跳著買時，中間的空檔靠它擋住。
+    windows: gpWins.length ? gpWins : null,
+    gpIds: gpIds.length ? gpIds : null,
+    gpName: gpLabels.length ? gpLabels.join('、') : null,
+    gpCount: gpIds.length || null,
+    // 失效的那一刻是「下一場的第一場賽事」。**要把那一場的名字存下來**——
+    // 只給日期，使用者無從判斷自己還能不能看下一場。
+    nextLabel: (() => {
+      if (!gpIds.length) return null;
+      const lastId = gpIds[gpIds.length - 1];
+      const w = gpWindow(gpById(lastId));
+      return w && w.next ? (w.next.label || `${w.next.name}大獎賽`) : null;
+    })(),
+    // weekFrom 已由 windows 取代（比賽週區間是一段一段的，不是一個起點）
     // 這筆訂單實付多少。升級抵扣要用它，不能用牌價——
     // 折抵過的訂單若用牌價回算，會把折掉的金額再抵一次。
     paid: pending ? Number(pending.price) || 0 : (PLANS[plan] || {}).price || 0,
@@ -2866,7 +3175,7 @@ async function handlePaymentWebhook(request, env) {
   };
   await env.SUBS.put(licKey(key), JSON.stringify(lic));
 
-  // 拿去抵扣的一週通行證要標記，否則下一次升級還能再抵一次同樣的金額。
+  // 拿去抵扣的比賽週通行證要標記，否則下一次升級還能再抵一次同樣的金額。
   // ⚠️ 一定要在發碼**之後**做：先標記後發碼的話，發碼失敗會讓使用者
   //    既沒拿到新授權、舊的額度也被吃掉。
   if (pending && Array.isArray(pending.creditKeys) && pending.creditKeys.length) {
@@ -2950,8 +3259,8 @@ async function handleLicenseList(request, env, url) {
       raw: key,
       plan: lic.plan,
       planLabel: (PLANS[lic.plan] || {}).label || lic.plan,
-      // 買多站的通行證要看得出來。少了這兩個欄位，後台上「一週通行證 ×3」
-      // 與「一週通行證 ×1」長得一模一樣，客服完全分不出來。
+      // 買多站的通行證要看得出來。少了這兩個欄位，後台上「比賽週通行證 ×3」
+      // 與「比賽週通行證 ×1」長得一模一樣，客服完全分不出來。
       gpCount: lic.gpCount || null,
       gpName: lic.gpName || null,
       email: lic.email || '',
@@ -3106,7 +3415,7 @@ async function handleLicenseIssue(request, env) {
     else earlyUsed += 1;                    // 這一張也算進去
   }
   // ⚠️ **後台發的碼必須與 webhook 發的碼有相同欄位。**
-  //    少了 weekFrom，一週通行證的正式七天不知道從哪天算；
+  //    少了 weekFrom，比賽週通行證的正式七天不知道從哪天算；
   //    少了 paid，這張碼日後升級賽季票時折抵金額會算成 0——
   //    兩者都不會報錯，只會在幾週後變成一筆客訴。
   // 後台手動發通行證時也能指定涵蓋幾站（客服補償常常要給不只一站）
@@ -4544,12 +4853,120 @@ async function handleAdminPlans(env) {
   return json({ ok: true, plans: out, earlyLeft: Math.max(0, EARLY_LIMIT - (await earlyIssued(env))) });
 }
 
+// ---------------------------------------------------------------------------
+// 賽事資料的同步
+// ---------------------------------------------------------------------------
+/**
+ * 賽程不能靠人工每週改。
+ *
+ * ⚠️ **但也不能無條件相信外部來源。** 來源改格式、被擋、回空、
+ *    或回了一份殘缺的賽程時，若直接套用，整個購買頁會空掉或算出錯誤的效期——
+ *    而那看起來像我們倒了。所以流程是：
+ *
+ *      抓 → **嚴格驗證** → 通過才寫進 KV → 沒通過就保留原狀並記錄原因
+ *
+ *    永遠有退路：KV 沒有可用資料時自動退回程式碼裡的內建賽程。
+ *
+ * ⚠️ **同步只覆蓋時間，不覆蓋價格與商品。** 商品綁的是 gpId，
+ *    賽事時間變了效期自動跟著變，不需要動任何商品資料。
+ */
+const SCHED_MIN_RACES = 15;          // 一個賽季不可能少於這個數
+const SCHED_MAX_RACES = 30;
+
+/**
+ * 驗證一份賽程。回傳 { ok, reason }。
+ * **寧可拒絕一份看起來怪怪的賽程，也不要把它套上去。**
+ */
+function validateSchedule(races) {
+  if (!Array.isArray(races)) return { ok: false, reason: '不是陣列' };
+  if (races.length < SCHED_MIN_RACES) return { ok: false, reason: `只有 ${races.length} 站，太少` };
+  if (races.length > SCHED_MAX_RACES) return { ok: false, reason: `有 ${races.length} 站，太多` };
+
+  let prev = 0;
+  for (const g of races) {
+    if (!g || !g.name || !dayStartSec(g.start) || !dayStartSec(g.end)) {
+      return { ok: false, reason: `${(g && g.name) || '某一站'} 缺少必要欄位` };
+    }
+    if (dayStartSec(g.end) < dayStartSec(g.start)) {
+      return { ok: false, reason: `${g.name} 的結束日早於開始日` };
+    }
+    // 日期必須遞增。亂序會讓「下一場」算錯，而那直接決定效期。
+    if (dayStartSec(g.start) < prev) return { ok: false, reason: `${g.name} 的日期沒有遞增` };
+    prev = dayStartSec(g.start);
+    // 場次時間必須落在比賽週內（前後各放寬一天，涵蓋時區）
+    for (const s of g.sessions || []) {
+      if (!s || !s.t) continue;
+      if (s.t < dayStartSec(g.start) - 86400 || s.t > dayStartSec(g.end) + 2 * 86400) {
+        return { ok: false, reason: `${g.name} 的「${s.n || s.k}」時間落在比賽週之外` };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * 從外部來源同步賽程。
+ *
+ * env.SCHEDULE_URL 指向一份 JSON（格式與內建 schedule 相同）。
+ * 沒設定時這支不做任何事——**不設定不是錯誤**，那代表你選擇手動維護。
+ */
+async function syncSchedule(env, force) {
+  const url = env.SCHEDULE_URL;
+  if (!url) return { ok: false, reason: 'SCHEDULE_URL 未設定（目前使用內建賽程）' };
+
+  let races = null;
+  try {
+    const r = await fetch(url, { headers: { accept: 'application/json' } });
+    if (!r.ok) return { ok: false, reason: `來源回 HTTP ${r.status}` };
+    const d = await r.json();
+    races = Array.isArray(d) ? d : (d && d.schedule) || (d && d.races) || null;
+  } catch (e) {
+    return { ok: false, reason: '抓不到來源：' + String((e && e.message) || e) };
+  }
+
+  const v = validateSchedule(races);
+  if (!v.ok) return { ok: false, reason: '資料不合理，已保留原賽程：' + v.reason };
+
+  // 內容沒變就不要寫。KV 寫入是這個專案的天花板（坑 #10）。
+  const body = JSON.stringify({ source: 'sync', at: nowSec(), url, races });
+  if (!force) {
+    const cur = await env.SUBS.get(SCHED_KEY);
+    if (cur) {
+      try {
+        const old = JSON.parse(cur);
+        if (JSON.stringify(old.races) === JSON.stringify(races)) {
+          return { ok: true, changed: false, races: races.length };
+        }
+      } catch (e) { /* 壞掉就覆蓋 */ }
+    }
+  }
+  await env.SUBS.put(SCHED_KEY, body);
+  schedCache = { at: 0, races: null };
+  return { ok: true, changed: true, races: races.length };
+}
+
 /** 管理端路由。權限已在外層驗過，這裡只管分派。 */
 async function routeAdmin(path, request, env, url) {
   const m = request.method;
 
   if (path === '/v1/admin/license/issue' && m === 'POST') return handleLicenseIssue(request, env);
   if (path === '/v1/admin/plans' && m === 'GET') return handleAdminPlans(env);
+  // 賽事資料。**與商品分開**：這裡只管賽事時間，商品綁的是 gpId。
+  if (path === '/v1/admin/schedule' && m === 'GET') {
+    const meta = await scheduleMeta(env);
+    return json({
+      ok: true,
+      source: meta.source,
+      syncedAt: meta.at,
+      configured: !!env.SCHEDULE_URL,
+      season: SEASON_YEAR,
+      races: gpList().map((g) => gpProduct(g, Date.now())),
+    });
+  }
+  if (path === '/v1/admin/schedule/sync' && m === 'POST') {
+    const b = await request.json().catch(() => ({}));
+    return json(Object.assign({ ok: false }, await syncSchedule(env, !!(b && b.force))));
+  }
   if (path === '/v1/admin/account' && m === 'GET') return handleAccount(env, url);
   if (path === '/v1/admin/econ' && m === 'GET') {
     try { await flushStats(env); } catch (e) { /* 先落地再讀 */ }
@@ -4768,6 +5185,28 @@ function siteCorsFor(request, path) {
 }
 
 export default {
+  /**
+   * 每天自動同步賽程。
+   *
+   * ⚠️ **賽程不能靠人工每週改**（使用者的要求）。比賽時間變更、延期、
+   *    加減場次都會直接影響已售出通行證的效期，而那是動態算的——
+   *    只要賽事資料是對的，效期就是對的。
+   *
+   * ⚠️ 同步失敗**不做任何事**，保留原賽程。外部來源壞掉時若清空資料，
+   *    整個購買頁會空掉、所有效期算成 null，而且不會報錯。
+   */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      const r = await syncSchedule(env).catch((e) => ({ ok: false, reason: String(e) }));
+      // 結果寫進 KV，後台看得到「上次同步發生什麼事」——
+      // 排程失敗最容易變成沒有人知道的靜默失敗。
+      try {
+        await env.SUBS.put("sched:lastrun", JSON.stringify({ at: nowSec(), result: r }),
+          { expirationTtl: 90 * 86400 });
+      } catch (e) { /* 記不起來也不能讓排程整個爆掉 */ }
+    })());
+  },
+
   async fetch(request, env) {
     const res = await handleRequest(request, env);
     try {
@@ -4784,6 +5223,9 @@ export default {
 };
 
 async function handleRequest(request, env) {
+  // ⚠️ **賽程要在最前面載一次。** 之後所有算效期的地方都是同步函式，
+  //    沒有機會 await。載不到會自動退回內建賽程（見 loadSchedule）。
+  try { await loadSchedule(env); } catch (e) { /* 用內建的 */ }
   {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -4908,6 +5350,7 @@ async function handleRequest(request, env) {
           ok: true,
           lines: q.lines, adjustments: q.adjustments, total: q.total,
           needsVpn: q.needsVpn, hasManual: q.hasManual, freeUpgrade: q.freeUpgrade,
+          windows: q.windows || [], gpIds: q.gpIds || [],
           creditNote: q.creditNote || null,
         });
       }
@@ -5108,11 +5551,28 @@ async function handleRequest(request, env) {
         return adminJson({ ok: true, applied: await opsConfig(env) });
       }
 
+      // 賽事資料。**與商品分開**——商品只綁 gpId，時間一律由這裡動態算。
+      // 購買頁與後台都讀這一支，兩邊不會有兩套時間。
+      if (path === '/v1/schedule' && request.method === 'GET') {
+        const now = Date.now();
+        return json({
+          ok: true,
+          season: SEASON_YEAR,
+          // 資料是不是同步來的、什麼時候同步的——畫面上要標示「時間待官方確認」
+          source: (await scheduleMeta(env)).source,
+          syncedAt: (await scheduleMeta(env)).at,
+          races: gpList().map((g) => gpProduct(g, now)),
+        });
+      }
+
       if (path === '/v1/plans' && request.method === 'GET') {
         const ops = await opsConfig(env);
         const left = await earlyRemaining(env);
         const season = seasonPriceNow(PLANS.season.price);
         const w = weekWindow();
+        // 比賽週通行證的價格（後台可改），要跟每一場商品一起給
+        const gpPrice = planPrice('week', ops);
+        const gpHidden = ops.hidden.includes('week');
         const plans = Object.entries(PLANS)
           .filter(([, v]) => v.price > 0)
           .map(([k, v]) => {
@@ -5134,7 +5594,7 @@ async function handleRequest(request, env) {
               // 賣的是下一季時一定要標出來，購買頁才有辦法講清楚
               nextSeason: !!(sp && sp.nextSeason),
               until: sp ? sp.until : null,
-              // 一週通行證涵蓋的是哪一場、到什麼時候
+              // 比賽週通行證涵蓋的是哪一場、到什麼時候
               // ⚠️ **買在正賽當天或之後的人要看得到自己買的是什麼。**
               //    賽程只有日期沒有時間，所以伺服器分不出「正賽剛開始」與
               //    「正賽已結束」——兩者都落在同一天。與其猜錯，不如**講清楚**：
@@ -5153,8 +5613,8 @@ async function handleRequest(request, env) {
                   return (j >= 0 && l[j + 1]) ? l[j + 1].name : null;
                 })(),
               } : null,
-              // 通行證可以一次買多站。上限是本賽季剩餘的比賽週。
-              maxQty: v.weekBound ? Math.max(1, racesLeft()) : 1,
+              // 比賽週通行證一場一張；要多站就選多個場次
+              maxQty: 1,
               vpn: !!v.vpn,
               desc: v.desc || '',
               bundleWeek: !!v.bundleWeek,
@@ -5167,8 +5627,22 @@ async function handleRequest(request, env) {
           .filter((p) => !ops.hidden.includes(p.key))
           .filter((p) => !(p.key === 'season_early' && p.price >= season.price));
 
+        // **一個 Grand Prix = 一個商品。** 價格共用 week 的牌價，
+        // 但每一場是獨立的商品卡（狀態、效期、場次時間都不同）。
+        // ⚠️ 已結束的場次**仍然回給購買頁**——使用者要看得到歷史，
+        //    只是不可購買。整個消失會讓人以為賽程漏了一站。
+        const races = gpList().map((g) => {
+          const p = gpProduct(g, Date.now());
+          return Object.assign(p, {
+            planKey: 'week',
+            price: gpPrice,
+            purchasable: p.purchasable && !gpHidden,
+            hidden: gpHidden,
+          });
+        });
         return json({
           plans,
+          races,
           earlyLeft: left,
           notice: ops.notice || '',
           season: {

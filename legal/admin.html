@@ -95,6 +95,7 @@
 <div class="tabs">
   <button class="tab on" data-t="cost">成本</button>
   <button class="tab" data-t="econ">單位經濟</button>
+  <button class="tab" data-t="sch">賽事資料</button>
   <button class="tab" data-t="ord">訂單<span id="ordBadge" class="badge" hidden></span></button>
   <button class="tab" data-t="lic">授權管理</button>
   <button class="tab" data-t="rep">問題回報</button>
@@ -109,6 +110,33 @@
 <section id="p-cost">
   <div id="cards" class="cards"></div>
   <div id="out"></div>
+</section>
+
+<section id="p-sch" hidden>
+  <div class="panel">
+    <h3>賽事資料</h3>
+    <p class="hint">
+      <b>賽事資料與商品資料是分開的。</b>商品（比賽週通行證）只綁一個場次代碼，
+      效期完全由這裡的時間動態算出來——所以賽程改了，<b>已售出的通行證效期會自動跟著改</b>，
+      不需要動任何商品，也不需要重新發碼。<br>
+      通行證的區間定義為
+      <b>［本場第一場賽事前一天，下一場第一場賽事前一天）</b>。
+      往前一天是為了涵蓋比賽週四的 warm-up 直播。這樣所有區間會完美接合，
+      任何時間點都只屬於一場，不會出現「兩張票都能看」或「都不能看」。
+    </p>
+    <div id="sch-meta" class="cards"></div>
+    <div class="bar">
+      <button id="sch-go">重新整理</button>
+      <button id="sch-sync" class="secondary">立即同步賽程</button>
+    </div>
+    <p class="hint">
+      同步來源由 <code>SCHEDULE_URL</code> 環境變數指定（未設定時使用內建賽程）。<br>
+      ⚠️ 同步會<b>嚴格驗證</b>：站數、日期遞增、場次時間必須落在比賽週內。
+      任何一項不合理就<b>整份拒絕並保留原賽程</b>——寧可用舊的，也不要讓購買頁空掉。
+    </p>
+    <div id="sch-msg" class="hint"></div>
+    <div id="sch-out"></div>
+  </div>
 </section>
 
 <section id="p-econ" hidden>
@@ -627,6 +655,7 @@ document.querySelectorAll('.tab').forEach((b) => {
     $('p-lic').hidden = b.dataset.t !== 'lic';
     $('p-ord').hidden = b.dataset.t !== 'ord';
     $('p-econ').hidden = b.dataset.t !== 'econ';
+    $('p-sch').hidden = b.dataset.t !== 'sch';
     $('p-rep').hidden = b.dataset.t !== 'rep';
     $('p-met').hidden = b.dataset.t !== 'met';
     $('p-ops').hidden = b.dataset.t !== 'ops';
@@ -637,6 +666,7 @@ document.querySelectorAll('.tab').forEach((b) => {
     if (b.dataset.t === 'lic' && !llRows.length) loadLicenses();
     if (b.dataset.t === 'ord') { markOrdersSeen(); orLoad(); }
     if (b.dataset.t === 'econ') { ecLoad(); usLoad(); }
+    if (b.dataset.t === 'sch') schLoad();
     if (b.dataset.t === 'rep') $('rp-go').click();
   };
 });
@@ -1428,5 +1458,71 @@ $('ac-go').onclick = async () => {
 };
 
 $('ac-mail').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ac-go').click(); });
+
+
+// ---------------------------------------------------------------------------
+// 賽事資料（與商品資料分開）
+// ---------------------------------------------------------------------------
+const SCH_ST = { upcoming: '即將開始', live: '進行中', finished: '已結束' };
+
+function schTime(sec) {
+  if (!sec) return '—';
+  return new Date(sec * 1000).toLocaleString('zh-TW',
+    { timeZone: 'Asia/Taipei', hour12: false, month: 'numeric', day: 'numeric',
+      weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+async function schLoad() {
+  $('sch-out').innerHTML = '載入中…';
+  let d;
+  try { d = await apiCall('/v1/admin/schedule'); }
+  catch (e) { $('sch-out').innerHTML = ''; $('err').textContent = String(e.message || e); return; }
+
+  const est = d.races.filter((r) => r.estimated).length;
+  $('sch-meta').innerHTML = [
+    ['賽季', d.season],
+    ['場次', d.races.length],
+    ['資料來源', d.source === 'sync' ? '外部同步' : '內建'],
+    ['最後同步', d.syncedAt ? schTime(d.syncedAt) : '從未'],
+    ['時間為推估', est],
+  ].map((x) => '<div class="card' + (x[0] === '時間為推估' && est ? ' warn' : '')
+    + '"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>').join('');
+
+  $('sch-out').innerHTML = '<table>'
+    + '<tr><th>#</th><th>大獎賽</th><th>賽道</th><th>第一場</th><th>排位賽</th><th>正賽</th>'
+    + '<th>通行證區間（台北時間）</th><th>狀態</th></tr>'
+    + d.races.map((r) => '<tr class="' + (r.status === 'finished' ? 'done' : '') + '">'
+      + '<td class="num">' + r.round + '</td>'
+      + '<td>' + r.flag + ' ' + escHtml(r.label)
+      + (r.sprint ? '<span class="tag">衝刺</span>' : '')
+      + (r.tentative ? '<span class="tag st-awaiting">待確認</span>' : '')
+      + (r.estimated ? '<span class="tag st-awaiting">時間推估</span>' : '')
+      + '</td>'
+      + '<td class="hint">' + escHtml(r.circuit) + '</td>'
+      + '<td>' + schTime(r.firstSessionAt) + '</td>'
+      + '<td>' + schTime(r.qualiAt) + '</td>'
+      + '<td>' + schTime(r.raceAt) + '</td>'
+      + '<td class="hint">' + schTime(r.validFrom) + ' → ' + schTime(r.validUntil) + '</td>'
+      + '<td class="st-' + (r.status === 'finished' ? 'failed' : r.status === 'live' ? 'paid' : 'awaiting')
+      + '">' + (SCH_ST[r.status] || r.status) + '</td>'
+      + '</tr>').join('')
+    + '</table>';
+}
+
+$('sch-go').onclick = schLoad;
+$('sch-sync').onclick = async () => {
+  // 同步會改變所有已售出通行證的效期計算依據，值得問一次。
+  if (!confirm('立即從外部來源同步賽程？\n\n'
+    + '同步會改變所有比賽週通行證的效期計算依據（效期是動態算的）。\n'
+    + '資料不合理時會整份拒絕並保留原賽程。')) return;
+  $('sch-msg').textContent = '同步中…';
+  try {
+    const d = await apiCall('/v1/admin/schedule/sync', { method: 'POST', body: '{}' });
+    $('sch-msg').textContent = d.ok
+      ? (d.changed ? '已更新，共 ' + d.races + ' 站' : '內容沒有變化，未寫入')
+      : '未更新：' + (d.reason || '原因不明');
+    schLoad();
+  } catch (e) { $('sch-msg').textContent = String(e.message || e); }
+};
 
 </script>

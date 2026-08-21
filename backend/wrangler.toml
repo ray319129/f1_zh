@@ -98,3 +98,12 @@ class_name = "SubtitleRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SubtitleRoom"]
+
+# 每天同步賽程。**賽事時間不能靠人工每週改**——比賽延期、改時間、加減場次
+# 都會直接影響已售出通行證的效期（效期是依賽事資料動態算的）。
+#
+# ⚠️ 同步來源用 SCHEDULE_URL 指定；**沒設定時不做任何事**，使用內建賽程。
+#    設定方式：wrangler secret put SCHEDULE_URL（或放進 [vars]，那不是機密）
+# ⚠️ 抓到的資料會嚴格驗證，不合理就整份拒絕並保留原賽程。
+[triggers]
+crons = ["0 4 * * *"]

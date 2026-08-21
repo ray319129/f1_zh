@@ -46,7 +46,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, dayStartSec, UPGRADE_CREDIT_MAX, weekCreditFor, seasonEndSec, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, gpList, gpWindow, gpById, gpProduct, gpStatus, currentWindow, mergeWindows, dayStartSec, UPGRADE_CREDIT_MAX, weekCreditFor, seasonEndSec, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -644,122 +644,113 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       ? fail("免費層：影片判斷不符預期", bad.join("、"))
       : ok("免費層：" + cases.length + " 種網址都判斷正確（伺服器端）");
   }
-  // ---- 19a2. 一張 NT$39 的票不可以涵蓋兩個比賽週末 ----
+  // ---- 19a2. 比賽週通行證：一個 GP = 一個商品 ----
   //
-  // 「購買起算七天」在背靠背的兩場之間會出事：正賽當天買，七天後正好是
-  // 下一場的正賽日，一張票看了兩場。2026 的賽程裡有多組連續週末。
+  // 這一組取代了舊的「一週通行證」測試。舊模型是「購買起算 N 天」，
+  // 新模型是**綁定賽事**：商品不保存時間，效期由賽事資料動態算。
   {
-    const sched = A.REMOTE_CONFIG.schedule.slice().sort((x, y) => new Date(x.start) - new Date(y.start));
-    let leaks = [];
-    for (const g of sched) {
-      // 在這一場的正賽當天買（最容易漏的時間點）
-      const buyAt = new Date(g.end + "T18:00:00Z").getTime();
-      const w = A.weekWindow(buyAt);
-      if (!w) continue;
-      // 效期內還有沒有「另一場」比賽的正賽日
-      const covered = sched.filter((x) => {
-        const s0 = Math.floor(new Date(x.end + "T00:00:00Z").getTime() / 1000);
-        return s0 >= Math.floor(buyAt / 1000) - 86400 && s0 <= w.expiresAt;
-      });
-      if (covered.length > 1) leaks.push(g.name + " → " + covered.map((c) => c.name).join("+"));
-    }
-    leaks.length
-      ? fail("一週通行證：一張票涵蓋了兩個比賽週末", leaks.join("、"))
-      : ok("一週通行證：任何購買時間點都只涵蓋一個比賽週末");
-  }
-  // ---- 19a3. 通行證：保底效期與多站購買 ----
-  //
-  // 錨定賽程之後最容易出的兩個問題：
-  //   · 買得太晚 → 只剩幾小時（等於詐欺）
-  //   · 買多站 → 效期沒跟著延長，安靜地少給使用者付過錢的東西
-  {
-    const sched = A.REMOTE_CONFIG.schedule.slice()
-      .sort((x, y) => new Date(x.start) - new Date(y.start));
+    const list = A.gpList();
+    const now = new Date('2026-08-19T12:00:00Z').getTime();
 
-    // 保底：在每一站的最後一刻購買，都要至少有 MIN_PASS_SEC
-    const short = [];
-    for (const g of sched) {
-      const buyAt = new Date(g.end + 'T23:00:00Z').getTime();
-      const w = A.weekWindow(buyAt);
-      if (!w) continue;
-      const hours = (w.expiresAt - Math.floor(buyAt / 1000)) / 3600;
-      if (hours < 71) short.push(`${g.name} 只有 ${hours.toFixed(0)} 小時`);
+    // (1) 區間必須**完美接合**：前一場的結束 === 後一場的開始。
+    //     有縫 → 某個時間點兩張票都不能用；重疊 → 兩張票都能用。
+    const seams = [];
+    for (let i = 0; i < list.length - 1; i++) {
+      const a = A.gpWindow(list[i]);
+      const b = A.gpWindow(list[i + 1]);
+      if (a.until !== b.from) seams.push(`${list[i].name}→${list[i + 1].name}`);
     }
-    short.length
-      ? fail('通行證：最後一刻購買的保底效期不足', short.slice(0, 4).join('、'))
-      : ok('通行證：任何時間購買都至少有 72 小時');
+    seams.length
+      ? fail('比賽週區間沒有完美接合（會出現空窗或重疊）', seams.slice(0, 3).join('、'))
+      : ok(`比賽週區間：${list.length} 段完美接合，沒有空窗也沒有重疊`);
 
-    // 保底不可以反過來蓋到下一站
-    const leak = [];
-    for (const g of sched) {
-      const buyAt = new Date(g.end + 'T23:00:00Z').getTime();
-      const w = A.weekWindow(buyAt);
-      if (!w) continue;
-      const covered = sched.filter((x) => {
-        const raceDay = Math.floor(new Date(x.end + 'T00:00:00Z').getTime() / 1000);
-        return raceDay >= Math.floor(buyAt / 1000) - 86400 && raceDay <= w.expiresAt;
-      });
-      if (covered.length > 1) leak.push(g.name + ' → ' + covered.map((c) => c.name).join('+'));
-    }
-    leak.length
-      ? fail('通行證：保底把效期推進了下一站', leak.join('、'))
-      : ok('通行證：保底不會蓋到下一站');
-
-    // 多站：買 N 張就要涵蓋 N 站，且效期跟著最後一站走
+    // (2) 每一段都必須涵蓋自己的所有場次——包含比賽週四的暖身
     const bad = [];
-    for (const n of [1, 2, 3, 5]) {
-      const w = A.weekWindow(new Date('2026-08-19T12:00:00Z').getTime(), undefined, n);
-      if (!w) { bad.push(`${n} 站算不出來`); continue; }
-      if (w.count !== n) bad.push(`買 ${n} 站卻只涵蓋 ${w.count} 站`);
-      if (w.gpNames.length !== n) bad.push(`${n} 站的站名只有 ${w.gpNames.length} 個`);
-      const lastEnd = Math.floor(new Date(w.lastGp.end + 'T00:00:00Z').getTime() / 1000);
-      if (w.expiresAt < lastEnd) bad.push(`${n} 站的效期在最後一站結束之前`);
-    }
-    bad.length
-      ? fail('通行證：多站購買不正確', bad.join('、'))
-      : ok('通行證：買 N 站就涵蓋 N 站，效期跟著最後一站');
-
-    // 數量上限不可以超過本賽季剩餘場次
-    const many = A.weekWindow(new Date('2026-08-19T12:00:00Z').getTime(), undefined, 999);
-    many.count <= A.racesLeft(new Date('2026-08-19T12:00:00Z').getTime())
-      ? ok(`通行證：數量上限被夾在本賽季剩餘場次內（${many.count} 站）`)
-      : fail('通行證：買 999 張竟然算出跨賽季的效期', String(many.count));
-  }
-
-  // ---- 19a4. 效期切在「下一個比賽週開始的前一天」 ----
-  //
-  // 使用者的決定：比賽週的**星期四就有 warm-up 直播**，所以切在那之前
-  // 是「兩站之間的重播全給他、一秒都不碰到下一站」的精確位置。
-  // ⚠️ 有兩站是**星期四開始**（亞塞拜然、拉斯維加斯），
-  //    所以規則要寫成「下一站 start 的前一天」，不能寫死星期三。
-  {
-    const sched = A.REMOTE_CONFIG.schedule.slice()
-      .sort((x, y) => new Date(x.start) - new Date(y.start));
-    const wrong = [];
-    for (let i = 0; i < sched.length - 1; i++) {
-      const g = sched[i];
-      const next = sched[i + 1];
-      // 在這一站的比賽週星期三購買
-      const buyAt = new Date(g.start + 'T00:00:00Z').getTime() - 2 * 86400000;
-      const w = A.weekWindow(buyAt);
-      if (!w || w.gp.name !== g.name) continue;          // 不是這一站就跳過
-      const want = A.dayStartSec(next.start) - 86400;
-      if (w.expiresAt !== want) {
-        wrong.push(`${g.name} 效期 ${new Date(w.expiresAt * 1000).toISOString().slice(0, 10)}`
-          + ` 應為 ${new Date(want * 1000).toISOString().slice(0, 10)}`);
+    for (const g of list) {
+      const w = A.gpWindow(g);
+      for (const s of g.sessions || []) {
+        if (s.t < w.from || s.t >= w.until) bad.push(`${g.name} 的${s.n}`);
       }
     }
-    wrong.length
-      ? fail('通行證：效期沒有切在下一個比賽週開始的前一天', wrong.slice(0, 3).join('、'))
-      : ok('通行證：效期一律切在下一個比賽週開始的前一天（含星期四開賽的兩站）');
+    bad.length
+      ? fail('有場次落在自己的通行證區間外', bad.slice(0, 4).join('、'))
+      : ok('每一場賽事都落在自己那一站的通行證區間內');
 
-    // 最後一站沒有「下一站」，要有退路
-    const last = sched[sched.length - 1];
-    const wLast = A.weekWindow(new Date(last.start + 'T00:00:00Z').getTime());
-    wLast && wLast.expiresAt > A.dayStartSec(last.end)
-      ? ok('通行證：本賽季最後一站仍有合理效期')
-      : fail('通行證：最後一站算不出效期');
+    // (3) 區間**不可以**涵蓋別站的正賽
+    const leak = [];
+    for (const g of list) {
+      const w = A.gpWindow(g);
+      for (const o of list) {
+        if (o.r === g.r) continue;
+        const race = (o.sessions || []).find((x) => x.k === 'race');
+        if (race && race.t >= w.from && race.t < w.until) leak.push(`${g.name} 蓋到 ${o.name}`);
+      }
+    }
+    leak.length
+      ? fail('一張通行證涵蓋了別站的正賽', leak.slice(0, 3).join('、'))
+      : ok('沒有任何通行證涵蓋到別站的正賽');
+
+    // (4) 狀態要由賽事時間自動判斷
+    const nl = A.gpProduct(A.gpById('2026-12'), now);
+    const hu = A.gpProduct(A.gpById('2026-11'), now);
+    const be = A.gpProduct(A.gpById('2026-10'), now);
+    nl.status === 'upcoming' && hu.status === 'live' && be.status === 'finished'
+      ? ok('商品狀態自動判斷正確（即將開始／進行中／已結束）')
+      : fail('商品狀態判斷不正確',
+        `荷蘭=${nl.status} 匈牙利=${hu.status} 比利時=${be.status}`);
+    be.purchasable === false
+      ? ok('已結束的場次自動鎖定，不可購買')
+      : fail('已結束的場次竟然還能購買');
+
+    // (5) 結帳必須指定場次，且不可以買已結束的
+    const envQ = { SUBS: { get: async () => null, put: async () => {}, list: async () => ({ keys: [], list_complete: true }) } };
+    (await A.quoteCart(envQ, [{ key: 'week', qty: 1 }], {})).error
+      ? ok('沒有指定場次時拒絕結帳')
+      : fail('沒有指定場次竟然可以結帳 —— 不知道賣的是哪一場');
+    (await A.quoteCart(envQ, [{ key: 'week', gp: '2026-10', qty: 1 }], {})).error
+      ? ok('已結束的場次拒絕結帳')
+      : fail('已結束的場次竟然可以結帳');
+
+    const q = await A.quoteCart(envQ, [{ key: 'week', gp: '2026-12', qty: 1 }], {});
+    q.windows && q.windows.length === 1 && q.gpIds[0] === '2026-12'
+      ? ok('購買單站：回傳一段區間與對應的場次代碼')
+      : fail('購買單站的區間不正確', JSON.stringify(q.windows));
+    /荷蘭/.test(q.lines[0].label)
+      ? ok('購物車顯示的是場次名稱，不是方案名稱')
+      : fail('購物車顯示的名稱不對', q.lines[0].label);
+
+    // (6) 跳著買：中間的空檔不可以送出去
+    const jump = await A.quoteCart(envQ,
+      [{ key: 'week', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-17', qty: 1 }], {});
+    jump.windows && jump.windows.length === 2
+      ? ok('跳著買：產生兩段獨立的區間（中間不送）')
+      : fail('跳著買的區間被併成一段 —— 中間那幾站等於白送', JSON.stringify(jump.windows));
+
+    // 落在空檔時，簽出去的通行證必須被擋下
+    const gapLic = { plan: 'week', windows: jump.windows, expiresAt: jump.windows[1][1] };
+    const inGap = jump.windows[0][1] + 86400;      // 第一段結束後一天
+    A.currentWindow(gapLic.windows, inGap * 1000) === null
+      ? ok('空檔期間不屬於任何區間（會被擋下）')
+      : fail('空檔期間竟然算在區間內');
+    // 而在第一段之內要放行
+    A.currentWindow(gapLic.windows, (jump.windows[0][0] + 3600) * 1000)
+      ? ok('區間之內正常放行')
+      : fail('區間之內竟然被擋');
+
+    // (7) 連續買要併成一段（使用者感受上那是一整段）
+    const cont = await A.quoteCart(envQ,
+      [{ key: 'week', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-13', qty: 1 }], {});
+    cont.windows.length === 1
+      ? ok('連續購買：兩段合併成一整段')
+      : fail('連續購買沒有合併', JSON.stringify(cont.windows));
+
+    // (8) 同一場買兩張沒有意義，數量必須夾成 1
+    const dup = await A.quoteCart(envQ, [{ key: 'week', gp: '2026-12', qty: 5 }], {});
+    dup.lines[0].qty === 1
+      ? ok('同一場最多一張（買兩張不會延長任何東西，只是收兩次錢）')
+      : fail('同一場竟然可以買多張', String(dup.lines[0].qty));
   }
+
 
   // ---- 19a5. 升級折抵有上限 ----
   //
@@ -827,7 +818,7 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : fail('svc_none 竟然還沒到期');
 
     // 混合購物車：有正常方案時，主方案還是那個正常方案
-    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }, { key: 'week', qty: 1 }], {});
+    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }, { key: 'week', gp: '2026-12', qty: 1 }], {});
     mixed.primary === 'week'
       ? ok('混合購物車：主方案取非代訂的那個')
       : fail('混合購物車：主方案是 ' + mixed.primary);

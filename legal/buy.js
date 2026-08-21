@@ -150,9 +150,148 @@
    *    剩餘比賽週末數仍然顯示在方案清單下方，想自己算的人算得到。
    */
 
+
+  // =====================================================================
+  // 比賽週通行證：一個 Grand Prix = 一個商品
+  //
+  // ⚠️ **所有時間都用瀏覽器的時區顯示。** 伺服器一律回 UTC 秒，
+  //    這裡才轉。把時區換算放在伺服器就得猜使用者在哪裡，
+  //    而猜錯的後果是「顯示的排位賽時間不是他要出現的時間」。
+  // =====================================================================
+  let races = [];
+  let showAllUpcoming = false;
+  const UPCOMING_DEFAULT = 2;
+
+  const TZ = (() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+    catch (e) { return 'UTC'; }
+  })();
+
+  /** 場次時間。顯示成「10/9（五）21:30」。 */
+  function fmtSession(sec) {
+    if (!sec) return '—';
+    const d = new Date(sec * 1000);
+    const day = new Intl.DateTimeFormat('zh-TW', {
+      timeZone: TZ, month: 'numeric', day: 'numeric', weekday: 'short',
+    }).format(d);
+    const time = new Intl.DateTimeFormat('zh-TW', {
+      timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(d);
+    return day + ' ' + time;
+  }
+
+  /** 比賽週日期範圍。 */
+  function fmtRange(a, b) {
+    const f = (x) => new Intl.DateTimeFormat('zh-TW', {
+      timeZone: TZ, month: 'numeric', day: 'numeric',
+    }).format(new Date(x + 'T12:00:00Z'));
+    return f(a) + ' – ' + f(b);
+  }
+
+  /** 距離某個時間還有多久。用於「剩餘時間」。 */
+  function fmtLeft(sec) {
+    const s = sec - Math.floor(Date.now() / 1000);
+    if (s <= 0) return '';
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    if (d > 0) return d + ' 天 ' + h + ' 小時';
+    const m = Math.floor((s % 3600) / 60);
+    return h + ' 小時 ' + m + ' 分';
+  }
+
+  const ST_LABEL = { upcoming: '即將開始', live: '比賽週進行中', finished: '已結束' };
+
+  function raceCard(g) {
+    const el = document.createElement('div');
+    el.className = 'plan gp' + (g.purchasable ? '' : ' locked');
+    el.dataset.key = 'week';
+    el.dataset.gp = g.id;
+
+    // 場次時間。**推估值一定要標示**，不可以讓人以為是官方公布的時間。
+    const sess = (g.sessions || []).map((s) =>
+      `<div class="sRow"><span>${esc(s.label)}</span><b>${fmtSession(s.at)}</b></div>`).join('');
+
+    const bits = [];
+    if (g.sprint) bits.push('<span class="tag">衝刺賽週</span>');
+    if (g.tentative) bits.push('<span class="tag warnTag">賽程待 F1 官方確認</span>');
+    if (g.status === 'live') bits.push('<span class="tag liveTag">進行中</span>');
+    if (!g.purchasable) bits.push('<span class="tag">已結束</span>');
+
+    el.innerHTML =
+      `<button type="button" class="planHead"${g.purchasable ? '' : ' disabled'}>
+         <span class="planName"><span class="flag">${g.flag || '🏁'}</span> ${esc(g.label)}</span>
+         <span class="planPrice">${g.purchasable ? money(g.price) : '—'}</span>
+       </button>
+       <div class="planNote">
+         ${esc(g.country)}　·　${esc(g.circuit)}　·　${fmtRange(g.startDate, g.endDate)}
+         ${bits.length ? '　' + bits.join(' ') : ''}
+       </div>
+       <div class="gpTimes">
+         <div class="sRow"><span>第一場賽事</span><b>${fmtSession(g.firstSessionAt)}</b></div>
+         <div class="sRow"><span>排位賽</span><b>${fmtSession(g.qualiAt)}</b></div>
+         <div class="sRow"><span>正賽</span><b>${fmtSession(g.raceAt)}</b></div>
+       </div>
+       <details class="planMore">
+         <summary>完整場次與通行證效期</summary>
+         <div>
+           <div class="gpTimes">${sess}</div>
+           <p class="hint">
+             <b>通行證效期</b><br>
+             生效：${g.status === 'upcoming' ? fmtSession(g.validFrom) + '（比賽週開始時）' : '購買後立即生效'}<br>
+             失效：${fmtSession(g.validUntil)}
+             ${g.nextLabel ? `（${esc(g.nextLabel)}第一場賽事前）` : '（本賽季最後一站，正賽後七日）'}
+             ${g.purchasable && g.status !== 'upcoming' ? `<br>剩餘：${fmtLeft(g.validUntil)}` : ''}
+           </p>
+           <p class="hint">
+             ${g.estimated
+    ? '⚠️ <b>場次時間為依往例推估</b>，實際時間以 F1 官方公布為準。'
+      + '通行證的效期會跟著官方時間自動調整，不需要您做任何事。'
+    : '場次時間來自官方賽程。'}
+             <br>時間已換算為您的時區（${esc(TZ)}）。
+           </p>
+         </div>
+       </details>`;
+
+    if (g.purchasable) {
+      el.querySelector('.planHead').onclick = () => toggleGp(g.id);
+    }
+    return el;
+  }
+
+  function toggleGp(id) {
+    const k = 'week:' + id;
+    if (cart.has(k)) cart.delete(k); else cart.set(k, 1);
+    paintSelection();
+    refreshQuote();
+  }
+
+  function renderRaces() {
+    const up = races.filter((r) => r.purchasable);
+    const past = races.filter((r) => !r.purchasable);
+
+    const shown = showAllUpcoming ? up : up.slice(0, UPCOMING_DEFAULT);
+    $('gpUpcoming').replaceChildren(...shown.map(raceCard));
+
+    const more = $('gpMore');
+    if (up.length > UPCOMING_DEFAULT) {
+      more.hidden = false;
+      more.textContent = showAllUpcoming
+        ? '收合，只看最近兩場'
+        : `顯示其餘 ${up.length - UPCOMING_DEFAULT} 場（本賽季共 ${up.length} 場可購買）`;
+      more.onclick = () => { showAllUpcoming = !showAllUpcoming; renderRaces(); };
+    } else more.hidden = true;
+
+    $('gpPast').replaceChildren(...past.map(raceCard));
+    if (!past.length) $('catPast').hidden = true;
+    paintSelection();
+  }
+
   function renderPlans(d) {
     seasonInfo = d.season || null;
-    const subs = plans.filter((p) => !/^svc_/.test(p.key));
+    races = Array.isArray(d.races) ? d.races : [];
+    renderRaces();
+    // week 已經拆成「每一場一張卡」，不要在賽季區再出現一次
+    const subs = plans.filter((p) => !/^svc_/.test(p.key) && p.key !== 'week');
     const svcs = plans.filter((p) => /^svc_/.test(p.key));
 
     $('plans').replaceChildren(...subs.map(card));
@@ -198,7 +337,17 @@
 
   function paintSelection() {
     document.querySelectorAll('.plan').forEach((el) => {
-      el.classList.toggle('on', cart.has(el.dataset.key));
+      // 比賽週通行證的購物車鍵是 `week:<場次代碼>`，一般方案就是方案代碼
+      const k = el.dataset.gp ? ('week:' + el.dataset.gp) : el.dataset.key;
+      el.classList.toggle('on', cart.has(k));
+    });
+  }
+
+  /** 把購物車轉成後端要的格式。比賽週通行證要帶上場次代碼。 */
+  function cartItems() {
+    return Array.from(cart, ([k, qty]) => {
+      const i = k.indexOf(':');
+      return i < 0 ? { key: k, qty } : { key: k.slice(0, i), gp: k.slice(i + 1), qty };
     });
   }
 
@@ -214,7 +363,7 @@
     if (!cart.size) { quote = null; paintCart(); validate(); return; }
 
     const body = {
-      items: Array.from(cart, ([key, qty]) => ({ key, qty })),
+      items: cartItems(),
       email: $('email').value.trim(),
       upgrade: $('upgrade') ? $('upgrade').checked : false,
       licenseKey: $('upgradeKey') ? $('upgradeKey').value.trim() : '',
@@ -247,8 +396,13 @@
     $('cartLines').replaceChildren(...quote.lines.map((l) => {
       const row = document.createElement('div');
       row.className = 'cartRow';
+      // 比賽週通行證要在購物車裡就看得到效期——
+      // 那是這個商品最容易誤會的地方，不能只放在卡片的展開裡。
+      const win = l.validUntil
+        ? `效期至 ${fmtSession(l.validUntil)}${l.nextLabel ? `（${esc(l.nextLabel)}比賽週開始前）` : ''}`
+        : '';
       row.innerHTML = `<span>${esc(l.label)}${l.qty > 1 ? ` × ${l.qty}` : ''}`
-        + `${l.note ? `<em>${esc(l.note)}</em>` : ''}</span>`
+        + `${win ? `<em>${win}</em>` : ''}${l.note ? `<em>${esc(l.note)}</em>` : ''}</span>`
         + `<span>${money(l.sum)}</span>`;
       return row;
     }));
@@ -319,7 +473,7 @@
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          items: Array.from(cart, ([key, qty]) => ({ key, qty })),
+          items: cartItems(),
           email: $('email').value.trim(),
           agreed: true,
           upgrade: $('upgrade') ? $('upgrade').checked : false,
