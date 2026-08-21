@@ -170,8 +170,16 @@ const TOGGLES = ['enabled', 'showEnglish', 'hideNativeCC'];
    *    他要看到的是那個名字、以及「什麼時候失效、為什麼是那個時候」。
    *    一個沒有脈絡的日期，他無法判斷自己還能不能看下一場。
    */
+  // ⚠️ **剩餘時間要會走。** 只在載入當下算一次的話，設定頁開著十分鐘
+  //    看到的還是十分鐘前的數字，而使用者會拿那個數字判斷「還來不來得及看」。
+  //    每分鐘重畫一次就夠——秒級跳動只是視覺噪音。
+  let gpTimer = null;
+  let gpState = null;
+
   function paintGpPass(st) {
     const box = $('licGp');
+    gpState = st;
+    if (!gpTimer) gpTimer = setInterval(() => { if (gpState) paintGpPass(gpState); }, 60000);
     if (!box) return;
     const wins = Array.isArray(st.windows) ? st.windows : null;
     if (!st.gpName && !wins) { box.hidden = true; return; }

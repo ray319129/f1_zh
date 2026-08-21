@@ -224,10 +224,12 @@
     <p class="hint"><b>方案與價格由伺服器提供，不寫在這一頁裡。</b>寫死過一次，
       結果定價改成「上半季 599／下半季 299／一週 39」之後，後台還在發早鳥碼——
       發出去的東西與網站上賣的是兩套，而且完全不會報錯。<br>
-      期限由伺服器依方案自動計算，一律到隔年 <b>1/31</b>（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）。客服補償為 30 天。<br>GP Trial 是免費層，<b>不需要授權碼</b>——四種正式場次的前 15 分鐘自動生效。</p>
+      發<b>比賽週通行證</b>時要選一場大獎賽——不選的話發出去的碼沒有場次資訊，使用者的設定頁看不到自己拿到的是哪一場，客服也對不上補償了什麼。<br>
+            期限由伺服器依方案自動計算，一律到隔年 <b>1/31</b>（F1 賽季橫跨年底，用 12/31 會讓最後幾場斷掉）。客服補償為 30 天。<br>GP Trial 是免費層，<b>不需要授權碼</b>——四種正式場次的前 15 分鐘自動生效。</p>
     <div class="bar">
       <input id="li-mail" size="24" placeholder="買家 email（強烈建議填）">
       <select id="li-plan"></select>
+      <select id="li-gp" hidden></select>
       <input id="li-order" size="14" placeholder="訂單編號">
       <button id="li-go">發碼</button>
     </div>
@@ -676,7 +678,13 @@ $('li-go').onclick = async () => {
   try {
     const d = await apiCall('/v1/admin/license/issue', {
       method: 'POST',
-      body: JSON.stringify({ email: $('li-mail').value.trim(), plan: $('li-plan').value, orderId: $('li-order').value.trim() }),
+      body: JSON.stringify({
+        email: $('li-mail').value.trim(),
+        plan: $('li-plan').value,
+        orderId: $('li-order').value.trim(),
+        // 比賽週通行證一定要帶場次，否則發出去的碼沒有區間資訊
+        gpIds: $('li-gp').hidden ? [] : [$('li-gp').value],
+      }),
     });
     $('li-out').innerHTML = `<div class="okmsg">已發放（${d.plan}）。把這組碼寄給買家：</div>
       <div class="key">${d.licenseKey}</div>
@@ -772,6 +780,7 @@ async function loadAdminPlans() {
   else if (planList.some(function (p) { return p.key === 'season'; })) sel.value = 'season';
   // 已經畫過的授權清單要跟著換成新方案，否則下拉裡還是舊的那幾個
   if (llRows.length) renderLicenses(null);
+  liSyncGpVisibility();
 }
 
 function escHtml(x) {
@@ -1524,5 +1533,37 @@ $('sch-sync').onclick = async () => {
     schLoad();
   } catch (e) { $('sch-msg').textContent = String(e.message || e); }
 };
+
+
+// ---- 發碼：比賽週通行證要選場次 ----
+//
+// ⚠️ 不選場次的話，發出去的碼**沒有 windows 也沒有 gpIds**——
+//    使用者的設定頁看不到「涵蓋哪一場」，客服也對不上補償了什麼。
+//    所以選了 week 就強制顯示場次下拉，而且預設選「接下來那一場」。
+let liRaces = [];
+
+async function liLoadRaces() {
+  if (liRaces.length) return;
+  try {
+    const d = await apiCall('/v1/admin/schedule');
+    liRaces = (d.races || []).filter((r) => r.purchasable);
+  } catch (e) { liRaces = []; }
+}
+
+async function liSyncGpVisibility() {
+  const sel = $('li-plan');
+  const gp = $('li-gp');
+  const p = planList.find((x) => x.key === sel.value);
+  const need = !!(p && p.weekBound);
+  gp.hidden = !need;
+  if (!need) return;
+  await liLoadRaces();
+  if (!gp.options.length) {
+    gp.innerHTML = liRaces.map((r) =>
+      '<option value="' + r.id + '">' + r.flag + ' ' + escHtml(r.label) + '</option>').join('');
+  }
+}
+
+$('li-plan').addEventListener('change', liSyncGpVisibility);
 
 </script>

@@ -664,30 +664,49 @@ const REMOTE_CONFIG = {
   //
   // ⚠️ 這一份是**內建的退路**。實際使用的是 KV 的 `sched:current`（若有），
   //    同步失敗或資料不合理時自動退回這裡——寧可用舊賽程，也不要沒有賽程。
+  // 賽事資料。**一個 Grand Prix = 一個商品**，通行證的效期由這裡動態算出來，
+  // 商品自己不保存任何時間（見 gpWindow）。
+  //
+  // 場次時間抄自 f1calendar.com（原以 Europe/London 顯示，這裡已換算成 UTC 秒），
+  // 衝刺賽站別依 F1 官方公布的 2026 Sprint Calendar 核對：
+  // **中國、邁阿密、加拿大、英國、荷蘭、新加坡**共六站。
+  //
+  // ⚠️ 先前有一版是用「標準時刻表」推估的，那一版有兩個實際錯誤：
+  //    把比利時標成衝刺賽（實際不是）、漏掉英國與荷蘭（實際是）。
+  //    衝刺賽週的場次組成完全不同，錯了會讓商品卡列出不存在的場次。
+  //    **不要再用推估值。**
+  //
+  // ⚠️ start / end 是**當地日期**，不是倫敦日期。拉斯維加斯的正賽在當地
+  //    星期六深夜，換算倫敦已是星期日；兩者差一天是正常的。
+  //
+  // ⚠️ 這一份是**內建的退路**。實際使用的是 KV 的 sched:current（若有），
+  //    同步失敗或資料不合理時自動退回這裡——寧可用舊賽程，也不要沒有賽程。
+  //
+  // 要重新產生：node tools/gen-schedule.js
   schedule: [
-    { r: 1, name: '澳洲', label: '澳洲大獎賽', country: '澳洲', flag: '🇦🇺', circuit: 'Albert Park', tz: 'Australia/Melbourne', start: '2026-03-06', end: '2026-03-08', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1772764200 }, { k: 'fp2', n: '第二次自由練習', t: 1772776800 }, { k: 'fp3', n: '第三次自由練習', t: 1772847000 }, { k: 'quali', n: '排位賽', t: 1772859600 }, { k: 'race', n: '正賽', t: 1772942400 }] },
-    { r: 2, name: '中國', label: '中國大獎賽', country: '中國', flag: '🇨🇳', circuit: 'Shanghai', tz: 'Asia/Shanghai', start: '2026-03-13', end: '2026-03-15', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1773376200 }, { k: 'sq', n: '衝刺排位賽', t: 1773390600 }, { k: 'sprint', n: '衝刺賽', t: 1773460800 }, { k: 'quali', n: '排位賽', t: 1773475200 }, { k: 'race', n: '正賽', t: 1773558000 }] },
-    { r: 3, name: '日本', label: '日本大獎賽', country: '日本', flag: '🇯🇵', circuit: 'Suzuka', tz: 'Asia/Tokyo', start: '2026-03-27', end: '2026-03-29', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1774585800 }, { k: 'fp2', n: '第二次自由練習', t: 1774598400 }, { k: 'fp3', n: '第三次自由練習', t: 1774668600 }, { k: 'quali', n: '排位賽', t: 1774681200 }, { k: 'race', n: '正賽', t: 1774764000 }] },
-    { r: 4, name: '邁阿密', label: '邁阿密大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Miami', tz: 'America/New_York', start: '2026-05-01', end: '2026-05-03', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1777653000 }, { k: 'sq', n: '衝刺排位賽', t: 1777667400 }, { k: 'sprint', n: '衝刺賽', t: 1777737600 }, { k: 'quali', n: '排位賽', t: 1777752000 }, { k: 'race', n: '正賽', t: 1777834800 }] },
-    { r: 5, name: '加拿大', label: '加拿大大獎賽', country: '加拿大', flag: '🇨🇦', circuit: 'Gilles Villeneuve', tz: 'America/Toronto', start: '2026-05-22', end: '2026-05-24', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1779467400 }, { k: 'sq', n: '衝刺排位賽', t: 1779481800 }, { k: 'sprint', n: '衝刺賽', t: 1779552000 }, { k: 'quali', n: '排位賽', t: 1779566400 }, { k: 'race', n: '正賽', t: 1779649200 }] },
-    { r: 6, name: '摩納哥', label: '摩納哥大獎賽', country: '摩納哥', flag: '🇲🇨', circuit: 'Monaco', tz: 'Europe/Monaco', start: '2026-06-05', end: '2026-06-07', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1780659000 }, { k: 'fp2', n: '第二次自由練習', t: 1780671600 }, { k: 'fp3', n: '第三次自由練習', t: 1780741800 }, { k: 'quali', n: '排位賽', t: 1780754400 }, { k: 'race', n: '正賽', t: 1780837200 }] },
-    { r: 7, name: '巴塞隆納', label: '巴塞隆納大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Barcelona-Catalunya', tz: 'Europe/Madrid', start: '2026-06-12', end: '2026-06-14', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1781263800 }, { k: 'fp2', n: '第二次自由練習', t: 1781276400 }, { k: 'fp3', n: '第三次自由練習', t: 1781346600 }, { k: 'quali', n: '排位賽', t: 1781359200 }, { k: 'race', n: '正賽', t: 1781442000 }] },
-    { r: 8, name: '奧地利', label: '奧地利大獎賽', country: '奧地利', flag: '🇦🇹', circuit: 'Red Bull Ring', tz: 'Europe/Vienna', start: '2026-06-26', end: '2026-06-28', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1782473400 }, { k: 'fp2', n: '第二次自由練習', t: 1782486000 }, { k: 'fp3', n: '第三次自由練習', t: 1782556200 }, { k: 'quali', n: '排位賽', t: 1782568800 }, { k: 'race', n: '正賽', t: 1782651600 }] },
-    { r: 9, name: '英國', label: '英國大獎賽', country: '英國', flag: '🇬🇧', circuit: 'Silverstone', tz: 'Europe/London', start: '2026-07-03', end: '2026-07-05', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1783081800 }, { k: 'fp2', n: '第二次自由練習', t: 1783094400 }, { k: 'fp3', n: '第三次自由練習', t: 1783164600 }, { k: 'quali', n: '排位賽', t: 1783177200 }, { k: 'race', n: '正賽', t: 1783260000 }] },
-    { r: 10, name: '比利時', label: '比利時大獎賽', country: '比利時', flag: '🇧🇪', circuit: 'Spa-Francorchamps', tz: 'Europe/Brussels', start: '2026-07-17', end: '2026-07-19', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1784284200 }, { k: 'sq', n: '衝刺排位賽', t: 1784298600 }, { k: 'sprint', n: '衝刺賽', t: 1784368800 }, { k: 'quali', n: '排位賽', t: 1784383200 }, { k: 'race', n: '正賽', t: 1784466000 }] },
-    { r: 11, name: '匈牙利', label: '匈牙利大獎賽', country: '匈牙利', flag: '🇭🇺', circuit: 'Hungaroring', tz: 'Europe/Budapest', start: '2026-07-24', end: '2026-07-26', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1784892600 }, { k: 'fp2', n: '第二次自由練習', t: 1784905200 }, { k: 'fp3', n: '第三次自由練習', t: 1784975400 }, { k: 'quali', n: '排位賽', t: 1784988000 }, { k: 'race', n: '正賽', t: 1785070800 }] },
-    { r: 12, name: '荷蘭', label: '荷蘭大獎賽', country: '荷蘭', flag: '🇳🇱', circuit: 'Zandvoort', tz: 'Europe/Amsterdam', start: '2026-08-21', end: '2026-08-23', afterSummerBreak: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1787311800 }, { k: 'fp2', n: '第二次自由練習', t: 1787324400 }, { k: 'fp3', n: '第三次自由練習', t: 1787394600 }, { k: 'quali', n: '排位賽', t: 1787407200 }, { k: 'race', n: '正賽', t: 1787490000 }] },
-    { r: 13, name: '義大利', label: '義大利大獎賽', country: '義大利', flag: '🇮🇹', circuit: 'Monza', tz: 'Europe/Rome', start: '2026-09-04', end: '2026-09-06', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1788521400 }, { k: 'fp2', n: '第二次自由練習', t: 1788534000 }, { k: 'fp3', n: '第三次自由練習', t: 1788604200 }, { k: 'quali', n: '排位賽', t: 1788616800 }, { k: 'race', n: '正賽', t: 1788699600 }] },
-    { r: 14, name: '西班牙（馬德里）', label: '西班牙（馬德里）大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Madring', tz: 'Europe/Madrid', start: '2026-09-11', end: '2026-09-13', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1789126200 }, { k: 'fp2', n: '第二次自由練習', t: 1789138800 }, { k: 'fp3', n: '第三次自由練習', t: 1789209000 }, { k: 'quali', n: '排位賽', t: 1789221600 }, { k: 'race', n: '正賽', t: 1789304400 }] },
-    { r: 15, name: '亞塞拜然', label: '亞塞拜然大獎賽', country: '亞塞拜然', flag: '🇦🇿', circuit: 'Baku City', tz: 'Asia/Baku', start: '2026-09-24', end: '2026-09-26', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790242200 }, { k: 'fp2', n: '第二次自由練習', t: 1790254800 }, { k: 'fp3', n: '第三次自由練習', t: 1790325000 }, { k: 'quali', n: '排位賽', t: 1790337600 }, { k: 'race', n: '正賽', t: 1790420400 }] },
-    { r: 16, name: '巴林（馬來西亞 Sepang）', label: '巴林（馬來西亞 Sepang）大獎賽', country: '馬來西亞', flag: '🇲🇾', circuit: 'Sepang', tz: 'Asia/Kuala_Lumpur', start: '2026-10-02', end: '2026-10-04', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790919000 }, { k: 'fp2', n: '第二次自由練習', t: 1790931600 }, { k: 'fp3', n: '第三次自由練習', t: 1791001800 }, { k: 'quali', n: '排位賽', t: 1791014400 }, { k: 'race', n: '正賽', t: 1791097200 }] },
-    { r: 17, name: '新加坡', label: '新加坡大獎賽', country: '新加坡', flag: '🇸🇬', circuit: 'Marina Bay', tz: 'Asia/Singapore', start: '2026-10-09', end: '2026-10-11', sprint: true, est: 1, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1791520200 }, { k: 'sq', n: '衝刺排位賽', t: 1791534600 }, { k: 'sprint', n: '衝刺賽', t: 1791604800 }, { k: 'quali', n: '排位賽', t: 1791619200 }, { k: 'race', n: '正賽', t: 1791702000 }] },
-    { r: 18, name: '美國', label: '美國大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Circuit of the Americas', tz: 'America/Chicago', start: '2026-10-23', end: '2026-10-25', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1792780200 }, { k: 'fp2', n: '第二次自由練習', t: 1792792800 }, { k: 'fp3', n: '第三次自由練習', t: 1792863000 }, { k: 'quali', n: '排位賽', t: 1792875600 }, { k: 'race', n: '正賽', t: 1792958400 }] },
-    { r: 19, name: '墨西哥', label: '墨西哥大獎賽', country: '墨西哥', flag: '🇲🇽', circuit: 'Hermanos Rodríguez', tz: 'America/Mexico_City', start: '2026-10-30', end: '2026-11-01', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793388600 }, { k: 'fp2', n: '第二次自由練習', t: 1793401200 }, { k: 'fp3', n: '第三次自由練習', t: 1793471400 }, { k: 'quali', n: '排位賽', t: 1793484000 }, { k: 'race', n: '正賽', t: 1793566800 }] },
-    { r: 20, name: '巴西', label: '巴西大獎賽', country: '巴西', flag: '🇧🇷', circuit: 'Interlagos', tz: 'America/Sao_Paulo', start: '2026-11-06', end: '2026-11-08', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793982600 }, { k: 'fp2', n: '第二次自由練習', t: 1793995200 }, { k: 'fp3', n: '第三次自由練習', t: 1794065400 }, { k: 'quali', n: '排位賽', t: 1794078000 }, { k: 'race', n: '正賽', t: 1794160800 }] },
-    { r: 21, name: '拉斯維加斯', label: '拉斯維加斯大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Las Vegas Strip', tz: 'America/Los_Angeles', start: '2026-11-19', end: '2026-11-21', est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795123800 }, { k: 'fp2', n: '第二次自由練習', t: 1795136400 }, { k: 'fp3', n: '第三次自由練習', t: 1795206600 }, { k: 'quali', n: '排位賽', t: 1795219200 }, { k: 'race', n: '正賽', t: 1795302000 }] },
-    { r: 22, name: '卡達', label: '卡達大獎賽', country: '卡達', flag: '🇶🇦', circuit: 'Lusail', tz: 'Asia/Qatar', start: '2026-11-27', end: '2026-11-29', tentative: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795775400 }, { k: 'fp2', n: '第二次自由練習', t: 1795788000 }, { k: 'fp3', n: '第三次自由練習', t: 1795858200 }, { k: 'quali', n: '排位賽', t: 1795870800 }, { k: 'race', n: '正賽', t: 1795953600 }] },
-    { r: 23, name: '阿布達比', label: '阿布達比大獎賽', country: '阿拉伯聯合大公國', flag: '🇦🇪', circuit: 'Yas Marina', tz: 'Asia/Dubai', start: '2026-12-04', end: '2026-12-06', tentative: true, est: 1, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1796376600 }, { k: 'fp2', n: '第二次自由練習', t: 1796389200 }, { k: 'fp3', n: '第三次自由練習', t: 1796459400 }, { k: 'quali', n: '排位賽', t: 1796472000 }, { k: 'race', n: '正賽', t: 1796554800 }] },
+    { r: 1, name: '澳洲', label: '澳洲大獎賽', country: '澳洲', flag: '🇦🇺', circuit: 'Albert Park', tz: 'Australia/Melbourne', start: '2026-03-06', end: '2026-03-08', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1772760600 }, { k: 'fp2', n: '第二次自由練習', t: 1772773200 }, { k: 'fp3', n: '第三次自由練習', t: 1772847000 }, { k: 'quali', n: '排位賽', t: 1772859600 }, { k: 'race', n: '正賽', t: 1772942400 }] },
+    { r: 2, name: '中國', label: '中國大獎賽', country: '中國', flag: '🇨🇳', circuit: 'Shanghai', tz: 'Asia/Shanghai', start: '2026-03-13', end: '2026-03-15', sprint: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1773372600 }, { k: 'sq', n: '衝刺排位賽', t: 1773387000 }, { k: 'sprint', n: '衝刺賽', t: 1773457200 }, { k: 'quali', n: '排位賽', t: 1773471600 }, { k: 'race', n: '正賽', t: 1773558000 }] },
+    { r: 3, name: '日本', label: '日本大獎賽', country: '日本', flag: '🇯🇵', circuit: 'Suzuka', tz: 'Asia/Tokyo', start: '2026-03-27', end: '2026-03-29', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1774578600 }, { k: 'fp2', n: '第二次自由練習', t: 1774591200 }, { k: 'fp3', n: '第三次自由練習', t: 1774665000 }, { k: 'quali', n: '排位賽', t: 1774677600 }, { k: 'race', n: '正賽', t: 1774760400 }] },
+    { r: 4, name: '邁阿密', label: '邁阿密大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Miami', tz: 'America/New_York', start: '2026-05-01', end: '2026-05-03', sprint: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1777651200 }, { k: 'sq', n: '衝刺排位賽', t: 1777667400 }, { k: 'sprint', n: '衝刺賽', t: 1777737600 }, { k: 'quali', n: '排位賽', t: 1777752000 }, { k: 'race', n: '正賽', t: 1777827600 }] },
+    { r: 5, name: '加拿大', label: '加拿大大獎賽', country: '加拿大', flag: '🇨🇦', circuit: 'Gilles Villeneuve', tz: 'America/Toronto', start: '2026-05-22', end: '2026-05-24', sprint: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1779467400 }, { k: 'sq', n: '衝刺排位賽', t: 1779481800 }, { k: 'sprint', n: '衝刺賽', t: 1779552000 }, { k: 'quali', n: '排位賽', t: 1779566400 }, { k: 'race', n: '正賽', t: 1779652800 }] },
+    { r: 6, name: '摩納哥', label: '摩納哥大獎賽', country: '摩納哥', flag: '🇲🇨', circuit: 'Monaco', tz: 'Europe/Monaco', start: '2026-06-05', end: '2026-06-07', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1780659000 }, { k: 'fp2', n: '第二次自由練習', t: 1780671600 }, { k: 'fp3', n: '第三次自由練習', t: 1780741800 }, { k: 'quali', n: '排位賽', t: 1780754400 }, { k: 'race', n: '正賽', t: 1780837200 }] },
+    { r: 7, name: '巴塞隆納', label: '巴塞隆納大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Barcelona-Catalunya', tz: 'Europe/Madrid', start: '2026-06-12', end: '2026-06-14', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1781263800 }, { k: 'fp2', n: '第二次自由練習', t: 1781276400 }, { k: 'fp3', n: '第三次自由練習', t: 1781346600 }, { k: 'quali', n: '排位賽', t: 1781359200 }, { k: 'race', n: '正賽', t: 1781442000 }] },
+    { r: 8, name: '奧地利', label: '奧地利大獎賽', country: '奧地利', flag: '🇦🇹', circuit: 'Red Bull Ring', tz: 'Europe/Vienna', start: '2026-06-26', end: '2026-06-28', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1782473400 }, { k: 'fp2', n: '第二次自由練習', t: 1782486000 }, { k: 'fp3', n: '第三次自由練習', t: 1782556200 }, { k: 'quali', n: '排位賽', t: 1782568800 }, { k: 'race', n: '正賽', t: 1782651600 }] },
+    { r: 9, name: '英國', label: '英國大獎賽', country: '英國', flag: '🇬🇧', circuit: 'Silverstone', tz: 'Europe/London', start: '2026-07-03', end: '2026-07-05', sprint: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1783078200 }, { k: 'sq', n: '衝刺排位賽', t: 1783092600 }, { k: 'sprint', n: '衝刺賽', t: 1783162800 }, { k: 'quali', n: '排位賽', t: 1783177200 }, { k: 'race', n: '正賽', t: 1783260000 }] },
+    { r: 10, name: '比利時', label: '比利時大獎賽', country: '比利時', flag: '🇧🇪', circuit: 'Spa-Francorchamps', tz: 'Europe/Brussels', start: '2026-07-17', end: '2026-07-19', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1784287800 }, { k: 'fp2', n: '第二次自由練習', t: 1784300400 }, { k: 'fp3', n: '第三次自由練習', t: 1784370600 }, { k: 'quali', n: '排位賽', t: 1784383200 }, { k: 'race', n: '正賽', t: 1784466000 }] },
+    { r: 11, name: '匈牙利', label: '匈牙利大獎賽', country: '匈牙利', flag: '🇭🇺', circuit: 'Hungaroring', tz: 'Europe/Budapest', start: '2026-07-24', end: '2026-07-26', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1784892600 }, { k: 'fp2', n: '第二次自由練習', t: 1784905200 }, { k: 'fp3', n: '第三次自由練習', t: 1784975400 }, { k: 'quali', n: '排位賽', t: 1784988000 }, { k: 'race', n: '正賽', t: 1785070800 }] },
+    { r: 12, name: '荷蘭', label: '荷蘭大獎賽', country: '荷蘭', flag: '🇳🇱', circuit: 'Zandvoort', tz: 'Europe/Amsterdam', start: '2026-08-21', end: '2026-08-23', sprint: true, afterSummerBreak: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1787308200 }, { k: 'sq', n: '衝刺排位賽', t: 1787322600 }, { k: 'sprint', n: '衝刺賽', t: 1787392800 }, { k: 'quali', n: '排位賽', t: 1787407200 }, { k: 'race', n: '正賽', t: 1787490000 }] },
+    { r: 13, name: '義大利', label: '義大利大獎賽', country: '義大利', flag: '🇮🇹', circuit: 'Monza', tz: 'Europe/Rome', start: '2026-09-04', end: '2026-09-06', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1788517800 }, { k: 'fp2', n: '第二次自由練習', t: 1788530400 }, { k: 'fp3', n: '第三次自由練習', t: 1788604200 }, { k: 'quali', n: '排位賽', t: 1788616800 }, { k: 'race', n: '正賽', t: 1788699600 }] },
+    { r: 14, name: '西班牙（馬德里）', label: '西班牙（馬德里）大獎賽', country: '西班牙', flag: '🇪🇸', circuit: 'Madring', tz: 'Europe/Madrid', start: '2026-09-11', end: '2026-09-13', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1789126200 }, { k: 'fp2', n: '第二次自由練習', t: 1789138800 }, { k: 'fp3', n: '第三次自由練習', t: 1789209000 }, { k: 'quali', n: '排位賽', t: 1789221600 }, { k: 'race', n: '正賽', t: 1789304400 }] },
+    { r: 15, name: '亞塞拜然', label: '亞塞拜然大獎賽', country: '亞塞拜然', flag: '🇦🇿', circuit: 'Baku City', tz: 'Asia/Baku', start: '2026-09-24', end: '2026-09-26', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790238600 }, { k: 'fp2', n: '第二次自由練習', t: 1790251200 }, { k: 'fp3', n: '第三次自由練習', t: 1790325000 }, { k: 'quali', n: '排位賽', t: 1790337600 }, { k: 'race', n: '正賽', t: 1790420400 }] },
+    { r: 16, name: '巴林（馬來西亞 Sepang）', label: '巴林（馬來西亞 Sepang）大獎賽', country: '馬來西亞', flag: '🇲🇾', circuit: 'Sepang', tz: 'Asia/Kuala_Lumpur', start: '2026-10-02', end: '2026-10-04', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1790915400 }, { k: 'fp2', n: '第二次自由練習', t: 1790928000 }, { k: 'fp3', n: '第三次自由練習', t: 1791001800 }, { k: 'quali', n: '排位賽', t: 1791014400 }, { k: 'race', n: '正賽', t: 1791097200 }] },
+    { r: 17, name: '新加坡', label: '新加坡大獎賽', country: '新加坡', flag: '🇸🇬', circuit: 'Marina Bay', tz: 'Asia/Singapore', start: '2026-10-09', end: '2026-10-11', sprint: true, sessions: [{ k: 'fp1', n: '唯一自由練習', t: 1791534600 }, { k: 'sq', n: '衝刺排位賽', t: 1791549000 }, { k: 'sprint', n: '衝刺賽', t: 1791622800 }, { k: 'quali', n: '排位賽', t: 1791637200 }, { k: 'race', n: '正賽', t: 1791720000 }] },
+    { r: 18, name: '美國', label: '美國大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Circuit of the Americas', tz: 'America/Chicago', start: '2026-10-23', end: '2026-10-25', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1792776600 }, { k: 'fp2', n: '第二次自由練習', t: 1792789200 }, { k: 'fp3', n: '第三次自由練習', t: 1792863000 }, { k: 'quali', n: '排位賽', t: 1792875600 }, { k: 'race', n: '正賽', t: 1792958400 }] },
+    { r: 19, name: '墨西哥', label: '墨西哥大獎賽', country: '墨西哥', flag: '🇲🇽', circuit: 'Hermanos Rodríguez', tz: 'America/Mexico_City', start: '2026-10-30', end: '2026-11-01', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793385000 }, { k: 'fp2', n: '第二次自由練習', t: 1793397600 }, { k: 'fp3', n: '第三次自由練習', t: 1793467800 }, { k: 'quali', n: '排位賽', t: 1793480400 }, { k: 'race', n: '正賽', t: 1793563200 }] },
+    { r: 20, name: '巴西', label: '巴西大獎賽', country: '巴西', flag: '🇧🇷', circuit: 'Interlagos', tz: 'America/Sao_Paulo', start: '2026-11-06', end: '2026-11-08', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1793979000 }, { k: 'fp2', n: '第二次自由練習', t: 1793991600 }, { k: 'fp3', n: '第三次自由練習', t: 1794061800 }, { k: 'quali', n: '排位賽', t: 1794074400 }, { k: 'race', n: '正賽', t: 1794157200 }] },
+    { r: 21, name: '拉斯維加斯', label: '拉斯維加斯大獎賽', country: '美國', flag: '🇺🇸', circuit: 'Las Vegas Strip', tz: 'America/Los_Angeles', start: '2026-11-19', end: '2026-11-21', sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795134600 }, { k: 'fp2', n: '第二次自由練習', t: 1795147200 }, { k: 'fp3', n: '第三次自由練習', t: 1795221000 }, { k: 'quali', n: '排位賽', t: 1795233600 }, { k: 'race', n: '正賽', t: 1795320000 }] },
+    { r: 22, name: '卡達', label: '卡達大獎賽', country: '卡達', flag: '🇶🇦', circuit: 'Lusail', tz: 'Asia/Qatar', start: '2026-11-27', end: '2026-11-29', tentative: true, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1795786200 }, { k: 'fp2', n: '第二次自由練習', t: 1795798800 }, { k: 'fp3', n: '第三次自由練習', t: 1795876200 }, { k: 'quali', n: '排位賽', t: 1795888800 }, { k: 'race', n: '正賽', t: 1795968000 }] },
+    { r: 23, name: '阿布達比', label: '阿布達比大獎賽', country: '阿拉伯聯合大公國', flag: '🇦🇪', circuit: 'Yas Marina', tz: 'Asia/Dubai', start: '2026-12-04', end: '2026-12-06', tentative: true, sessions: [{ k: 'fp1', n: '第一次自由練習', t: 1796376600 }, { k: 'fp2', n: '第二次自由練習', t: 1796389200 }, { k: 'fp3', n: '第三次自由練習', t: 1796466600 }, { k: 'quali', n: '排位賽', t: 1796479200 }, { k: 'race', n: '正賽', t: 1796562000 }] },
   ],
 
   freeTier: {
@@ -1184,13 +1203,11 @@ const PLANS = {
     label: '下一賽季通行證', price: PRICE_FIRST_HALF, nextSeasonOnly: true,
   },
 
-  // 比賽週通行證。**不是「比賽週末」而是完整七天。**
+  // 比賽週通行證。**一個 Grand Prix = 一個商品。**
   //
-  // 改動理由（使用者觀察，正確）：F1TV 就算不在比賽週也有大量重播可看，
-  // 只給週四到週日太窄，而且「一週」在銷售上比「一個週末」好講。
-  //
-  // 生效方式見 `weekWindow()`：**購買當下立刻可用（贈送），正式七天從
-  // 下一個比賽週的星期一起算**。使用者不必做任何決定，也不會算錯。
+  // 效期綁定賽事，由 gpWindow() 動態算：
+  //   ［本場第一場賽事 − 1 天, 下一場第一場賽事 − 1 天）
+  // 往前一天是為了涵蓋比賽週四的 warm-up 直播。
   // ⚠️ **鍵名維持 week 不改。** 改了會讓既有訂單與授權記錄裡的 plan 對不上，
   //    而那是查不回來的資料。命名難看勝過資料對不起來。
   //    對外顯示的名稱是「比賽週通行證」，而且**每一場是一張獨立的商品卡**
@@ -1810,7 +1827,9 @@ function gpProduct(g, from, cfg) {
     endDate: g.end,
     sprint: !!g.sprint,
     tentative: !!g.tentative,
-    // 場次時間是不是推估的。**畫面上一定要標示**，不可以假裝是官方時間。
+    // 場次時間是不是推估的。目前內建資料**全部是真實時間**（來自 f1calendar），
+    // 所以這裡一律 false；保留這個欄位是因為日後若有新賽季尚未公布時刻表，
+    // 仍然要能標示「待官方確認」而不是假裝知道。
     estimated: !!g.est,
     sessions: (g.sessions || []).map((x) => ({ kind: x.k, label: x.n, at: Number(x.t) })),
     firstSessionAt: gpFirstSession(g),
@@ -1826,86 +1845,16 @@ function gpProduct(g, from, cfg) {
 }
 
 /**
- * 一張通行證的最短效期。
+ * ⚠️ 舊的 weekWindow()（「購買起算 N 天」）已經**整個移除**。
  *
- * 買得再晚都至少有這麼久。**這是為了讓「最後一刻購買」不會變成詐欺**：
- * 正賽快結束時買，若只算到該站結束，等於花 39 元買了十分鐘。
+ *    通行證的效期一律走 gpWindow()——綁定賽事、動態計算。
+ *    兩套區間算法並存本身就是漂移的來源：改了一邊忘了另一邊，
+ *    而算出來的效期不一致完全不會報錯，只會讓某些人的通行證早幾天失效。
  *
- * ⚠️ 72 小時是**算過的上限**，不是隨便訂的：背靠背的兩站之間，
- *    前一站結束（週日）到後一站開始（週五）中間有 5 天。
- *    保底 3 天不會蓋到下一站，4 天就會有風險。改這個數字前先重算。
+ *    MIN_PASS_SEC（保底 72 小時）也一併移除：區間現在錨定賽程，
+ *    最短的一段也有好幾天，那個保底不再有意義。
  */
-const MIN_PASS_SEC = 72 * 3600;
 
-/**
- * 這張通行證涵蓋哪幾站、到什麼時候。
- *
- * ⚠️ **這個方案賣的是「比賽週末」，不是「固定七天」。**
- *
- *    舊版是「購買起算七天」，在背靠背的兩站之間會出事：正賽當天買，
- *    七天後正好是下一站的正賽日，一張票看了兩場。實測 2026 的 23 站
- *    有 9 站會漏——近四成的購買時機都在白送一場。
- *
- *    現在改成錨定賽程：涵蓋接下來的 count 站，效期到最後一站結束的隔天。
- *    加一天是因為**各站時區不同**——拉斯維加斯的正賽在當地週六深夜，
- *    換算 UTC 已經是週日；只算到 end 當天會讓那一站的正賽看不完。
- *
- *    代價是誠實的：買得早（上一站剛結束）大約 10~12 天，
- *    買在比賽週當中大約 3~5 天。**所以「一週」這個名字現在名不副實**，
- *    購買頁必須顯示伺服器算出來的實際到期日與涵蓋的站名。
- */
-function weekWindow(from, cfg, count) {
-  const now = Math.floor((from || Date.now()) / 1000);
-  const list = scheduleList(cfg).slice()
-    .sort((a, b) => dayStartSec(a.start) - dayStartSec(b.start));
-  // 「正在進行中」也算，所以用 end + 一天寬限來找
-  const idx = list.findIndex((g) => dayStartSec(g.end) + WEEKEND_PAD_SEC > now);
-  if (idx < 0) return null;
-
-  const n = Math.max(1, Math.min(Number(count) || 1, list.length - idx));
-  const gp = list[idx];
-  const last = list[idx + n - 1];
-
-  // 立刻可用；顯示用的「這一站的比賽週從哪天算起」
-  let monday = dayStartSec(gp.start) - 3 * 86400;
-  if (monday < now) monday = now;
-  const graceStart = Math.max(now, monday - WEEK_GRACE_MAX_SEC);
-
-  // 效期的終點：**下一個比賽週的星期三結束**（＝星期四 00:00）。
-  //
-  // 使用者的決定（2026-08-19）：比賽週的**星期四就開始有 warm-up 直播**，
-  // 所以切在星期四 00:00 是「把兩站之間的所有重播都給他，
-  // 但一秒都不碰到下一站的內容」的精確位置。
-  //
-  // schedule 的 start 是練習賽第一天（星期五），往回一天就是星期四 00:00。
-  const after = list[idx + n];
-  let expiresAt = after
-    ? dayStartSec(after.start) - 86400
-    // 本賽季最後一站：沒有「下一個比賽週」，就給到該站結束的隔天。
-    // 加一天是因為**各站時區不同**——拉斯維加斯的正賽在當地星期六深夜，
-    // 換算 UTC 已經是星期日，只算到 end 當天會讓那一站看不完。
-    : dayStartSec(last.end) + WEEKEND_PAD_SEC;
-
-  // 保底：買得再晚都至少 MIN_PASS_SEC。
-  // 正賽快結束時買，若只算到該站結束等於花 39 元買十分鐘。
-  expiresAt = Math.max(expiresAt, now + MIN_PASS_SEC);
-  // ⚠️ **安全優先於慷慨**：夾在最後。保底若把效期推進了下一站的比賽週，
-  //    仍然要砍掉——不然就回到「一張票看兩場」的老問題。
-  if (after) expiresAt = Math.min(expiresAt, dayStartSec(after.start) - 86400);
-
-  return {
-    gp,
-    count: n,
-    // 涵蓋的站名，購買頁與授權記錄都要用它——使用者買的是「哪幾站」
-    gpNames: list.slice(idx, idx + n).map((g) => g.name),
-    lastGp: last,
-    // 立刻可用，所以沒有 startsAt（不設限）
-    startsAt: null,
-    graceFrom: graceStart,
-    weekFrom: monday,
-    expiresAt,
-  };
-}
 
 function planExpiry(plan, from, cfg, count) {
   const p = PLANS[plan];
@@ -1924,9 +1873,20 @@ function planExpiry(plan, from, cfg, count) {
   if (p.nextSeasonOnly) return nextSeasonEndSec(from);
   if (p.untilSeasonEnd) return seasonPriceNow(p.price, from, cfg).until;
   if (p.weekBound) {
-    const w = weekWindow(from, cfg, count);
+    // ⚠️ **通行證的效期一律由賽事資料算**（gpWindow）。
+    //    這裡是「沒有指定場次」時的退路：取接下來的第 count 場。
+    //    正常路徑（購買頁、webhook）一定會帶 gpId，走不到這裡。
+    const list = gpList(cfg);
+    const now = Math.floor((from || Date.now()) / 1000);
+    const idx = list.findIndex((g) => {
+      const w2 = gpWindow(g, cfg);
+      return w2 && now < w2.until;
+    });
+    if (idx < 0) return null;
+    const g = list[Math.min(idx + Math.max(1, Number(count) || 1) - 1, list.length - 1)];
+    const w = gpWindow(g, cfg);
     // 賽程讀不到就退回「購買後 7 天」，不要因為缺資料就發不出通行證
-    if (w) return w.expiresAt;
+    if (w) return w.until;
     return Math.floor((from || Date.now()) / 1000) + (p.days || 7) * 86400;
   }
   if (p.days) return Math.floor((from || Date.now()) / 1000) + p.days * 86400;
@@ -3418,9 +3378,23 @@ async function handleLicenseIssue(request, env) {
   //    少了 weekFrom，比賽週通行證的正式七天不知道從哪天算；
   //    少了 paid，這張碼日後升級賽季票時折抵金額會算成 0——
   //    兩者都不會報錯，只會在幾週後變成一筆客訴。
-  // 後台手動發通行證時也能指定涵蓋幾站（客服補償常常要給不只一站）
-  const wkQty = Math.max(1, Math.min(Number(body.gpCount) || 1, Math.max(1, racesLeft())));
-  const wk = (PLANS[plan] && PLANS[plan].weekBound) ? weekWindow(undefined, undefined, wkQty) : null;
+  // ⚠️ **後台發比賽週通行證時必須指定是哪幾場。**
+  //    不指定的話發出去的碼沒有 windows，使用者的設定頁看不到「涵蓋哪一場」，
+  //    而客服也對不上他到底補償了什麼。沒指定時預設給「接下來一場」。
+  const wantGps = Array.isArray(body.gpIds) ? body.gpIds.map(String).filter(Boolean) : [];
+  let wkGps = [];
+  if (PLANS[plan] && PLANS[plan].weekBound) {
+    wkGps = wantGps.length
+      ? wantGps.map((id) => gpById(id)).filter(Boolean)
+      : (() => {
+        const nowS = nowSec();
+        const g = gpList().find((x) => { const w2 = gpWindow(x); return w2 && nowS < w2.until; });
+        return g ? [g] : [];
+      })();
+  }
+  const wkWins = wkGps.map((g) => { const w2 = gpWindow(g); return w2 ? [w2.from, w2.until] : null; })
+    .filter(Boolean);
+  const wkMerged = mergeWindows(wkWins);
   const opsNow = await opsConfig(env);
   const lic = {
     plan,
@@ -3428,12 +3402,20 @@ async function handleLicenseIssue(request, env) {
     acct: accountKey(body.email),               // 帳號鍵，見 accountKey 的說明
     orderId: String(body.orderId || ''),
     // 期限一律由伺服器依方案算。只有明確傳 expiresAt 時才覆寫（客服調整用）。
-    expiresAt: body.expiresAt ? Number(body.expiresAt) : planExpiry(plan, undefined, undefined, wkQty),
-    startsAt: planStart(plan),
-    gpName: wk ? (wk.count > 1 ? `${wk.gpNames[0]}～${wk.gpNames[wk.count - 1]}（${wk.count} 站）` : wk.gp.name) : null,
-    gpNames: wk ? wk.gpNames : null,
-    gpCount: wk ? wk.count : null,
-    weekFrom: wk ? wk.weekFrom : null,
+    expiresAt: body.expiresAt ? Number(body.expiresAt)
+      : (wkMerged.length ? Math.max(...wkMerged.map((x) => x[1])) : planExpiry(plan)),
+    startsAt: wkMerged.length ? Math.min(...wkMerged.map((x) => x[0])) : planStart(plan),
+    // 與 webhook 發出的碼**欄位完全一致**——少一個，使用者的設定頁就少一塊，
+    // 而那不會報錯（這個專案已經因為欄位不一致踩過兩次）。
+    windows: wkMerged.length ? wkMerged : null,
+    gpIds: wkGps.length ? wkGps.map((g) => gpId(g)) : null,
+    gpName: wkGps.length ? wkGps.map((g) => g.label || `${g.name}大獎賽`).join('、') : null,
+    gpCount: wkGps.length || null,
+    nextLabel: (() => {
+      if (!wkGps.length) return null;
+      const w2 = gpWindow(wkGps[wkGps.length - 1]);
+      return w2 && w2.next ? (w2.next.label || `${w2.next.name}大獎賽`) : null;
+    })(),
     // 實付金額。手動發碼時預設用此刻的實際售價；補償碼是 0，折抵時自然算不到。
     paid: body.paid !== undefined ? Number(body.paid) || 0 : (planPrice(plan, opsNow) || 0),
     items: [{ key: plan, qty: 1, unit: planPrice(plan, opsNow) || 0 }],
@@ -5569,7 +5551,6 @@ async function handleRequest(request, env) {
         const ops = await opsConfig(env);
         const left = await earlyRemaining(env);
         const season = seasonPriceNow(PLANS.season.price);
-        const w = weekWindow();
         // 比賽週通行證的價格（後台可改），要跟每一場商品一起給
         const gpPrice = planPrice('week', ops);
         const gpHidden = ops.hidden.includes('week');
@@ -5600,19 +5581,8 @@ async function handleRequest(request, env) {
               //    「正賽已結束」——兩者都落在同一天。與其猜錯，不如**講清楚**：
               //    把涵蓋的站名、到期日、以及下一站是誰全部給購買頁，
               //    正賽當天再加一句提醒。使用者自己知道比賽跑完了沒有。
-              gp: v.weekBound && w ? {
-                name: w.gp.name,
-                weekFrom: w.weekFrom,
-                expiresAt: w.expiresAt,
-                raceDay: w.gp.end,
-                // 正賽當天（含）之後購買時要提醒
-                raceDayPassed: dayStartSec(w.gp.end) <= dayStartSec(new Date().toISOString().slice(0, 10)),
-                nextName: (() => {
-                  const l = scheduleList().slice().sort((x, y) => dayStartSec(x.start) - dayStartSec(y.start));
-                  const j = l.findIndex((g) => g.name === w.gp.name);
-                  return (j >= 0 && l[j + 1]) ? l[j + 1].name : null;
-                })(),
-              } : null,
+              // ⚠️ 舊的 gp 欄位已移除。真正的商品清單是 races（一個 GP 一張卡），
+              //    留著第二份「代表場次」只會變成第二個事實來源。
               // 比賽週通行證一場一張；要多站就選多個場次
               maxQty: 1,
               vpn: !!v.vpn,

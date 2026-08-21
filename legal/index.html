@@ -37,6 +37,19 @@
     border: 1px solid var(--line); border-radius: 10px; background: #000;
   }
   .demo figcaption { font-size: 13px; color: var(--dim); margin-top: 8px; }
+  /* 方案卡。刻意極簡——這一頁的任務是讓人願意點進購買頁，不是報價。 */
+  .pricing { margin: 34px 0 8px; text-align: left; }
+  .pricing h2 { font-size: 17px; margin: 0 0 14px; text-align: center; opacity: .8; }
+  .pcards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .pcard { border: 1px solid rgba(128,128,128,.3); border-radius: 10px; padding: 14px 16px; }
+  .pname { font-weight: 600; margin-bottom: 4px; }
+  .pprice { font-size: 21px; font-weight: 700; }
+  .pprice span { font-size: 13px; font-weight: 400; opacity: .65; }
+  .pcard p { font-size: 13px; opacity: .78; margin: 8px 0 0; line-height: 1.6; }
+  .free { margin: 16px 0 10px; padding: 10px 14px; border-radius: 8px;
+          background: rgba(128,128,128,.12); font-size: 14px; }
+  .req { font-size: 13px; opacity: .75; padding-left: 20px; margin: 8px 0 0; }
+  .req li { margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -63,6 +76,52 @@
     </video>
     <figcaption>實際運作畫面（30 秒，含英文原聲）</figcaption>
   </figure>
+
+  <!--
+    方案與價格。
+    ⚠️ **這一段以前完全不存在**——著陸頁只有標題與導覽列，
+       從搜尋進來的人連「這是多少錢的東西」都看不出來，
+       而不知道價格的人多半不會多按一頁去查。
+
+    ⚠️ 價格**寫死在這裡是刻意的**，但只寫「起」與級距，不寫精確售價：
+       賽季票的實際售價會依剩餘場次浮動，購買頁才是唯一的事實來源。
+       這裡的角色是「讓人願意點進購買頁」，不是報價。
+       （check-consistency 會擋住寫死精確售價的行為。）
+  -->
+  <section class="pricing">
+    <h2>方案</h2>
+    <div class="pcards">
+      <div class="pcard">
+        <div class="pname">比賽週通行證</div>
+        <div class="pprice">NT$39 <span>/ 一場大獎賽</span></div>
+        <p>每一場大獎賽是一項獨立商品。涵蓋該場的自由練習、排位賽、
+           衝刺賽與正賽，效期到下一場比賽週開始前。</p>
+      </div>
+      <div class="pcard">
+        <div class="pname">賽季通行證</div>
+        <div class="pprice">NT$299 <span>起 / 整個賽季</span></div>
+        <p>一次涵蓋整個賽季，不必逐場購買。
+           實際售價依賽季剩餘場次而定，以購買頁顯示者為準。</p>
+      </div>
+      <div class="pcard">
+        <div class="pname">F1TV 代訂</div>
+        <div class="pprice">NT$79 <span>起</span></div>
+        <p>代為完成 F1TV 訂閱手續。
+           <b>觀看時仍需自備 VPN</b>，本服務不包含 VPN。</p>
+      </div>
+    </div>
+
+    <p class="free">
+      <b>每場正式賽事都有 15 分鐘免費</b>，不需要授權碼，也不需要留任何資料。
+      請務必先試用再決定。
+    </p>
+
+    <ul class="req">
+      <li>需要 <b>F1TV Pro 或 Premium</b> 訂閱（本服務只翻譯 F1TV 既有的英文字幕）</li>
+      <li>台灣觀看 F1TV <b>需自備 VPN</b></li>
+      <li>僅支援<b>桌面版 Chrome 與 Edge</b>；手機、平板與 Safari 不支援</li>
+    </ul>
+  </section>
 
   <!--
     ⚠️ 這裡曾經同時有兩個「聯絡我們」：一個開 mailto、一個進工單頁。

@@ -46,7 +46,7 @@ const ctx = vm.createContext(sandbox);
 vm.runInContext(src + '\n;this.__api = { issueInstallToken, authClient, authAdmin, safeEqual, bucketOf,'
   + ' plausibleTranslation, costOf, normKey, handleLicenseActivate, handleLicenseDeactivate,'
   + ' handleLicenseRenew, handleLicenseIssue, handleLicenseRevoke, issueEntitlement,'
-  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, weekendWindow, weekWindow, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, weekWindow, gpList, gpWindow, gpById, gpProduct, gpStatus, currentWindow, mergeWindows, dayStartSec, UPGRADE_CREDIT_MAX, weekCreditFor, seasonEndSec, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
+  + ' verifyEntitlement, normLicense, MAX_DEVICES, planExpiry, seasonEndSec, handleLicensePatch, handleLicenseList, handlePaymentWebhook, ecpayMac, planFromItem, ticketId, handleReportSubmit, handleLicenseDelete, handleReportPatch, checkEntitlement, FREE_DAILY_LINES, handleLicenseLookup, earlyIssued, earlyRemaining, EARLY_LIMIT, handleCheckout, handlePaymentInfo, handleOrderStatus, ECPAY_TEST, tradeNo, tradeDate, seasonPriceNow, PRICE_FIRST_HALF, PRICE_SECOND_HALF, afterSummerBreak, NEXT_SEASON_MIN_WEEKENDS, quoteCart, weekCreditFor, UPGRADE_FREE_BELOW, dayStartSec, racesLeft, planStart, nextSeasonEndSec, planLock, gpList, gpId, gpWindow, gpById, gpProduct, gpStatus, currentWindow, mergeWindows, dayStartSec, UPGRADE_CREDIT_MAX, weekCreditFor, seasonEndSec, accountKey, REMOTE_CONFIG, isFreeSlug, patchOrder, readOrder, ordMeta, handleOrderList, handleAdminPlans, ORDER_RANK, PLANS };', ctx);
 const A = sandbox.__api;
 
 // --- 懸空引用檢查 ---------------------------------------------------------
@@ -785,6 +785,67 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
     A.UPGRADE_CREDIT_MAX >= 78
       ? ok('升級折抵：上限不低於兩站的實付金額（78）')
       : fail('升級折抵：上限比兩站還低，說好折兩站卻少折');
+  }
+
+  // ---- 19a6. 升級折抵：多張比賽週通行證 ----
+  //
+  // 商品改成「一個 GP 一張」之後，一個人手上可能有很多張。
+  // ⚠️ **沒有上限就會出事**：12 張（NT$468）的折抵超過賽季票本身。
+  {
+    const store = new Map();
+    const env = {
+      SUBS: {
+        get: async (k) => (store.has(k) ? store.get(k) : null),
+        put: async (k, v) => { store.set(k, v); },
+        delete: async (k) => { store.delete(k); },
+      },
+    };
+    const mail = 'gp@test.com';
+    const list = A.gpList();
+    const keys = [];
+    // 發 5 張不同場次的比賽週通行證給同一個 email
+    for (let i = 0; i < 5; i++) {
+      const g = list[list.length - 1 - i];          // 用賽季末的幾站，確保還在本賽季內
+      const w = A.gpWindow(g);
+      const k = 'GPTEST0000' + i;
+      keys.push(k);
+      store.set('lic:' + k, JSON.stringify({
+        plan: 'week', email: mail, acct: mail, paid: 39,
+        windows: [[w.from, w.until]], gpIds: [A.gpId(g)],
+        expiresAt: w.until, devices: [], revoked: false,
+      }));
+    }
+    store.set('licmail:' + mail, JSON.stringify(keys));
+
+    const c = await A.weekCreditFor(env, mail, Date.now(), keys[0]);
+    c.credit === A.UPGRADE_CREDIT_MAX
+      ? ok(`升級折抵：5 張比賽週通行證仍夾在上限 NT$${A.UPGRADE_CREDIT_MAX}`)
+      : fail('升級折抵：多張通行證的上限沒有生效', 'credit=' + c.credit);
+    c.keys.length === 5
+      ? ok('升級折抵：五張都被認列（標記後不會再抵一次）')
+      : fail('升級折抵：認列的張數不對', String(c.keys.length));
+
+    // 別人的授權碼不可以拿來證明所有權
+    store.set('lic:OTHERSKEY01', JSON.stringify({
+      plan: 'week', email: 'someone@else.com', paid: 39, expiresAt: 9999999999, devices: [],
+    }));
+    const bad = await A.weekCreditFor(env, mail, Date.now(), 'OTHERSKEY01');
+    bad.credit === 0
+      ? ok('升級折抵：拿別人的授權碼證明所有權會被拒')
+      : fail('升級折抵：用別人的碼竟然能折抵 —— 等於用受害者的錢買自己的授權');
+
+    // 代訂贈送的那一張不可以折抵
+    const gsvc = list[list.length - 1];
+    const gw = A.gpWindow(gsvc);
+    store.set('lic:SVCGIFT001', JSON.stringify({
+      plan: 'week_svc', email: mail, paid: 0,
+      windows: [[gw.from, gw.until]], expiresAt: gw.until, devices: [],
+    }));
+    store.set('licmail:' + mail, JSON.stringify(keys.concat(['SVCGIFT001'])));
+    const g2 = await A.weekCreditFor(env, mail, Date.now(), 'SVCGIFT001');
+    g2.credit === 0 && g2.reason === 'gifted_week'
+      ? ok('升級折抵：代訂贈送的那一張不能拿來折抵')
+      : fail('升級折抵：代訂送的一週竟然可以折抵 —— 拿我們送的東西折我們的錢');
   }
 
   // ---- 19b. 代訂不可以變成一張永久字幕授權 ----
