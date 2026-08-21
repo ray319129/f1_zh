@@ -2168,6 +2168,7 @@ async function handleLicenseActivate(request, env, auth) {
     ok: true, plan: lic.plan || 'season',
     windows: lic.windows || null,
     gpIds: lic.gpIds || null,
+    giftGpIds: lic.giftGpIds || null,
     nextLabel: lic.nextLabel || null,
     // ⚠️ **方案名稱由伺服器給，用戶端不要自己維護一份對照表。**
     //    options.js 曾經寫死過，於是加了 week／season_next／week_svc 之後，
@@ -3016,6 +3017,16 @@ async function quoteCart(env, rawItems, opts) {
     //    也不要多一段（把長效期截短）。
     windows: primaryIsWeek ? mergeWindows(gpWindows.map((w) => [w[0], w[1]])) : [],
     gpIds: primaryIsWeek ? gpWindows.map((w) => w[2]) : [],
+    // ⚠️ **哪幾站是附贈的，一定要記下來——即使現在沒有人讀它。**
+    //
+    //    現在附贈與自費的區間被合併成同一張授權，兩者長得一模一樣。
+    //    日後若要讓「附贈的通行證可以送人」（＝發成獨立的授權碼），
+    //    就必須知道哪幾站原本是附贈的——而**那個資訊只有結帳當下有**。
+    //    沒記下來的話，這段期間的訂單就永遠拆不出來了，
+    //    屆時只能對舊訂單特殊處理，那才是真正的痛。
+    //
+    //    記一個欄位是零成本（同一次 KV 寫入），漏記是不可逆的。
+    giftGpIds: primaryIsWeek ? Array.from(giftGps) : [],
     // 主方案：發碼與統計要有一個代表。
     //
     // ⚠️ **購物車全是代訂時，絕對不可以拿代訂方案當主方案。**
@@ -3145,6 +3156,8 @@ async function handleCheckout(request, env, url) {
     //    發出去的效期就與購買頁顯示的不一樣——而使用者手上有截圖。
     windows: quote.windows || [],
     gpIds: quote.gpIds || [],
+    // 附贈的那幾站（見 quoteCart 的 giftGpIds）。目前沒有人讀，日後拆碼要用
+    giftGpIds: quote.giftGpIds || [],
     adjustments: quote.adjustments,
     creditKeys: quote.creditKeys,
     manual: quote.hasManual,
@@ -3362,6 +3375,10 @@ async function handlePaymentWebhook(request, env) {
     // 區間本身也要存。跳著買時，中間的空檔靠它擋住。
     windows: gpWins.length ? gpWins : null,
     gpIds: gpIds.length ? gpIds : null,
+    // ⚠️ 這幾站是代訂附贈的（gpIds 的子集）。**現在沒有人讀它**，
+    //    但少記一次就永遠補不回來——見 quoteCart 的 giftGpIds。
+    giftGpIds: (pending && Array.isArray(pending.giftGpIds) && pending.giftGpIds.length)
+      ? pending.giftGpIds : null,
     gpName: gpLabels.length ? gpLabels.join('、') : null,
     gpCount: gpIds.length || null,
     // 失效的那一刻是「下一場的第一場賽事」。**要把那一場的名字存下來**——

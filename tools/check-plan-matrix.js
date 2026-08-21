@@ -248,6 +248,22 @@ function simulateLicense(quote) {
     const n = (r.lines || []).filter((l) => l.gift).length;
     if (n !== 3) P('高', '附贈張數沒有跟著份數走', '3 份只送了 ' + n + ' 張');
   }
+  {
+    // ⚠️ **哪幾站是附贈的，必須跟著訂單一起記下來。**
+    //    現在沒有人讀 giftGpIds——但日後若要讓附贈的通行證可以送人
+    //    （發成獨立的授權碼），就得知道哪幾站原本是附贈的，
+    //    而那個資訊**只有結帳當下有**。少記一次就永遠補不回來，
+    //    屆時只能對這段期間的訂單特殊處理。記它是零成本，漏它是不可逆的。
+    const r = await q([{ key: 'svc_prem_1y_own', qty: 1, gifts: [GP1, GP2, GP3] },
+      { key: 'week', gp: GPLAST, qty: 1 }]);
+    const g = (r.giftGpIds || []).slice().sort().join(',');
+    const want = [GP1, GP2, GP3].slice().sort().join(',');
+    const ok = g === want && (r.gpIds || []).length === 4;
+    if (!ok) P('高', '附贈的站別沒有被記錄', 'giftGpIds=' + JSON.stringify(r.giftGpIds)
+      + '，應為 ' + want + '；gpIds ' + ((r.gpIds || []).length) + ' 站（應 4）');
+    console.log('  ' + (ok ? '✅' : '❌') + ' 附贈站別有記進訂單　giftGpIds '
+      + ((r.giftGpIds || []).length) + ' 站 / 共 ' + ((r.gpIds || []).length) + ' 站');
+  }
 
   /* ---------- 6. 不該成立的組合 ---------- */
   console.log('\n── 不該成立的 ──');

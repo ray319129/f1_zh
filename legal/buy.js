@@ -175,6 +175,7 @@
         const n = Number(qsel.value) || 1;
         // 還沒加進購物車就改數量＝他想買，直接幫他加進去
         cart.set(p.key, n);
+        notify('');
         syncGifts();
         renderRaces();
         refreshQuote();
@@ -340,17 +341,63 @@
         cart.delete(k); removed.push('另一張賽季通行證');
       } else if (isWeek && /^season/.test(base)) { cart.delete(k); removed.push('賽季通行證'); }
     }
-    if (removed.length) {
-      showMsg('已為您移除' + Array.from(new Set(removed)).join('、')
-        + '——賽季通行證已涵蓋本賽季所有場次，兩者不需要同時購買。');
-    }
+    // ⚠️ **回傳訊息、不要自己顯示。** 同一次點擊可能同時要講兩件事
+    //    （移除了什麼 + 附贈會失效），各自呼叫 showMsg 的話後者會蓋掉前者，
+    //    而被蓋掉的那句正是「我剛剛幫你移除了東西」——最不能漏的那一句。
+    return removed.length
+      ? '已為您移除' + Array.from(new Set(removed)).join('、')
+        + '——賽季通行證已涵蓋本賽季所有場次，兩者不需要同時購買。'
+      : '';
+  }
+
+  /**
+   * 賽季通行證 + 有附贈的代訂 → **附贈完全沒有作用**。
+   *
+   * 賽季通行證涵蓋本賽季全部場次，附贈的每一站都落在那個範圍裡面。
+   *
+   * ⚠️ **這件事必須在加入購物車的當下就講。** 只寫在購物車那一列小字裡不夠——
+   *    那時他可能已經滑過去、甚至已經按下結帳。
+   *
+   * ⚠️ **不折價，而且要明說不折價。** 附贈的價格本來就是 NT$0，
+   *    因為沒用到而退錢，跟「拿我們送的東西折我們的錢」是同一件事
+   *    （那是實際發生過的漏財）。更關鍵的是**我們偵測不到大部分的重複**：
+   *    上個月買賽季票、今天才買代訂的人，購物車裡看不出來。
+   *    折了就變成 A 折得到、B 折不到，而兩人拿到的東西一模一樣——
+   *    **那比一律不折更不公平**。
+   */
+  function giftRedundantNote() {
+    const keys = Array.from(cart.keys());
+    if (!keys.some((k) => /^season/.test(k))) return '';
+    const n = keys
+      .map((k) => plans.find((p) => p.key === k))
+      .filter((p) => p && p.bundleWeeks > 0)
+      .reduce((sum, p) => sum + p.bundleWeeks * (cart.get(p.key) || 1), 0);
+    if (!n) return '';
+    return '您已選擇賽季通行證，本賽季所有場次均已涵蓋——代訂方案附贈的 '
+      + n + ' 張比賽週通行證對您不會有額外作用，也不折抵代訂的價格。'
+      + '代訂服務本身（F1TV 訂閱）不受影響。';
+  }
+
+  /**
+   * 把「移除了什麼」與「附贈會失效」合成一句話顯示。
+   *
+   * ⚠️ **提醒要記在變數裡，不能只寫進畫面。**
+   *    每次改購物車都會接著 `refreshQuote()`，而它成功時會 `showMsg('')`
+   *    把訊息區清空——訊息會出現大約 200ms 然後消失，**看起來就像沒出現過**。
+   *    （這條路徑上原本就有這個 bug：「已為您移除比賽週通行證」也一直被吃掉。）
+   *    所以報價成功時要還原 `notice`，而不是清成空字串。
+   */
+  let notice = '';
+  function notify(removedMsg) {
+    notice = [removedMsg, giftRedundantNote()].filter(Boolean).join('　');
+    showMsg(notice);
   }
 
 
   function toggleGp(id) {
     const k = 'week:' + id;
     if (cart.has(k)) cart.delete(k);
-    else { resolveConflict('week'); cart.set(k, 1); }
+    else { notify(resolveConflict('week')); cart.set(k, 1); }
     // ⚠️ 買了一場之後，附贈可能得換到別站（同一場不重複開通）——
     //    syncGifts 會處理，但**場次卡片必須跟著重畫**，
     //    否則畫面上還掛著舊的「代訂已附贈」標籤。
@@ -424,14 +471,18 @@
   function toggle(key) {
     if (cart.has(key)) {
       cart.delete(key);
+      // 移除之後提醒可能已經不成立了（例如剛剛拿掉的就是賽季票），要重算
+      notify('');
       // 移除代訂 = 附贈一起走。場次卡片要解鎖，不然那幾站永遠買不到。
       syncGifts();
       renderRaces();
       return refreshQuote();
     }
-    resolveConflict(key);
+    const removedMsg = resolveConflict(key);
     const sel = document.querySelector(`[data-qty="${key}"]`);
     cart.set(key, sel ? (Number(sel.value) || 1) : 1);
+    // ⚠️ **要在 cart.set 之後才提醒**——訊息要看到新加進來的那一項
+    notify(removedMsg);
     syncGifts();
     renderRaces();
     refreshQuote();
@@ -454,7 +505,8 @@
     // 商品卡上的下拉也要跟著動，否則兩個地方顯示不同的數字
     const sel = document.querySelector('[data-qty="' + key + '"]');
     if (sel) sel.value = String(next);
-    // 份數改了，附贈張數就跟著改（每份 N 張）
+    // 份數改了，附贈張數就跟著改（每份 N 張），提醒裡的數字也要跟著動
+    notify('');
     syncGifts();
     renderRaces();
     refreshQuote();
@@ -497,6 +549,12 @@
    *    「請指定 N 個場次」的錯誤，而使用者根本不知道自己漏了什麼。
    */
   function syncGifts() {
+    // ⚠️ **購物車裡有賽季通行證時，附贈不指定任何場次。**
+    //    伺服器那邊已經這樣做了（整季已涵蓋，附贈沒有內容可給），
+    //    這裡不跟著做的話會出現兩個版本的事實：場次卡標「代訂已附贈」
+    //    並且鎖住，購物車卻寫「已包含於賽季通行證，無須指定場次」。
+    //    同一頁上兩個說法，使用者只會覺得網站壞了。
+    if (Array.from(cart.keys()).some((k) => /^season/.test(k))) { gifts.clear(); return; }
     const paid = paidGpIds();
     for (const k of Array.from(gifts.keys())) if (!cart.has(k)) gifts.delete(k);
     for (const k of cart.keys()) {
@@ -564,7 +622,9 @@
       if (seq !== quoteSeq) return;              // 已經有更新的請求了，丟棄
       quote = r.ok && d.ok ? d : null;
       if (!quote) showMsg(d && d.error ? d.error : '無法計算金額，請稍後再試', true);
-      else showMsg('');
+      // ⚠️ **不可以清成空字串。** 剛剛的提醒（移除了什麼、附贈會失效）
+      //    還要繼續顯示——清掉的話它只會閃現 200ms。
+      else showMsg(notice);
     } catch (e) {
       if (seq !== quoteSeq) return;
       quote = null;

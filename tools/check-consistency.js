@@ -111,29 +111,41 @@ function block(src, name) {
     : bad('網站的 API 位址不一致：' + [...apis].join('、'));
 }
 
-/* --- 5. 靜態資源的 ?v= 必須一致 ----------------------------------------- */
+/* --- 5. 同一支資產的 ?v= 在每一頁都要相同 --------------------------------- */
 //
-// ⚠️ 這一項實際踩過：改了 site.css 卻只更新其中一頁的 ?v=，
-//    另一頁的使用者拿到舊 CSS，**新加的元素完全沒有樣式**——
-//    畫面壞掉但 Console 一片乾淨，因為那不是錯誤。
+// ⚠️ 這一項實際踩過兩次：
+//    (1) 改了 site.css 卻只更新其中一頁的 ?v=，另一頁的使用者拿到舊 CSS——
+//        **新加的元素完全沒有樣式**，畫面壞掉但 Console 一片乾淨。
+//    (2) 同一天部署兩次、兩次都掛 `?v=5.9`。第一次載過的瀏覽器把舊檔
+//        存了一年（`_headers` 給 max-age=31536000），第二次的修正**永遠不生效**，
+//        而且 curl 看到的是新版（curl 沒有瀏覽器快取），更難懷疑到快取頭上。
+//
+// ⚠️ **不同資產不必共用同一個版本號。** 現在 `tools/bump-assets.js` 用內容雜湊，
+//    每支各有各的值——那正是重點：內容一樣雜湊就一樣，內容變了雜湊必變。
+//    這裡只驗「同一支檔案在所有頁面的值相同」，是否等於內容則由 bump-assets 驗。
 {
-  const seen = new Map();
+  const byFile = new Map();
   for (const f of fs.readdirSync(path.join(root, 'legal')).filter((x) => x.endsWith('.html'))) {
     const src = read('legal/' + f);
-    for (const m of src.matchAll(/\/(site\.css|[a-z]+\.js)\?v=([\d.]+)/g)) {
-      if (!seen.has(m[2])) seen.set(m[2], []);
-      seen.get(m[2]).push(f + ':' + m[1]);
+    for (const m of src.matchAll(/\/([\w.-]+\.(?:css|js))\?v=([\w.]+)/g)) {
+      if (!byFile.has(m[1])) byFile.set(m[1], new Map());
+      const vs = byFile.get(m[1]);
+      if (!vs.has(m[2])) vs.set(m[2], []);
+      vs.get(m[2]).push(f);
     }
     // 有引用但完全沒帶 ?v= 也要抓：那等於永遠吃瀏覽器快取
-    for (const m of src.matchAll(/(?:href|src)="\/(site\.css|[a-z]+\.js)"/g)) {
+    for (const m of src.matchAll(/(?:href|src)="\/([\w.-]+\.(?:css|js))"/g)) {
       bad(`${f} 引用 /${m[1]} 但沒有 ?v= —— 改版後使用者會一直吃到舊檔`);
     }
   }
-  seen.size <= 1
-    ? ok(`靜態資源的快取版本一致（v=${[...seen.keys()][0] || '無'}）`)
-    : bad('靜態資源的 ?v= 不一致，部分頁面會拿到舊檔：'
-      + [...seen].map(([v, fl]) => `v=${v}（${fl.join('、')}）`).join('　|　'));
+  const split = [...byFile].filter(([, vs]) => vs.size > 1);
+  split.length
+    ? split.forEach(([file, vs]) => bad(`/${file} 在不同頁面的 ?v= 不一致：`
+      + [...vs].map(([v, fs2]) => `${v}（${fs2.join('、')}）`).join('　|　')
+      + ' —— 部分頁面會拿到舊檔'))
+    : ok(`${byFile.size} 支靜態資源的 ?v= 在所有頁面一致`);
 }
+
 
 /* --- 6. 錯誤代碼：用到的都要有定義 -------------------------------------- */
 {

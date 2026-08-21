@@ -36,6 +36,9 @@ const CHECKS = [
   ['後台與後端一致（端點都有 UI、危險操作有確認）', 'tools/check-admin.js'],
   ['法律文件與程式碼一致（權限／保存期限／價格／法規要件）', 'tools/check-legal.js'],
   ['所有超連結指向正確位置', 'tools/check-links.js'],
+  // ⚠️ ?v= 一旦發佈就凍結一年（_headers 給 max-age=31536000）。
+  //    內容改了卻沒換 ?v=，使用者永遠拿不到新版，而且完全不報錯。
+  ['網站資產的 ?v= 等於內容雜湊', 'tools/bump-assets.js', ['--check']],
   ['跨產物一致（免費層／長度上限／快取版本／條款數字）', 'tools/check-consistency.js'],
   ['方案組合矩陣（每一種搭配的金額與授權都要正確）', 'tools/check-plan-matrix.js'],
   ['升級折抵沒有漏財（贈送的一週不可折抵）', 'tools/check-credit.js'],
@@ -104,7 +107,8 @@ for (const f of ['extension/manifest.json']) {
 }
 
 console.log('\n── 契約與行為 ──');
-for (const [label, script] of CHECKS) run(label, [script]);
+// 第三個元素是額外參數（例如 --check）。沒有就當空陣列。
+for (const [label, script, extra] of CHECKS) run(label, [script, ...(extra || [])]);
 
 console.log('');
 if (failed) {
