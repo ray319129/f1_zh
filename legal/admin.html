@@ -541,6 +541,7 @@ function bnRender() {
     ['總句數', (t.lines || 0).toLocaleString()],
     ['已完整', t.complete || 0],
     ['待補資料', t.noMeta || 0],
+    ['無官方字幕', t.noSub || 0],
   ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 
   const parts = [];
@@ -572,6 +573,22 @@ function bnRender() {
       }).join('')
       + '</table></div>');
   }
+
+  // 沒有官方字幕的影片。**單獨一區，不要混進上面的分組。**
+  // 那不是「我們沒收割到」，是 F1TV 本來就沒提供——兩者該做的處理完全不同。
+  const ns = (bnData.noSub || []).filter((x) => !q || (x.slug + ' ' + x.cid).toLowerCase().includes(q));
+  if (ns.length) {
+    parts.push('<div class="day"><h3>無官方字幕　<span class="hint">'
+      + ns.length + ' 支　·　F1TV 未提供英文字幕，我們沒有可翻譯的來源</span></h3>'
+      + '<p class="hint">回報次數越多越可信（同一支最多記三次）。'
+      + '這個數字是決定「要不要自己做語音辨識」的唯一依據。</p>'
+      + '<table><tr><th>contentId</th><th>網址後綴</th><th class="num">回報</th><th>最後回報</th></tr>'
+      + ns.map((x) => '<tr><td class="mono">' + esc(x.cid) + '</td><td>' + esc(x.slug || '—')
+        + '</td><td class="num">' + x.n + '</td><td class="hint">'
+        + (x.at ? new Date(x.at * 1000).toISOString().slice(0, 10) : '—') + '</td></tr>').join('')
+      + '</table></div>');
+  }
+
 
   $('bnOut').innerHTML = parts.length ? parts.join('')
     : '<p class="hint">沒有符合條件的項目。</p>';

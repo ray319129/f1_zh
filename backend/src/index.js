@@ -3909,6 +3909,14 @@ async function handlePostSubs(request, env) {
   // 網址後綴：後台的翻譯清單靠它分辨這是哪一場的哪個場次。
   // 只在還沒有的時候寫入——先到先得，避免不同來源互相覆蓋。
   const slug = String(body.slug || '').slice(0, 120);
+
+  // ⚠️ **「這支沒有字幕」要另外記，不要寫成一份空的 bundle。**
+  //    空 bundle 會混進翻譯清單，看起來像「收割失敗」，
+  //    而那兩件事該做的處理完全不同。
+  if (body.noSubtitles) {
+    try { await noteNoSubtitles(env, String(cid), slug); } catch (e) { /* 統計失敗不擋 */ }
+    return json({ ok: true, noSubtitles: true });
+  }
   if (slug && !bundle.slug) bundle.slug = slug;
   let added = 0;
   for (const [rawKey, zh] of Object.entries(lines)) {
@@ -4669,6 +4677,40 @@ async function handleUserStats(env, url) {
 }
 
 /**
+ * 記錄「這支影片沒有官方字幕軌」。
+ *
+ * 為什麼要記：**我們目前不知道 F1TV 有多少內容沒有字幕。**
+ * 沒有字幕的影片根本不會建立 bundle，等於在資料裡消失——
+ * 於是「要不要自己做語音辨識」這個決定完全沒有數字可以依據。
+ *
+ * ⚠️ 這是**用戶端回報的**，所以可以偽造。但代價很低（只是統計），
+ *    而且用「回報次數」當信心值：同一支被不同人回報越多次越可信。
+ *
+ * ⚠️ **每支最多寫三次。** KV 寫入是這個專案的天花板（坑 #10），
+ *    熱門影片被幾百人看過就寫幾百次的話，光這一項就能吃掉整天的額度。
+ */
+const NOSUB_MAX_REPORTS = 3;
+
+async function noteNoSubtitles(env, cid, slug) {
+  if (!env.SUBS || !cid) return;
+  const key = `nosub:${cid}`;
+  let rec = null;
+  try { rec = JSON.parse((await env.SUBS.get(key)) || 'null'); } catch (e) { rec = null; }
+  if (rec && (rec.n || 0) >= NOSUB_MAX_REPORTS) return;      // 夠了，不再寫
+  const next = {
+    cid,
+    slug: (rec && rec.slug) || String(slug || '').slice(0, 120),
+    n: ((rec && rec.n) || 0) + 1,
+    first: (rec && rec.first) || nowSec(),
+    at: nowSec(),
+  };
+  await env.SUBS.put(key, JSON.stringify(next), {
+    expirationTtl: 400 * 86400,
+    metadata: { n: next.n, slug: next.slug, at: next.at },
+  });
+}
+
+/**
  * 管理端：訂單列表。
  *
  * 只讀 metadata，所以一頁 1000 筆等於 1 次 KV 操作。
@@ -5402,6 +5444,24 @@ async function handleRequest(request, env) {
           items: g.items.sort((a, b) => b.lines - a.lines),
         }));
 
+        // 沒有官方字幕的影片。**與「收割失敗」是兩回事**——
+        // 前者是 F1TV 的內容問題（我們無能為力），後者是我們的問題。
+        // 混在一起看，真正需要處理的那些會被淹沒。
+        const noSub = [];
+        try {
+          let nc;
+          for (let p = 0; p < 3; p++) {
+            const nr = await env.SUBS.list({ prefix: 'nosub:', limit: 1000, cursor: nc });
+            for (const k of nr.keys) {
+              const md = k.metadata || {};
+              noSub.push({ cid: k.name.slice(6), slug: md.slug || '', n: md.n || 1, at: md.at || 0 });
+            }
+            if (nr.list_complete) break;
+            nc = nr.cursor;
+          }
+        } catch (e) { /* 統計讀不到不影響主清單 */ }
+        noSub.sort((a, b) => (b.n || 0) - (a.n || 0));
+
         return adminJson({
           ok: true,
           totals: {
@@ -5409,8 +5469,10 @@ async function handleRequest(request, env) {
             lines: items.reduce((a, x) => a + x.lines, 0),
             complete: items.filter((x) => x.segCount > 0).length,
             noMeta: items.filter((x) => !x.slug).length,
+            noSub: noSub.length,
           },
           groups: out,
+          noSub,
         });
       }
 

@@ -236,14 +236,14 @@ async function translateLines(cid, lines, urgent, slug) {
  * 標記成功後要把本機的 bundle 快取作廢，否則同一個 SW 生命週期內
  * 下一次 getBundle 還是回舊的 segCount=0，跳過判斷永遠不會生效。
  */
-async function markComplete(cid, segCount, slug) {
+async function markComplete(cid, segCount, slug, noSubtitles) {
   if (!cid || !segCount) return { ok: false };
   try {
     const d = await api('/v1/complete', {
       method: 'POST',
       // slug 是後台唯一能分辨「這是哪一場的哪個場次」的東西——
       // 我們只存 contentId，那是一串數字，人看不出是澳洲正賽還是賽後訪問。
-      body: JSON.stringify({ cid, segCount, slug: slug || '' }),
+      body: JSON.stringify({ cid, segCount, slug: slug || '', noSubtitles: !!noSubtitles }),
     });
     memCache.bundles.delete(cid);
     return d;
@@ -543,7 +543,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'markComplete':
-          sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount, msg.slug) });
+          sendResponse({ ok: true, result: await markComplete(msg.cid, msg.segCount, msg.slug, msg.noSubtitles) });
           break;
         case 'fetchText':
           try {

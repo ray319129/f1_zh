@@ -1478,6 +1478,62 @@
   }
 
   /**
+   * 這支影片到底**有沒有**官方字幕軌。
+   *
+   * ⚠️ **三態，不是布林。** 最重要的是分出「確定沒有」與「還不知道」：
+   *
+   *   has     —— 攔到字幕清單，或 master 裡有 TYPE=SUBTITLES
+   *   none    —— **看過 master 了**，而裡面完全沒有字幕軌 → 這支真的沒有
+   *   unknown —— 連 master 都還沒攔到（注入失敗？還在載？）→ **什麼都不要說**
+   *
+   * 把 unknown 當成 none 會造成最糟的誤報：注入失效時對每一支影片都說
+   * 「這支沒有字幕」，使用者會以為我們的涵蓋範圍很差而退訂——
+   * 而真正的問題（注入壞了）反而被這句話蓋掉。
+   *
+   * 也刻意**不看使用者有沒有開 CC**：CC 關著但字幕軌存在時，
+   * 判定仍然是 has，那種情況要由 checkNoCaption 去提醒開 CC。
+   */
+  function subtitleTrackVerdict() {
+    let sawMaster = false;
+    for (const m of manifests) {
+      if (!m.body) continue;
+      if (/#EXTINF/i.test(m.body) && /\.vtt|\.webvtt/i.test(m.body)) return 'has';
+      if (/#EXT-X-STREAM-INF/i.test(m.body)) {
+        sawMaster = true;
+        if (/TYPE=SUBTITLES/i.test(m.body)) return 'has';
+      }
+    }
+    return sawMaster ? 'none' : 'unknown';
+  }
+
+  /**
+   * 「這支影片沒有官方字幕」的告知。
+   *
+   * ⚠️ **這不是錯誤，所以沒有錯誤代碼。** 影片本來就沒字幕是 F1TV 的內容問題，
+   *    不是我們的故障。發代碼等於訓練使用者把正常現象當故障回報，
+   *    真正的故障就會淹沒在雜訊裡（見 plErr 的說明）。
+   *
+   * 但**一定要說**：買家付了錢，點開一支空白的影片而畫面上沒有任何說明時，
+   * 他分不出「我們壞了」與「這支本來就沒有」。那筆客訴是自找的。
+   */
+  let noSubShown = false;
+  function checkNoSubtitleTrack() {
+    if (noSubShown || !settings.enabled || !site || killed || tooOld) return;
+    if (!isActuallyPlaying()) return;
+    // 給播放器時間把 master 載進來。太早判定會把「還在載」說成「沒有」。
+    if (Date.now() - injectSince < 45000) return;
+    if (subtitleTrackVerdict() !== 'none') return;
+
+    noSubShown = true;
+    evInfo('這支影片沒有官方英文字幕軌 —— 沒有可以翻譯的來源（不是故障）');
+    show('ℹ 這支影片沒有官方英文字幕，PitLingo 無法翻譯', '');
+    // 回報給後端統計。**知道比例才有辦法決定要不要自己做語音辨識。**
+    try {
+      send({ type: 'markComplete', cid: contentId, segCount: 0, slug: location.pathname, noSubtitles: true });
+    } catch (e) { /* 統計失敗不影響任何功能 */ }
+  }
+
+  /**
    * 等 worker 攔到字幕清單。
    *
    * 不自己去猜網址、也不打 PLAY API——那條路試過八個版本都不通，而且 F1TV 有
@@ -2172,6 +2228,7 @@
     lastRaw = ''; lastSeenCaption = ''; everSawCaption = false; currentEn = '';
     // 換影片＝重新判斷一次注入有沒有成功，並清掉上一支的代碼統計
     injectChecked = false; injectSince = Date.now(); seenCodes.clear();
+    noSubShown = false;
     pending.clear(); requested.clear();
     clearTimeout(bundleRetryTimer); bundleAttempts = 0;
     observedNodes = new Set();
@@ -2253,6 +2310,7 @@
       mount();
       reposition();
       checkNoCaption();
+      checkNoSubtitleTrack();
       checkInjection();
       tickFreeUsage();
     }, STRUCT_MS);
@@ -2456,6 +2514,7 @@
     } else {
       L.push('錯誤代碼　：無');
     }
+    L.push(`字幕軌　　：${({ has: '有', none: '這支影片沒有官方字幕', unknown: '尚未判定' })[subtitleTrackVerdict()]}`);
     L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}　`
       + `放棄 ${state.dropped} 句${state.dropped ? '（已重試 3 次）' : ''}`);
     // 不是 0 就代表「攔到的東西不是字幕」。曾經因為 worker 把媒體分段
