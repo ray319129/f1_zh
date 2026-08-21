@@ -82,6 +82,12 @@
     }
     if (p.limit) bits.push(`限量 ${p.limit} 組`);
     if (p.vpn) bits.push('<b class="warn">觀看時需自備 VPN</b>');
+    // ⚠️ 共用帳號的兩個限制**一定要出現在收合狀態的卡片上**。
+    //    寫在展開後的商品說明裡等於沒寫——多數人不會展開，
+    //    而「買了才發現只能用網頁、還會被擠掉」是必然的客訴與退款。
+    if (p.shared) {
+      bits.push('<b class="warn">與他人共用帳號　·　僅限網頁端　·　高峰時段有機率被擠掉</b>');
+    }
     if (p.bundleWeek) bits.push('隨附一個比賽週的字幕翻譯');
     if (p.locked) bits.push('<b class="warn">目前無法購買</b>　' + esc(p.locked));
     // **划算度要說實話。** 賽季尾聲的整季票可能比一場一場買貴，

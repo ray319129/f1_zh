@@ -1290,7 +1290,19 @@ const PLANS = {
   //
   // ⚠️ **全部都必須標示「觀看時需自備 VPN」**：台灣訂閱 F1TV 需要 VPN，
   //    這是買家最容易忽略、事後最容易變成糾紛的一點。
-  svc_pro_5d: { desc: "代為完成 F1TV Pro 五天訂閱。Pro 方案包含：所有場次無廣告直播與隨選、車上鏡頭、車隊無線電、F2／F3／F1 學院／保時捷超級盃、比賽週末獨家節目、即時計時與遙測、輪胎使用與車手位置圖、延遲重播、車隊無線電精選、獨家節目與紀錄片。**不含** Multiview 多視角、4K UHD／HDR、六台裝置同時觀看。本方案不附贈字幕翻譯使用權。", label: 'F1TV Pro 代訂 5 天', price: 79, manual: true, vpn: true },
+  // ⚠️ **鍵名維持 svc_pro_5d 不改。** 商品內容從 Pro 改成 Premium 共用帳號，
+  //    但鍵名一改，既有訂單與授權記錄裡的 plan 就對不上——那是查不回來的資料。
+  //
+  // ⚠️ **這是唯一一個「共用帳號」的商品**，限制與其他代訂完全不同：
+  //    只能用網頁端、高峰期有機率被擠掉。這兩件事**必須在購買前講清楚**，
+  //    講不清楚就是把一筆客訴與一則負評賣給自己。
+  svc_pro_5d: {
+    desc: "代為開通 F1TV Premium 五天觀看權。**這是與他人共用的帳號**，與其他代訂方案不同，請務必先讀完以下三點：（1）**僅限網頁端觀看**，無法使用 App、電視或遊戲主機。（2）**高峰時段有機率被擠掉**——共用帳號有同時觀看人數上限，正賽等尖峰時段若人數已滿，可能無法進入或觀看中被登出，屆時請稍後再試。（3）**不附贈字幕翻譯使用權**，需另外購買比賽週通行證。Premium 方案內容：所有場次無廣告直播與隨選、Multiview 多視角、4K UHD／HDR、車上鏡頭、車隊無線電、即時計時與遙測、獨家節目與紀錄片。若您需要穩定、獨立、可在任何裝置觀看的帳號，請選擇一個月或一年的代訂方案。",
+    label: 'F1TV Premium 代訂 5 天（共用帳號）',
+    price: 79, manual: true, vpn: true,
+    // 購買頁要用它跳出額外的警告區塊，不能只靠使用者去讀商品說明
+    shared: true,
+  },
   svc_pro_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 個月', price: 329, manual: true, vpn: true, bundleWeek: true },
   svc_prem_1m_own: { desc: "代為完成訂閱，僅需提供您的 email。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Premium 代訂 1 個月', price: 699, manual: true, vpn: true, bundleWeek: true },
   svc_pro_1y_own: { desc: "與上者相同，但使用您自備的 F1TV 帳號完成訂閱。隨附一個比賽週的字幕翻譯使用權。", label: 'F1TV Pro 代訂 1 年', price: 2199, manual: true, vpn: true, bundleWeek: true },
@@ -5036,7 +5048,7 @@ async function routeAdmin(path, request, env, url) {
   // 而共用快取是所有人共用的——一句垃圾會顯示給每一個看那支影片的人。
   if (path === '/v1/admin/bundle/suspect' && m === 'GET') {
     const cid = String(url.searchParams.get('cid') || '').trim();
-    if (!/^\d{1,20}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
     const b = await readBundle(env, cid);
     const bad = [];
     for (const [en, zh] of Object.entries(b.lines || {})) {
@@ -5051,7 +5063,7 @@ async function routeAdmin(path, request, env, url) {
   if (path === '/v1/admin/bundle/purge' && m === 'POST') {
     const b0 = await request.json().catch(() => null);
     const cid = String((b0 && b0.cid) || '').trim();
-    if (!/^\d{1,20}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
     const keys = Array.isArray(b0.keys) ? b0.keys : [];
     if (!keys.length) return err('沒有指定要刪除的句子');
     // ⚠️ 讀→改→寫在 KV 上沒有 CAS（坑 #24）。這是後台的低頻操作，
@@ -5070,7 +5082,7 @@ async function routeAdmin(path, request, env, url) {
 
   if (path === '/v1/admin/bundle' && m === 'GET') {
     const cid = String(url.searchParams.get('cid') || '').trim();
-    if (!/^\d{1,20}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(cid)) return err('cid 格式不正確', 400, 'E10');
     const b = await readBundle(env, cid);
     return json({
       ok: true, cid, slug: b.slug || '', segCount: b.segCount || 0,
@@ -5712,6 +5724,8 @@ async function handleRequest(request, env) {
               // 比賽週通行證一場一張；要多站就選多個場次
               maxQty: 1,
               vpn: !!v.vpn,
+              // 共用帳號的限制要在卡片上跳出來，不能只寫在商品說明裡
+              shared: !!v.shared,
               desc: v.desc || '',
               bundleWeek: !!v.bundleWeek,
             };

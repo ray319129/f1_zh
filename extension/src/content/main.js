@@ -184,12 +184,27 @@
         if (new RegExp(site.contentIdPattern).test(location.pathname)) return;
       } catch (e) { /* 設定裡的正則壞掉就往下掃 */ }
     }
+    // ⚠️ **只找 `contentId=` 是不夠的。**
+    //
+    //    實測（2026-08-21 直播）：兩台裝置看同一場直播，一台的網址是
+    //    /detail/<id>/... 解析得到 cid，另一台解析不到，於是**整場的譯文
+    //    被寫進 misc 這個公用桶子**——與正片的重疊率 98.1%，
+    //    等於同一句話付了兩次錢，而且不會有任何錯誤訊息。
+    //
+    //    所以三種形式都掃：查詢參數、/detail/ 路徑、以及頁面自己的資料。
     try {
       const entries = performance.getEntriesByType('resource');
       for (let i = entries.length - 1; i >= 0; i--) {
-        const m = entries[i].name.match(/[?&]contentId=(\d+)/i);
+        const u = entries[i].name;
+        const m = u.match(/[?&]contentId=(\d+)/i) || u.match(/\/detail\/(\d+)/);
         if (m) { seenContentId = m[1]; return; }
       }
+    } catch (e) { /* 不影響主要功能 */ }
+    // 最後一招：頁面自己的資料（Next.js 的 __NEXT_DATA__ 之類）
+    try {
+      const raw = (document.getElementById('__NEXT_DATA__') || {}).textContent || '';
+      const m = raw.match(/"contentId"\s*:\s*"?(\d{6,})/);
+      if (m) { seenContentId = m[1]; return; }
     } catch (e) { /* 不影響主要功能 */ }
   }
 
@@ -476,6 +491,7 @@
     'PL-C05': '注入失敗 —— 攔不到串流，只能逐句翻譯（較慢較貴）',
     'PL-C06': '這支影片不在免費範圍內（不是故障）',
     'PL-C07': '免費額度已用完（不是故障）',
+    'PL-C08': '解析不出影片編號 —— 譯文無法存進這支影片的共用快取',
   };
   // 這次觀看出現過哪些代碼，診斷報告要帶上去
   const seenCodes = new Map();
@@ -1120,9 +1136,39 @@
     flushPending();
   }
 
+  /**
+   * 還沒解析出 cid 時，先把句子留在佇列裡。
+   *
+   * ⚠️ **沒有 cid 的請求會被丟進 `misc` 這個所有影片共用的桶子。**
+   *    後果是：這支影片的共用快取拿不到那些句子，下一個觀看者要重付一次；
+   *    而同一場如果有另一台裝置解析得到 cid，同一句話就會**被翻兩次、付兩次錢**。
+   *    實測過，重疊率 98.1%。
+   *
+   * ⚠️ 但**不能無限期等**——等不到就完全沒有字幕，那比多付錢嚴重得多。
+   *    所以只等 CID_WAIT_MS，之後照樣送出（用 misc），但會記一筆警告與代碼，
+   *    讓它從「安靜地多花錢」變成診斷報告上看得到的一行。
+   */
+  const CID_WAIT_MS = 15000;
+  let noCidSince = 0;
+
   async function flushPending() {
     pendingTimer = null;
     if (!pending.size) return;
+
+    if (!contentId) {
+      if (!noCidSince) noCidSince = Date.now();
+      if (Date.now() - noCidSince < CID_WAIT_MS) {
+        state.heldNoCid = (state.heldNoCid || 0) + pending.size;
+        scheduleFlush();                     // 等一下再試，句子留在佇列裡
+        return;
+      }
+      if (!state.noCidWarned) {
+        state.noCidWarned = true;
+        plErr('PL-C08', '譯文會寫進公用快取，這支影片的下一位觀看者要重新付費');
+      }
+    } else {
+      noCidSince = 0;
+    }
     // 最後一道。佇列可能是額度用完**之前**排進來的，送出去仍然要花錢。
     // 三道防線（ingestVtt／handleCaption／這裡）刻意重複——
     // 每一條進入佇列的路都要各自擋，只擋入口會漏掉未來新增的路徑。
@@ -2530,6 +2576,11 @@
       L.push('錯誤代碼　：無');
     }
     L.push(`字幕軌　　：${({ has: '有', none: '這支影片沒有官方字幕', unknown: '尚未判定' })[subtitleTrackVerdict()]}`);
+    // ⚠️ 這一行是為了讓「安靜地多付錢」浮出來。cid 解析不到時，譯文會落進
+    //    所有影片共用的 misc 桶子，這支影片的下一位觀看者要重新付費。
+    L.push(`影片編號　：${contentId || '（尚未解析出來）'}`
+      + `${state.heldNoCid ? `　※ 曾因沒有編號而暫留 ${state.heldNoCid} 句` : ''}`
+      + `${state.noCidWarned ? '　⚠ 最後仍以公用快取送出' : ''}`);
     L.push(`即時翻譯　：${state.translated} 句　錯誤 ${state.errors}　`
       + `放棄 ${state.dropped} 句${state.dropped ? '（已重試 3 次）' : ''}`);
     // 不是 0 就代表「攔到的東西不是字幕」。曾經因為 worker 把媒體分段
