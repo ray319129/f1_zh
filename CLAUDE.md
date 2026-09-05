@@ -11,9 +11,9 @@
 
 | 產物 | 角色 | 版本 |
 |---|---|---|
-| `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取，v4.9.0 起可自動跑整個佇列） | v4.10.5 |
-| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v5.9 |
-| `extension/` | MV3 擴充功能，**商品化主體** | v0.21.2 |
+| `f1tv-zh-subtitles.user.js` | Tampermonkey 版；同時當**管理員收割工具**（賽前把譯文灌進共用快取，v4.9.0 起可自動跑整個佇列） | v4.10.6 |
+| `backend/` | Cloudflare Workers + KV，**共用譯文快取**、授權閘門、金流、賽程 | v5.10 |
+| `extension/` | MV3 擴充功能，**商品化主體** | v0.22.0 |
 
 ## 文件地圖 — 先讀這些，不要重新推導
 
@@ -105,6 +105,7 @@
 |---|---|---|---|
 | `normKey()` | 3（backend／extension／userscript） | 同一句算出不同快取鍵，共用快取整個失效 | `node tools/check-normkey.js` |
 | `SYSTEM_PROMPT` | 2（backend／userscript） | 兩個產物翻出不同結果；低於 4,096 tokens 還會讓 prompt 快取失效 | `node tools/check-prompt.js` |
+| 譯文守門（`ROLE_BREAK`／合理性檢查） | 3（backend／extension／userscript） | 某一邊擋掉、另一邊放行；模型的自言自語會顯示給使用者 | `node tools/check-guard.js` |
 | userscript 版本號 | 2（`@version`／`const VERSION`） | **診斷報告會說謊**——回報的版本不是實際跑的版本，排查全部被誤導 | `node tools/check-userscript-version.js` |
 
 userscript 必須是單一檔案、backend 由 wrangler 打包，沒辦法共用模組，只能靠檢查工具擋漂移。
