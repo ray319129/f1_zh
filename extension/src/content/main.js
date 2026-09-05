@@ -80,6 +80,7 @@
     yieldCount: 0, yieldMs: 0,   // 為了讓路給影片而暫停收割的次數與總時間
     gaps: 0, lastGap: null,        // 字幕中途缺漏（不含「本來就沒旁白」）
     badLines: 0,                   // 長度異常而被略過的「字幕」——不是 0 就代表攔錯東西了
+    blocked: 0,                    // 合理性檢查擋下的譯文（模型跳出角色）。**要看得到，否則過度攔截無從發現**
     hits: 0, isLive: false, harvestDone: false,
   };
 
@@ -1103,7 +1104,22 @@
    * 這不影響即時性：收割中的句子本來就是未來 40 分鐘才會用到的。
    */
   /** 寫入本機快取並維持上限。切換影片時 memo 刻意不清（重複用語可互相受惠） */
+  /**
+   * 寫進 memo。**所有譯文都經過這裡**，所以合理性檢查放這裡就漏不掉：
+   * 逐句翻譯的回應、共用快取的 bundle、整軌預抓的結果，三條路都會呼叫它。
+   *
+   * ⚠️ **後端已經擋過一次，這裡仍然要擋。**
+   *    (1) memo 裡可能還留著上一版放行的壞句子；
+   *    (2) 共用快取裡有「守門收緊之前」寫進去的舊資料；
+   *    (3) 後端哪天改壞了，這裡是使用者與模型內心話之間最後一層。
+   *    誤判的代價只是那一句沒有中文，英文原字幕仍然在畫面上。
+   */
   function remember(k, zh) {
+    if (self.PL.plausible && !self.PL.plausible(k, zh)) {
+      state.blocked = (state.blocked || 0) + 1;
+      dbg('⛔ 擋下不合理的譯文：' + String(zh).slice(0, 60));
+      return;
+    }
     memo.set(k, zh);
     if (memo.size <= MEMO_MAX) return;
     // 淘汰最舊的，但**跳過這支影片還會用到的鍵**。
@@ -2317,7 +2333,7 @@
     state.manifests = 0;
     state.harvestSkipped = false;
     state.dropped = 0;
-    state.badLines = 0; state.gaps = 0; state.lastGap = null;
+    state.badLines = 0; state.blocked = 0; state.gaps = 0; state.lastGap = null;
     state.yieldCount = 0; state.yieldMs = 0;
     state.serverCount = -1;
     state.playlistSegs = 0; state.segFetched = 0; state.segFailed = 0;
@@ -2595,6 +2611,10 @@
       + `container_gone=找不到字幕容器、silent=本來就沒旁白（正常）`);
     L.push(`長度異常略過：${state.badLines || 0} 句`
       + (state.badLines ? `　⚠ 不該大於 0，代表攔截層抓到了不是字幕的東西` : ''));
+    // ⚠️ **這個數字一定要出現在報告裡。** 合理性檢查會讓那一句沒有中文字幕，
+    //    過度攔截的症狀是「偶爾少一句」——除非看得到次數，否則永遠查不出來。
+    L.push(`合理性檢查擋下：${state.blocked || 0} 句`
+      + (state.blocked ? `　（模型跳出角色，該句只顯示英文）` : ''));
     L.push(`待送出　　：${pending.size} 句　飛行中 ${inflight} 個請求（上限 ${MAX_INFLIGHT}）`);
     L.push('');
     L.push('──── 設定 ────');

@@ -347,12 +347,14 @@
     <div id="bnCards" class="cards"></div>
     <div class="bar">
       <input id="bnCid" size="18" placeholder="contentId">
+      <input id="bnFind" size="16" placeholder="搜尋（中英皆可）">
       <button id="bnView" class="secondary">檢視譯文</button>
       <button id="sq-go" class="secondary">掃描可疑譯文</button>
     </div>
     <p class="hint">抽查翻譯品質用。也可以用 <code>node tools/fetch-fixtures.js</code>
       把幾支完整的影片抓下來當固定測試資料。</p>
     <pre id="bnLines" class="full" hidden></pre>
+    <div class="bar"><button id="bnMore" class="secondary" hidden>載入更多</button></div>
     <div id="sq-out"></div>
     <div id="bnOut"></div>
   </div>

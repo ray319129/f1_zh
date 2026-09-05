@@ -1143,7 +1143,29 @@ const INJECTION_HINT = /ignore (all |the )?(previous|above)|system prompt|you ar
  *    這裡是最後一道：寧可那一句沒有譯文（畫面空白），
  *    也絕不能把模型的自言自語當成字幕顯示給付費使用者看。
  */
-const ROLE_BREAK = /(注：|註：)|知識庫|請提供|我會(直接)?翻譯|作為\s*AI|我(無法|不能|沒有收到)|以下是|翻譯如下|原文是/;
+//
+// ⚠️ **這份規則有三份複本，必須一字不差**（backend／extension／userscript）。
+//    對不起來的後果：某一邊擋掉、另一邊放行，同一句話在不同產物上表現不同，
+//    而且不報錯。`node tools/check-guard.js` 會擋。
+//
+// ⚠️ **規則放寬過一次，是刻意的。** 原本有 `我(無法|不能|沒有收到)`，
+//    那在 F1 轉播裡是**極常見的正常譯文**——「我無法相信」「我不能再推了」
+//    都是車手無線電的日常。以前那條只擋「寫進共用快取」，誤判的代價是重翻一次；
+//    現在它同時擋「顯示給使用者」，誤判的代價變成**那一句沒有中文字幕**。
+//    代價變了門檻就要跟著變：留下的每一條都必須是轉播裡幾乎不可能出現的話。
+//    `以下是`／`原文是` 同理，改成只有出現在句首才算。
+const ROLE_BREAK = new RegExp([
+  '[（(]\\s*[注註][：:]',
+  '^[注註][：:]',
+  '知識庫',
+  '(作為|身為)\\s*(一個)?\\s*AI',
+  '語言模型',
+  '我(會|可以)(直接)?翻譯',
+  '(無法|不便|不予)翻譯',
+  '請提供[^。]{0,20}(原文|內容|片段|文字|字幕|句子)',
+  '^(以下是|這是)[^。]{0,8}(翻譯|譯文)',
+  '^(翻譯如下|譯文如下|中文翻譯如下)',
+].join('|'));
 
 function plausibleTranslation(en, zh) {
   if (typeof zh !== 'string') return false;
@@ -4200,10 +4222,16 @@ async function handlePostSubs(request, env) {
   }
   if (slug && !bundle.slug) bundle.slug = slug;
   let added = 0;
+  let rejected = 0;
   for (const [rawKey, zh] of Object.entries(lines)) {
     if (typeof zh !== 'string' || !zh) continue;
     const k = normKey(rawKey);
     if (!k) continue;
+    // ⚠️ **收割上傳也要過同一道門。**
+    //    這條路需要 ADMIN_TOKEN，所以以前直接信任——但它是**大量、未經過目**的
+    //    寫入，而共用快取是所有人共用的：一句垃圾會顯示給每一個看那支影片的人。
+    //    後台的「掃描可疑譯文」之所以存在，就是因為這道門以前沒關。
+    if (!plausibleTranslation(rawKey, zh)) { rejected++; continue; }
     if (bundle.lines[k] === zh) continue;
     if (Object.keys(bundle.lines).length >= BUNDLE_MAX_LINES) break;
     bundle.lines[k] = zh;
@@ -4211,7 +4239,7 @@ async function handlePostSubs(request, env) {
   }
   await writeBundle(env, String(cid), bundle);
   return json({
-    ok: true, cid: String(cid), added,
+    ok: true, cid: String(cid), added, rejected,
     total: Object.keys(bundle.lines).length,
     segCount: bundle.segCount || 0,
   });
@@ -4502,11 +4530,15 @@ async function handleTranslate(request, env, ip, auth) {
       for (const m of chunk) {
         const zh = out[m.en];
         if (!zh) continue;
-        result[m.k] = zh;             // 請求者拿得到（他自己愛看什麼是他的事）
-        translated++;
-        // 但**不合理的譯文不進共用快取**（S9）。攻擊者能用 prompt injection
-        // 讓輸出受控，再寫進他指定的 cid 汙染所有後續觀看者。
+        // ⚠️ **不合理的譯文連請求者都不給。**
+        //
+        //    這裡原本寫「請求者拿得到（他自己愛看什麼是他的事）」，只擋寫入快取。
+        //    那句話是錯的：請求者不是在「選擇」什麼，他是一個正在看比賽的付費
+        //    使用者，而模型的自言自語會直接出現在他畫面上——**實際發生過兩次**。
+        //    寧可那一句沒有中文（英文原字幕還在），也不要顯示模型的內心話。
         if (!plausibleTranslation(m.en, zh)) { rejected++; continue; }
+        result[m.k] = zh;
+        translated++;
         bundle.lines[m.k] = zh;
         added[m.k] = zh;
       }

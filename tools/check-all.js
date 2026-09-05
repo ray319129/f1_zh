@@ -24,6 +24,7 @@ const SYNTAX = [
 const CHECKS = [
   ['userscript 兩處版本號一致', 'tools/check-userscript-version.js'],
   ['normKey 三份一致', 'tools/check-normkey.js'],
+  ['譯文守門三份一致且套在每條路徑上', 'tools/check-guard.js'],
   ['SYSTEM_PROMPT 兩份一致 + 快取門檻', 'tools/check-prompt.js'],
   ['事件日誌沒有被丟掉的參數', 'tools/check-logcalls.js'],
   ['擴充功能可實際執行（抓 --check 抓不到的）', 'tools/smoke-extension.js'],

@@ -708,25 +708,35 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : fail('已結束的場次竟然還能購買');
 
     // (5) 結帳必須指定場次，且不可以買已結束的
+    //
+    // ⚠️ **這一段不可以寫死場次代碼。** 上面的狀態判斷用的是凍結的 now，
+    //    但 quoteCart 讀的是真實時鐘——寫死 '2026-12' 的話，那一站一跑完
+    //    整組測試就會紅，而且錯誤訊息（q.lines[0] is undefined）
+    //    跟真正的原因（那站結束了）毫無關係。**會過期的測試等於沒有測試。**
+    const openGp = A.gpList().find((g) => A.gpStatus(g) !== 'finished');
+    const doneGp = A.gpList().find((g) => A.gpStatus(g) === 'finished');
+    const openId = openGp ? A.gpId(openGp) : null;
+    const openName = openGp ? (openGp.name || '') : '';
+    const laterGp = A.gpList().filter((g) => A.gpStatus(g) !== 'finished')[4];
     const envQ = { SUBS: { get: async () => null, put: async () => {}, list: async () => ({ keys: [], list_complete: true }) } };
     (await A.quoteCart(envQ, [{ key: 'week', qty: 1 }], {})).error
       ? ok('沒有指定場次時拒絕結帳')
       : fail('沒有指定場次竟然可以結帳 —— 不知道賣的是哪一場');
-    (await A.quoteCart(envQ, [{ key: 'week', gp: '2026-10', qty: 1 }], {})).error
+    (!doneGp || (await A.quoteCart(envQ, [{ key: 'week', gp: A.gpId(doneGp), qty: 1 }], {})).error)
       ? ok('已結束的場次拒絕結帳')
       : fail('已結束的場次竟然可以結帳');
 
-    const q = await A.quoteCart(envQ, [{ key: 'week', gp: '2026-12', qty: 1 }], {});
-    q.windows && q.windows.length === 1 && q.gpIds[0] === '2026-12'
+    const q = await A.quoteCart(envQ, [{ key: 'week', gp: openId, qty: 1 }], {});
+    q.windows && q.windows.length === 1 && q.gpIds[0] === openId
       ? ok('購買單站：回傳一段區間與對應的場次代碼')
-      : fail('購買單站的區間不正確', JSON.stringify(q.windows));
-    /荷蘭/.test(q.lines[0].label)
+      : fail('購買單站的區間不正確', q.error || JSON.stringify(q.windows));
+    q.lines && q.lines[0] && q.lines[0].label.includes(openName)
       ? ok('購物車顯示的是場次名稱，不是方案名稱')
-      : fail('購物車顯示的名稱不對', q.lines[0].label);
+      : fail('購物車顯示的名稱不對', (q.lines && q.lines[0] && q.lines[0].label) || q.error);
 
     // (6) 跳著買：中間的空檔不可以送出去
     const jump = await A.quoteCart(envQ,
-      [{ key: 'week', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-17', qty: 1 }], {});
+      [{ key: 'week', gp: openId, qty: 1 }, { key: 'week', gp: A.gpId(laterGp), qty: 1 }], {});
     jump.windows && jump.windows.length === 2
       ? ok('跳著買：產生兩段獨立的區間（中間不送）')
       : fail('跳著買的區間被併成一段 —— 中間那幾站等於白送', JSON.stringify(jump.windows));
@@ -744,16 +754,17 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
 
     // (7) 連續買要併成一段（使用者感受上那是一整段）
     const cont = await A.quoteCart(envQ,
-      [{ key: 'week', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-13', qty: 1 }], {});
-    cont.windows.length === 1
+      [{ key: 'week', gp: openId, qty: 1 },
+        { key: 'week', gp: A.gpId(A.gpList().filter((g) => A.gpStatus(g) !== 'finished')[1]), qty: 1 }], {});
+    cont.windows && cont.windows.length === 1
       ? ok('連續購買：兩段合併成一整段')
-      : fail('連續購買沒有合併', JSON.stringify(cont.windows));
+      : fail('連續購買沒有合併', cont.error || JSON.stringify(cont.windows));
 
     // (8) 同一場買兩張沒有意義，數量必須夾成 1
-    const dup = await A.quoteCart(envQ, [{ key: 'week', gp: '2026-12', qty: 5 }], {});
-    dup.lines[0].qty === 1
+    const dup = await A.quoteCart(envQ, [{ key: 'week', gp: openId, qty: 5 }], {});
+    dup.lines && dup.lines[0] && dup.lines[0].qty === 1
       ? ok('同一場最多一張（買兩張不會延長任何東西，只是收兩次錢）')
-      : fail('同一場竟然可以買多張', String(dup.lines[0].qty));
+      : fail('同一場竟然可以買多張', dup.error || String(dup.lines[0].qty));
   }
 
 
@@ -867,7 +878,8 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       ? ok('代訂（附贈一週）：主方案是 week_svc，不是代訂方案本身')
       : fail('代訂（附贈一週）：主方案是 ' + onlySvc.primary + ' —— 會發出無期限授權');
 
-    const noBundle = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 1 }], {});
+    const openGp3 = A.gpList().find((g) => A.gpStatus(g) !== 'finished');
+    const noBundle = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: A.gpId(openGp3), qty: 1 }], {});
     noBundle.primary === 'svc_none'
       ? ok('代訂（不附贈）：主方案是 svc_none')
       : fail('代訂（不附贈）：主方案是 ' + noBundle.primary);
@@ -884,26 +896,30 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       : fail('svc_none 竟然還沒到期');
 
     // 混合購物車：有正常方案時，主方案還是那個正常方案
-    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 1 }, { key: 'week', gp: '2026-12', qty: 1 }], {});
+    const mixed = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: A.gpId(openGp3), qty: 1 },
+      { key: 'week', gp: A.gpId(openGp3), qty: 1 }], {});
     mixed.primary === 'week'
       ? ok('混合購物車：主方案取非代訂的那個')
       : fail('混合購物車：主方案是 ' + mixed.primary);
 
+    // ⚠️ 同樣不可以寫死場次代碼：那一站跑完之後整組測試就會紅（見 (5) 的說明）
+    const openGp2 = A.gpList().find((g) => A.gpStatus(g) !== 'finished');
+    const doneGp2 = A.gpList().find((g) => A.gpStatus(g) === 'finished');
     // 共用帳號的代訂必須指定場次——不指定的話，訂單進來時不知道要開哪個週末
     (await A.quoteCart(envQ, [{ key: 'svc_pro_5d', qty: 1 }], {})).error
       ? ok('共用帳號的代訂：沒有指定場次時拒絕結帳')
       : fail('共用帳號的代訂沒指定場次竟然可以結帳 —— 人工作業時不知道要開哪個週末');
-    (await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-10', qty: 1 }], {})).error
+    (!doneGp2 || (await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: A.gpId(doneGp2), qty: 1 }], {})).error)
       ? ok('共用帳號的代訂：已結束的場次拒絕結帳')
       : fail('共用帳號的代訂竟然可以買已結束的場次');
     {
-      const q5 = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: '2026-12', qty: 5 }], {});
-      q5.lines[0].qty === 1
+      const q5 = await A.quoteCart(envQ, [{ key: 'svc_pro_5d', gp: A.gpId(openGp2), qty: 5 }], {});
+      q5.lines && q5.lines[0] && q5.lines[0].qty === 1
         ? ok('共用帳號的代訂：一場一份（數量被夾成 1）')
-        : fail('共用帳號的代訂竟然可以買多份', String(q5.lines[0].qty));
-      /荷蘭/.test(q5.lines[0].label)
+        : fail('共用帳號的代訂竟然可以買多份', q5.error || String(q5.lines[0].qty));
+      q5.lines && q5.lines[0] && q5.lines[0].label.includes(openGp2.name)
         ? ok('共用帳號的代訂：購物車顯示涵蓋哪一場')
-        : fail('共用帳號的代訂沒有顯示場次', q5.lines[0].label);
+        : fail('共用帳號的代訂沒有顯示場次', (q5.lines && q5.lines[0] && q5.lines[0].label) || q5.error);
     }
     // 一個月的代訂可以買多份，但上限三個月
     {
@@ -969,7 +985,12 @@ const req = (headers) => ({ headers: { get: (k) => headers[k.toLowerCase()] || n
       ['DRS enabled', '可以開 DRS', true, '縮寫'],
       ['and Norris takes the lead here at turn one', 'Norris 在一號彎搶下領先', true, '一般長句'],
       ['what a lap', '以下是翻譯：真是精彩的一圈', false, '助理口吻'],
-      ['who is that', '我無法判斷那是誰', false, '自稱無法'],
+      // ⚠️ **`我無法…` 已經刻意不再攔截。**
+      //    守門原本只擋「寫進共用快取」，誤判的代價是重翻一次；
+      //    現在它同時擋「顯示給使用者」，誤判的代價是**那一句沒有中文字幕**。
+      //    而「我無法相信」「我不能再推了」是車手無線電的日常用語——
+      //    攔它等於在正賽最激動的時刻把字幕挖掉。見 tools/check-guard.js。
+      ['who is that', '我無法判斷那是誰', true, '「我無法」是正常譯文，不可攔'],
       ['tell me the gap', '（注：這句需要更多上下文）', false, '加註解'],
     ];
     const bad = [];
