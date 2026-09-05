@@ -124,6 +124,38 @@ html.includes('/v1/admin/plans')
   }
 }
 
+// --- 4c. 每一個控制項都必須有人接 -------------------------------------------
+//
+// ⚠️ **實際發生過（2026-08-22）：加了「搜尋」輸入框與「載入更多」按鈕，
+//    但接手的那段 JS 因為補丁腳本失敗而沒有寫進去。** 頁面照常渲染、
+//    Console 一片乾淨，只是那兩個控制項按了完全沒有反應——
+//    使用者看到的是「你說的新功能在哪裡？」
+//
+// ⚠️ **這支檢查自己也踩過坑：** 第一版的正則寫了 \b，而它經過補丁腳本時
+//    被寫成真正的**倒退鍵字元**（U+0008），於是一個控制項都掃不到、
+//    dead 永遠是空的、檢查永遠是綠的。**掃描型的檢查一定要驗自己的分母**——
+//    掃到 0 個目標時必須紅燈，否則它只是一行讓人安心的謊話。
+{
+  const scriptAt = html.indexOf('<script>');
+  const scriptSrc = scriptAt >= 0 ? html.slice(scriptAt) : '';
+  const dead = [];
+  let scanned = 0;
+  const re = /<(button|input|select|textarea)\s[^>]*id="([\w-]+)"/g;
+  let m;
+  while ((m = re.exec(html))) {
+    scanned++;
+    const id = m[2];
+    if (!new RegExp("['\"`]" + id + "['\"`]").test(scriptSrc)) dead.push(m[1] + '#' + id);
+  }
+  if (scanned < 20) {
+    bad(`只掃到 ${scanned} 個控制項 —— 後台明明有幾十個，代表這支檢查本身壞了`);
+  } else if (dead.length) {
+    bad(`這些控制項在 JS 裡找不到，按了不會有任何反應：${dead.join('、')}`);
+  } else {
+    ok(`${scanned} 個按鈕與輸入框都有 JS 接手（沒有死掉的控制項）`);
+  }
+}
+
 // --- 5. 不可以把 ADMIN_TOKEN 存進 localStorage ------------------------------
 /localStorage[^\n]*(tok|token)/i.test(html)
   ? bad('後台把權杖存進 localStorage —— 任何能碰到這台電腦的人都拿得到管理權限')

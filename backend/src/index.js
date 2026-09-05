@@ -1167,6 +1167,39 @@ const ROLE_BREAK = new RegExp([
   '^(翻譯如下|譯文如下|中文翻譯如下)',
 ].join('|'));
 
+/**
+ * 沒有中文的譯文，什麼時候仍然是對的。
+ *
+ * ⚠️ **這條規則是用線上 12 萬句實際譯文校準出來的，不要憑感覺改。**
+ *
+ *    原本只有一句「沒有中文就擋掉」，理由是「純英文回來代表模型照抄」。
+ *    實測掃過全部 119 支影片、122,017 句之後發現：**被它擋下的 965 句裡，
+ *    有 768 句是正確的譯文**——`hamilton → Hamilton`、`12 → 12`、
+ *    `albert park → Albert Park`。我們自己的 SYSTEM_PROMPT 就規定
+ *    人名、隊名、彎名、輪胎代號一律保留原文，所以**正確的譯文本來就沒有中文**。
+ *
+ *    這條規則以前只擋「寫進共用快取」，誤判不痛不癢；現在它同時擋「顯示」，
+ *    誤判就是把字幕挖掉——而名字類的字幕在轉播裡非常多。
+ *
+ * 放行的條件（三選一）：
+ *   1. 輸出的字母數字是來源的子集，且來源不超過 5 個詞（人名／隊名／數字）
+ *   2. 同上但輸出帶中文標點（、，。）——那證明模型是刻意排版，不是照抄
+ *   3. 來源很短且輸出很短（formula one → F1）
+ *
+ * 仍然擋下的（實測 197 句，逐句看過）：
+ *   · 153 句只剩標點（`pitlane → 。`）——那是壞掉
+ *   · 44 句是「整句只翻出一個名字」（`he had a great run in 99 → Eddie Irvine`）
+ *     ——內容真的掉了，顯示英文原字幕比顯示半句好
+ */
+function latinEchoOk(en, t) {
+  const a = String(en).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const b = String(t).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!b) return false;                       // 只剩標點：壞掉了
+  const words = String(en).trim().split(/\s+/).filter(Boolean).length;
+  if (!a.includes(b)) return b.length <= 4 && words <= 3;
+  return words <= 5 || /[、，。：；！？「」（）]/.test(t);
+}
+
 function plausibleTranslation(en, zh) {
   if (typeof zh !== 'string') return false;
   const t = zh.trim();
@@ -1179,7 +1212,8 @@ function plausibleTranslation(en, zh) {
   if (INJECTION_HINT.test(t)) return false;
   if (ROLE_BREAK.test(t)) return false;
   // 正常譯文一定有中文；純英文回來通常代表模型照抄或被帶偏
-  if (!/[\u4e00-\u9fff]/.test(t)) return false;
+  // 沒有中文時，只有「來源本身就是人名／隊名／數字」才放行（見 latinEchoOk）
+  if (!/[\u4e00-\u9fff]/.test(t) && !latinEchoOk(en, t)) return false;
   return true;
 }
 
@@ -3997,6 +4031,24 @@ async function handleComplete(request, env) {
   const lineCount = Object.keys(bundle.lines || {}).length;
   // 沒有譯文就不該標記完整——否則別人會跳過預抓卻什麼也拿不到
   if (!lineCount) return json({ ok: false, reason: 'bundle 沒有譯文，不標記', segCount: bundle.segCount });
+  // ⚠️ **句數與分段數不成比例時也不可以標記完整。**
+  //
+  //    原本只檢查「有沒有譯文」，於是一支 1,320 段卻只有 247 句的 bundle
+  //    也會被標成完整（線上實測抓到 3 支，最低 0.19 句/段）。
+  //    後果是**所有後續觀看者都跳過整軌預抓**，退回逐句翻譯（約 5 倍成本），
+  //    而那份殘缺的快取**永遠不會有人再去補**——沒有人會重新收割一支
+  //    已經標記完整的影片。不報錯，只是一直花錢。
+  //
+  //    門檻用線上 32 支已完整的影片校準：健康的落在 1.3~2.4 句/段，
+  //    安靜的練習賽最低 0.70，壞掉的是 0.19/0.33/0.36。取 0.5 兩邊都安全。
+  const MIN_LINES_PER_SEG = 0.5;
+  if (lineCount < segCount * MIN_LINES_PER_SEG) {
+    return json({
+      ok: false,
+      reason: `句數與分段數不成比例（${lineCount} 句 / ${segCount} 段），可能收割不完整，不標記`,
+      segCount: bundle.segCount, lineCount,
+    });
+  }
   if (bundle.segCount >= segCount) {
     return json({ ok: true, unchanged: true, segCount: bundle.segCount, lineCount });
   }

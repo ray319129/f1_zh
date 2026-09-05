@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PitLingo — F1TV 即時繁中字幕
 // @namespace    f1tv-zh-subs
-// @version      4.10.6
+// @version      4.10.7
 // @description  攔截 F1TV 字幕，經 Claude Haiku 翻成繁體中文雙語顯示。VTT 前瞻預譯 + 批次翻譯 + prompt caching
 // @author       you
 // @match        https://f1tv.formula1.com/*
@@ -680,7 +680,7 @@ sorry mate → 抱歉
   // 而那是我們排查問題的第一個依據。
   //
   // 由 `tools/check-userscript-version.js` 把關。
-  const VERSION = '4.10.6';
+  const VERSION = '4.10.7';
   const eventLog = [];
   function logEvent(level, msg) {
     const line = `[${new Date().toISOString().slice(11, 23)}] ${level.toUpperCase().padEnd(4)} ${msg}`;
@@ -757,6 +757,39 @@ sorry mate → 抱歉
 
   const INJECTION_HINT = /ignore (all |the )?(previous|above)|system prompt|you are now|<\|.*?\|>|assistant:|忽略(上述|先前)|你現在是/i;
 
+  /**
+   * 沒有中文的譯文，什麼時候仍然是對的。
+   *
+   * ⚠️ **這條規則是用線上 12 萬句實際譯文校準出來的，不要憑感覺改。**
+   *
+   *    原本只有一句「沒有中文就擋掉」，理由是「純英文回來代表模型照抄」。
+   *    實測掃過全部 119 支影片、122,017 句之後發現：**被它擋下的 965 句裡，
+   *    有 768 句是正確的譯文**——`hamilton → Hamilton`、`12 → 12`、
+   *    `albert park → Albert Park`。我們自己的 SYSTEM_PROMPT 就規定
+   *    人名、隊名、彎名、輪胎代號一律保留原文，所以**正確的譯文本來就沒有中文**。
+   *
+   *    這條規則以前只擋「寫進共用快取」，誤判不痛不癢；現在它同時擋「顯示」，
+   *    誤判就是把字幕挖掉——而名字類的字幕在轉播裡非常多。
+   *
+   * 放行的條件（三選一）：
+   *   1. 輸出的字母數字是來源的子集，且來源不超過 5 個詞（人名／隊名／數字）
+   *   2. 同上但輸出帶中文標點（、，。）——那證明模型是刻意排版，不是照抄
+   *   3. 來源很短且輸出很短（formula one → F1）
+   *
+   * 仍然擋下的（實測 197 句，逐句看過）：
+   *   · 153 句只剩標點（`pitlane → 。`）——那是壞掉
+   *   · 44 句是「整句只翻出一個名字」（`he had a great run in 99 → Eddie Irvine`）
+   *     ——內容真的掉了，顯示英文原字幕比顯示半句好
+   */
+  function latinEchoOk(en, t) {
+    const a = String(en).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const b = String(t).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!b) return false;                       // 只剩標點：壞掉了
+    const words = String(en).trim().split(/\s+/).filter(Boolean).length;
+    if (!a.includes(b)) return b.length <= 4 && words <= 3;
+    return words <= 5 || /[、，。：；！？「」（）]/.test(t);
+  }
+
   function plausible(en, zh) {
     if (typeof zh !== 'string') return false;
     const t = zh.trim();
@@ -764,7 +797,8 @@ sorry mate → 抱歉
     if (t.length > Math.max(60, String(en || '').length * 2)) return false;
     if (INJECTION_HINT.test(t)) return false;
     if (ROLE_BREAK.test(t)) return false;
-    if (!/[\u4e00-\u9fff]/.test(t)) return false;
+    // 沒有中文時，只有「來源本身就是人名／隊名／數字」才放行（見 latinEchoOk）
+    if (!/[\u4e00-\u9fff]/.test(t) && !latinEchoOk(en, t)) return false;
     return true;
   }
 
@@ -2363,6 +2397,11 @@ sorry mate → 抱歉
   const HQ_SETTLE_MS = 8000;      // 頁面載入後先等播放器起來
   const HQ_POLL_MS = 3000;
   const HQ_MAX_MS = 15 * 60000;   // 單支影片最多花這麼久，避免卡死整個佇列
+  // 等這麼久還沒有字幕播放清單，才敢認定「這支沒有字幕」。
+  // 太短會把「播放器還沒起來」誤判成「沒有字幕」，然後整個佇列每支只跑幾秒。
+  const HQ_NOSUB_MS = 90000;
+  // 這一頁是什麼時候載入的。hqDone() 要靠它分辨「還沒好」與「真的沒有」。
+  const hqPageAt = Date.now();
 
   /**
    * 一筆佇列資料合不合法。
@@ -2604,8 +2643,19 @@ sorry mate → 抱歉
     if (harvestInFlight) return false;
     if (prefetchQueue.length) return false;
     try { if (pendingUpload().n > 0) return false; } catch (e) { /* 沒設 token 就略過 */ }
-    // 完全沒抓到東西也算結束（可能是沒有字幕的影片），但要能分辨
-    return stats.segFetched > 0 || stats.playlistSegs === 0;
+    // ⚠️ **`playlistSegs === 0` 不等於「這支沒有字幕」。**
+    //    它同時也等於「播放清單還沒被找到」——而那在頁面剛載入的前幾十秒是常態
+    //    （F1TV 的播放器要先載約 7MB 的 WASM）。舊寫法在第一次 tick
+    //    （8 秒 settle + 3 秒 poll）就會判定完成然後跳下一支，
+    //    整個佇列會**每支只收割開頭一小段**——不報錯，而且事後只看得到
+    //    一堆「部分」的 bundle，看不出是被提早放棄的。
+    //    （線上實測：2026-08-17 那次批次跑，20 支影片各停在約 195 句。）
+    //
+    // ⚠️ `segFetched > 0` 也不對——那是「抓到至少一段」，不是「抓完」。
+    //    要標記 segCount 讓別人跳過預抓，前提是這一支**真的整軌抓完了**。
+    if (stats.playlistSegs > 0) return stats.segFetched >= stats.playlistSegs;
+    // 還沒有播放清單：等夠久才敢說「這支沒有字幕」。
+    return Date.now() - hqPageAt > HQ_NOSUB_MS;
   }
 
   /** 頁面載入後，若佇列在執行中就自動盯著這一支跑完。 */
